@@ -1068,6 +1068,8 @@ class Vehicle:
             s.v = (s.x_next-s.x)/s.W.DELTAT
             s.x_old = s.x
             s.x = s.x_next
+            # accumulate distance
+            s.distance_traveled += max(0.0, s.x - s.x_old)
 
             #at the end of the link
             if s.x == s.link.length:
