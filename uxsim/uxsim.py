@@ -870,9 +870,10 @@ class Vehicle:
         route_choice_principle : str, optional
             The route choice principle of the vehicle, default is the network's route choice principle.
         mode : str, optional
-            The mode of the vehicle. Available options are "single_trip" and "taxi", default is "single_trip".
+            The mode of the vehicle. Available options are "single_trip", "taxi", and "bus", default is "single_trip".
             "single_trip": The vehicle makes a single trip from the origin to the destination.
             "taxi": The vehicle serves multiple trips by specifying sequence of destinations. The destination list `Vehicle.dest_list` can be dynamically updated externaly.
+            "bus": The vehicle follows a predefined route with designated stops and serves multiple passengers.
         links_prefer : list of str, optional
             The names of the links the vehicle prefers, default is empty list.
         links_avoid : list of str, optional
@@ -943,6 +944,28 @@ class Vehicle:
         s.mode = mode
         s.dest_list = []
 
+        # Component added for TNDP using RL
+        # Bus-specific attributes: ROUTE = PATH + STOPS + SERVICE FREQUENCY
+        if s.mode == "bus":
+            # Route 1. PATH: Exact sequence of nodes the bus must follow
+            s.route_path = []            # Ordered list of nodes defining the bus route path
+            s.current_path_index = 0     # Current position in the route path
+            s.is_circular_route = True   # Whether route is circular or back-and-forth
+            s.route_direction = 1        # Direction for non-circular routes: 1=forward, -1=backward
+            
+            # Route 2. STOPS: Subset of path nodes where bus actually stops
+            s.route_stops = []           # List of designated stop nodes (subset of route_path)
+            s.stop_duration = 60         # Duration to stop at each stop (seconds)
+            s.stop_start_time = None     # When bus started stopping at current stop
+            s.is_currently_stopped = False # Whether bus is currently stopped at a stop
+            
+            # Route 3. SERVICE FREQUENCY: How often the bus runs this route
+            s.service_frequency = 6      # How many times per hour the bus serves this route (times/hour)
+            
+            # Bus operations
+            s.capacity = 50              # Bus capacity (default 50 passengers)
+            s.passengers = []            # List of current passengers
+
         #dict of events that are triggered when this vehicle reaches a certain node {Node: func}
         s.node_event = dict()
 
@@ -957,6 +980,9 @@ class Vehicle:
         #these links will be always chosen or not chosen when choosing next link at each node
         s.links_prefer = [s.W.get_link(l) for l in links_prefer]
         s.links_avoid = [s.W.get_link(l) for l in links_avoid]
+
+        #next link for route choice - initialize to None for all vehicles
+        s.route_next_link = None
 
         #行き止まりに行ってしまったときにトリップを止める
         s.trip_abort = trip_abort
@@ -1009,6 +1035,7 @@ class Vehicle:
         - If the vehicle is in the "wait" state, it remains waiting at its departure node.
         - If the vehicle is in the "run" state, it updates its speed and position. If the vehicle reaches the end of its current link, it either ends its trip if it has reached its destination, or requests a transfer to the next link.
         - If the vehicle's state is "end" or "abort", no further actions are taken.
+        - Bus vehicles follow their predefined routes strictly and handle passenger boarding/alighting at designated stops.
         """
         s.record_log()
 
@@ -1023,6 +1050,20 @@ class Vehicle:
                 s.route_pref_update()
             pass
         if s.state == "run":
+            # Handle bus-specific logic BEFORE general movement
+            if s.mode == "bus":
+                # If bus is currently stopped, check if it's time to resume
+                if s.is_currently_stopped:
+                    if s.W.TIME - s.stop_start_time >= s.stop_duration:
+                        # Stop duration completed, resume movement
+                        s.is_currently_stopped = False
+                        s.stop_start_time = None
+                        # Bus will continue with normal movement below
+                    else:
+                        # Still stopping, don't move
+                        s.v = 0
+                        return
+            
             #drive within the link
             s.v = (s.x_next-s.x)/s.W.DELTAT
             s.x_old = s.x
@@ -1036,7 +1077,50 @@ class Vehicle:
                 if s.W.route_choice_update_gradual:
                     s.route_pref_update()
                 
-                if s.link.end_node == s.dest:
+                # Handle buses - they strictly follow their defined routes
+                if s.mode == "bus":
+                    current_node = s.link.end_node
+                    
+                    # Update current position in route
+                    if current_node in s.route_path:
+                        s.current_path_index = s.route_path.index(current_node)
+                    
+                    # Update direction for non-circular routes
+                    if not s.is_circular_route:
+                        if s.current_path_index == len(s.route_path) - 1:
+                            s.route_direction = -1
+                        elif s.current_path_index == 0:
+                            s.route_direction = 1
+                    
+                    # Get next node on the route
+                    next_node = s.get_next_path_node()
+                    if next_node:
+                        s.dest = next_node
+                        # Find the link that follows the route
+                        s.route_next_link = s.find_route_link_to_node(s.dest)
+                        if s.route_next_link is None and s.W.print_mode >= 1:
+                            s.W.print(f"ERROR: Bus {s.name} at {current_node.name} cannot continue on route to {s.dest.name}. Check for one-way streets or invalid route definition.")
+                    else:
+                        # End of route reached
+                        s.flag_waiting_for_trip_end = 1
+                        if s.link.vehicles[0] == s:
+                            s.end_trip()
+                            return
+                    
+                    # Add to incoming vehicles queue
+                    if s.route_next_link is not None:
+                        s.link.end_node.incoming_vehicles.append(s)
+                    
+                    # Check if bus should stop at this node
+                    if s.should_stop_at_node(current_node) and not s.is_currently_stopped:
+                        s.is_currently_stopped = True
+                        s.stop_start_time = s.W.TIME
+                        if hasattr(s.W, 'bus_handler') and s.W.bus_handler is not None:
+                            s.W.bus_handler.handle_boarding_alighting(s, current_node)
+                        s.v = 0
+                
+                # Handle other vehicle types based on destination status
+                elif s.link.end_node == s.dest:
                     if s.mode == "single_trip":
                         #prepare for trip end
                         s.flag_waiting_for_trip_end = 1
@@ -1257,6 +1341,241 @@ class Vehicle:
         for dest in dests:
             s.add_dest(dest)
     
+    def set_bus_route(s, path=None, stops=None, is_circular=True, capacity=50, stop_duration=30, service_frequency=6):
+        """
+        Component added for TNDP using RL
+        Set the complete bus route: PATH + STOPS + SERVICE FREQUENCY.
+
+        Parameters
+        ----------
+        path : list of str | Node
+            The exact sequence of nodes the bus must follow (the complete route path).
+        stops : list of str | Node
+            The subset of path nodes where the bus will actually stop for passengers.
+        is_circular : bool, optional
+            Whether the route is circular (True) or back-and-forth (False), default is True.
+        capacity : int, optional
+            The maximum number of passengers the bus can carry, default is 50.
+        stop_duration : int, optional  
+            Duration to stop at each stop in seconds, default is 30.
+        service_frequency : int, optional
+            How many times per hour the bus serves this route, default is 6.
+            
+        Returns
+        -------
+        list
+            List of all bus vehicles created for this route (including the original)
+        """
+        if s.mode != "bus":
+            raise ValueError(f"Vehicle {s.name} is not in bus mode. Cannot set bus route.")
+        
+        # Route 1. PATH: Set the exact route path
+        if path is None:
+            raise ValueError("Bus route path must be specified.")
+        
+        # Helper function to configure a single bus
+        def _configure_single_bus(bus, path, stops, is_circular, capacity, stop_duration, service_frequency):
+            bus.route_path = [bus.W.get_node(node) for node in path]
+            bus.current_path_index = 0
+            bus.is_circular_route = is_circular
+            bus.route_direction = 1  # Start going forward for non-circular routes
+            
+            # Route 2. STOPS: Set designated stops (must be subset of path)
+            if stops is None:
+                bus.route_stops = bus.route_path[:]
+            else:
+                bus.route_stops = [bus.W.get_node(stop) for stop in stops]
+                # Validate that all stops are in the path
+                for stop in bus.route_stops:
+                    if stop not in bus.route_path:
+                        raise ValueError(f"Stop {stop.name} is not on the specified route path.")
+            
+            bus.stop_duration = stop_duration
+            bus.stop_start_time = None
+            bus.is_currently_stopped = False
+            bus.service_frequency = service_frequency
+            bus.capacity = capacity
+            bus.passengers = []
+        
+        # Configure the original bus (this one)
+        _configure_single_bus(s, path, stops, is_circular, capacity, stop_duration, service_frequency)
+        
+        # Initialize route position - buses ALWAYS start at their origin which MUST be on the route
+        if s.orig not in s.route_path:
+            raise ValueError(f"Bus {s.name} origin '{s.orig.name}' is not on its route path. Buses must start on their defined route.")
+        
+        s.current_path_index = s.route_path.index(s.orig)
+        # Get the next node on the route
+        next_node = s.get_next_path_node()
+        if next_node:
+            s.dest = next_node
+        else:
+            # Edge case: single-node route or starting at end of non-circular route
+            if s.is_circular_route:
+                s.dest = s.route_path[0]  # Wrap around
+            else:
+                raise ValueError(f"Bus {s.name} starts at end of non-circular route with nowhere to go.")
+        
+        # Create additional buses for service frequency > 1
+        created_buses = [s]  # Include the original bus
+        
+        if service_frequency > 1:
+            departure_interval = 3600.0 / service_frequency  # seconds between departures
+            
+            for i in range(1, service_frequency):  # Skip first bus (already exists)
+                # Calculate departure time for this bus
+                new_departure_time = s.departure_time + (i * departure_interval)
+                
+                # Create new bus with same origin/dest but different departure time
+                new_bus = s.W.addVehicle(
+                    s.orig.name, 
+                    s.dest.name, 
+                    new_departure_time,
+                    mode="bus", 
+                    name=f"{s.name}_freq_{i+1}",
+                    departure_time_is_time_step=0  # 0 = departure time in seconds
+                )
+                
+                # Configure new bus with same route parameters
+                _configure_single_bus(new_bus, path, stops, is_circular, capacity, stop_duration, service_frequency)
+                
+                # Initialize route position - same as original bus
+                if new_bus.orig not in new_bus.route_path:
+                    raise ValueError(f"Bus {new_bus.name} origin '{new_bus.orig.name}' is not on its route path. Buses must start on their defined route.")
+                
+                new_bus.current_path_index = new_bus.route_path.index(new_bus.orig)
+                next_node = new_bus.get_next_path_node()
+                if next_node:
+                    new_bus.dest = next_node
+                else:
+                    if new_bus.is_circular_route:
+                        new_bus.dest = new_bus.route_path[0]
+                    else:
+                        raise ValueError(f"Bus {new_bus.name} starts at end of non-circular route with nowhere to go.")
+                
+                created_buses.append(new_bus)
+        
+        return created_buses
+
+    def get_next_path_node(s):
+        """
+        Component added for TNDP using RL.
+
+        Get the next node in the bus route path for bus vehicles only.
+        
+        This method handles the sequential progression through the predefined route path, 
+        supporting both circular and back-and-forth routes.
+
+        Returns the next node regardless of whether it's a designated stop.
+
+        Returns
+        -------
+        Node or None
+            The next path node, or None if no more nodes in path.
+        """
+        if s.mode != "bus" or len(s.route_path) == 0:
+            return None
+            
+        if s.is_circular_route:
+            # For circular routes, wrap around to beginning
+            next_index = (s.current_path_index + 1) % len(s.route_path)
+        else:
+            # For back-and-forth routes, use direction to determine next node
+            next_index = s.current_path_index + s.route_direction
+            
+            # Check if we need to reverse direction
+            if next_index >= len(s.route_path):
+                # Reached end, reverse direction
+                s.route_direction = -1
+                next_index = s.current_path_index - 1
+            elif next_index < 0:
+                # Reached beginning, reverse direction
+                s.route_direction = 1
+                next_index = s.current_path_index + 1
+                
+        if 0 <= next_index < len(s.route_path):
+            return s.route_path[next_index]
+        else:
+            return None
+    
+    def find_route_link_to_node(s, target_node):
+        """
+        Find the next link that follows the bus route to reach the target node.
+        This ensures buses only use links that are part of their route sequence.
+        """
+        if s.mode != "bus" or not s.route_path or target_node not in s.route_path:
+            return None
+            
+        current_node = s.link.end_node
+        
+        # If already at target, no link needed
+        if current_node == target_node:
+            return None
+            
+        # Build valid link sequences from route path
+        valid_sequences = []
+        for i in range(len(s.route_path) - 1):
+            valid_sequences.append((s.route_path[i], s.route_path[i+1]))
+        
+        # For circular routes, add wrap-around link
+        if s.is_circular_route and len(s.route_path) > 1:
+            valid_sequences.append((s.route_path[-1], s.route_path[0]))
+        
+        # For non-circular routes, add reverse direction links
+        if not s.is_circular_route:
+            for i in range(len(s.route_path) - 1, 0, -1):
+                valid_sequences.append((s.route_path[i], s.route_path[i-1]))
+        
+        # Find direct link if it's a valid sequence
+        for link in current_node.outlinks.values():
+            if (current_node, link.end_node) in valid_sequences:
+                # Check if this link leads toward our target
+                if link.end_node == target_node:
+                    return link
+                # For multi-hop, just take the first valid route link
+                elif current_node in s.route_path:
+                    current_idx = s.route_path.index(current_node)
+                    target_idx = s.route_path.index(target_node)
+                    
+                    # Determine which direction to go
+                    if s.is_circular_route:
+                        # For circular, go forward
+                        next_idx = (current_idx + 1) % len(s.route_path)
+                        if link.end_node == s.route_path[next_idx]:
+                            return link
+                    else:
+                        # For non-circular, check both directions
+                        if target_idx > current_idx and current_idx < len(s.route_path) - 1:
+                            if link.end_node == s.route_path[current_idx + 1]:
+                                return link
+                        elif target_idx < current_idx and current_idx > 0:
+                            if link.end_node == s.route_path[current_idx - 1]:
+                                return link
+        
+        return None
+
+
+
+    def should_stop_at_node(s, node):
+        """
+        Component added for TNDP using RL
+        Check if the bus should stop at a given node.
+
+        Parameters
+        ----------
+        node : Node
+            The node to check.
+
+        Returns
+        -------
+        bool
+            True if the bus should stop at this node, False otherwise.
+        """
+        if s.mode != "bus":
+            return False
+            
+        return node in s.route_stops
+    
     def traveled_route(s, include_arrival_time=True, include_departure_time=False):
         """
         Returns the route this vehicle traveled.
@@ -1386,6 +1705,100 @@ class Vehicle:
             elif s.state == "end":
                 s.log_t_link.append([s.W.T*s.W.DELTAT, "end"])
             s.link_old = s.link
+
+
+    def get_available_capacity(s):
+        """
+        Component added for TNDP using RL
+        Get the remaining passenger capacity for bus vehicles.
+
+        Returns
+        -------
+        int
+            The number of additional passengers the bus can carry.
+            Returns 0 for non-bus vehicles.
+        """
+        if s.mode != "bus":
+            return 0
+        
+        return s.capacity - len(s.passengers)
+
+    def board_passengers(s, boarding_passengers):
+        """
+        Component added for TNDP using RL
+        Board passengers onto the bus up to capacity limit.
+
+        Parameters
+        ----------
+        boarding_passengers : list of BusPassengerRequest
+            List of passengers waiting to board at the current stop.
+
+        Returns
+        -------
+        list of BusPassengerRequest
+            List of passengers that were successfully boarded.
+        """
+        if s.mode != "bus":
+            return []
+        
+        available_capacity = s.get_available_capacity()
+        passengers_to_board = boarding_passengers[:available_capacity]
+        
+        for passenger in passengers_to_board:
+            # Update passenger state
+            passenger.is_waiting = False
+            passenger.is_on_bus = True
+            passenger.board_time = s.W.TIME
+            passenger.wait_time = passenger.board_time - passenger.wait_start_time
+            passenger.bus = s
+            
+            # Add to bus passenger list
+            s.passengers.append(passenger)
+        
+        return passengers_to_board
+
+    def alight_passengers(s, current_stop):
+        """
+        Component added for TNDP using RL
+        Remove passengers whose destination is the current stop.
+
+        Parameters
+        ----------
+        current_stop : Node
+            The current bus stop node.
+
+        Returns  
+        -------
+        list of BusPassengerRequest
+            List of passengers that alighted at this stop.
+        """
+        if s.mode != "bus":
+            return []
+        
+        alighting_passengers = []
+        remaining_passengers = []
+        
+        for passenger in s.passengers:
+            if passenger.dest_stop == current_stop:
+                # Passenger reaches destination - alight
+                passenger.is_on_bus = False
+                passenger.trip_completed = True
+                passenger.alight_time = s.W.TIME
+                passenger.in_vehicle_time = passenger.alight_time - passenger.board_time
+                passenger.total_travel_time = passenger.alight_time - passenger.wait_start_time
+                passenger.bus = None
+                
+                alighting_passengers.append(passenger)
+            else:
+                # Passenger continues on bus
+                remaining_passengers.append(passenger)
+        
+        # Update bus passenger list
+        s.passengers = remaining_passengers
+        
+        return alighting_passengers
+
+
 
 
 class RouteChoice:
@@ -1643,6 +2056,9 @@ class World:
         W.save_mode = save_mode
         W.show_mode = show_mode
 
+        # Component added for TNDP using RL - Phase 2: BusHandler support
+        W.bus_handler = None  # Optional BusHandler instance for managing bus passengers
+
         W.user_attribute = user_attribute
         W.user_function = user_function
 
@@ -1742,7 +2158,9 @@ class World:
         orig : str | Node
             The origin node.
         dest : str | Node
-            The destination node.
+            The destination node. 
+            For mode="bus", this parameter is firts set as the next immediate node in the predefined path. 
+            As the simulation progresses, it is updated by set_bus_route() to the next node in the predefined path.
         departure_time : int
             The departure time of the vehicle.
         name : str, optional
@@ -1752,9 +2170,10 @@ class World:
         route_choice_principle : str, optional
             The route choice principle of the vehicle, default is the network's route choice principle.
         mode : str, optional
-            The mode of the vehicle. Available options are "single_trip" and "taxi", default is "single_trip".
+            The mode of the vehicle. Available options are "single_trip", "taxi", and "bus", default is "single_trip".
             "single_trip": The vehicle makes a single trip from the origin to the destination.
             "taxi": The vehicle serves multiple trips by specifying sequence of destinations. The destination list `Vehicle.dest_list` can be dynamically updated externaly.
+            "bus": The vehicle follows a predefined route with designated route (path, stops, frequency of service) and serves multiple passengers.
         links_prefer : list of str, optional
             The names of the links the vehicle prefers, default is empty list.
         links_avoid : list of str, optional
@@ -1779,9 +2198,9 @@ class World:
         return Vehicle(W, *args, **kwargs)
 
     @demand_info_record
-    def adddemand(W, orig, dest, t_start, t_end, flow=-1, volume=-1, attribute=None, direct_call=True):
+    def adddemand(W, orig, dest, t_start, t_end, flow=-1, volume=-1, mode="vehicle", attribute=None, direct_call=True):
         """
-        Generate vehicles by specifying time-dependent origin-destination demand.
+        Generate vehicles or bus passengers by specifying time-dependent origin-destination demand.
 
         Parameters
         ----------
@@ -1797,6 +2216,8 @@ class World:
             The flow rate from the origin to the destination in vehicles per second.
         volume: float, optional
             The demand volume from the origin to the destination. If volume is specified, the flow is ignored.
+        mode : str, optional
+            The mode of demand. "vehicle" creates driving vehicles (default). "bus_passenger" creates bus passenger requests.
         attribute : any, optinonal
             Additional (meta) attributes defined by users.
         """
@@ -1806,11 +2227,38 @@ class World:
 
         f = 0
 
-        for t in range(int(t_start/W.DELTAT), int(t_end/W.DELTAT)):
-            f += flow*W.DELTAT
-            while f >= W.DELTAN:
-                W.addVehicle(orig, dest, t, departure_time_is_time_step=1, attribute=attribute, direct_call=False)
-                f -= W.DELTAN
+        if mode == "bus_passenger":
+            # Component added for TNDP using RL - Phase 2: Bus passenger demand generation
+            if W.bus_handler is None:
+                raise ValueError("BusHandler must be set before adding bus passenger demand. Use W.set_bus_handler(BusHandler) first.")
+            
+            from .BusHandler import BusPassengerRequest
+            
+            passenger_count = 0
+            for t in range(int(t_start/W.DELTAT), int(t_end/W.DELTAT)):
+                f += flow*W.DELTAT
+                while f >= W.DELTAN:
+                    # Create bus passenger request
+                    passenger_count += 1
+                    passenger = BusPassengerRequest(
+                        W=W,
+                        origin_stop=orig,
+                        dest_stop=dest,
+                        departure_time=t*W.DELTAT,
+                        name=f"passenger_{passenger_count}",
+                        attribute=attribute
+                    )
+                    
+                    # Add passenger to pending list - they'll be moved to stops when departure time arrives
+                    W.bus_handler.add_pending_passenger(passenger)
+                    f -= W.DELTAN
+        else:
+            # Default behavior: create vehicles
+            for t in range(int(t_start/W.DELTAT), int(t_end/W.DELTAT)):
+                f += flow*W.DELTAT
+                while f >= W.DELTAN:
+                    W.addVehicle(orig, dest, t, departure_time_is_time_step=1, attribute=attribute, direct_call=False)
+                    f -= W.DELTAN
 
         
 
@@ -2242,6 +2690,10 @@ class World:
 
             W.TIME = W.T*W.DELTAT
 
+            # Component added for TNDP using RL - Phase 2: Process pending bus passengers
+            if W.bus_handler is not None:
+                W.bus_handler.process_pending_passengers()
+
             if W.print_mode and W.show_progress and W.T%W.show_progress_deltat_timestep == 0 and W.T > 0:
                 W.analyzer.show_simulation_progress()
             
@@ -2539,6 +2991,26 @@ class World:
             def noprint(*args, **kwargs):
                 pass
             W.print = noprint
+
+    def set_bus_handler(W, handler_class):
+        """
+        Component added for TNDP using RL.
+        Set the bus handler for managing passenger-bus interactions.
+
+        Parameters
+        ----------
+        handler_class : class
+            A BusHandler class (or subclass) to manage bus passenger requests.
+            The class will be instantiated with the World object as an argument.
+
+        Examples
+        --------
+        >>> from uxsim.BusHandler import BusHandler
+        >>> W = World(...)
+        >>> W.set_bus_handler(BusHandler)
+        >>> # Now buses will automatically handle passenger boarding/alighting
+        """
+        W.bus_handler = handler_class(W)
 
     @catch_exceptions_and_warn()
     def show_network(W, width=1, left_handed=1, figsize=(6,6), network_font_size=10, node_size=6, show_id=True):

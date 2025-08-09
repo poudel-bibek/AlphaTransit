@@ -1212,7 +1212,7 @@ class Analyzer:
             os.remove(f)
 
     @catch_exceptions_and_warn()
-    def network_fancy(s, animation_speed_inverse=10, figsize=6, sample_ratio=0.3, interval=5, network_font_size=0, trace_length=3, speed_coef=2, file_name=None, antialiasing=True):
+    def network_fancy(s, animation_speed_inverse=10, figsize=6, sample_ratio=0.3, interval=5, network_font_size=0, trace_length=3, speed_coef=2, file_name=None, antialiasing=True, save_as_mp4=False):
         """
         Generates a visually appealing animation of vehicles' trajectories across the entire transportation network over time.
 
@@ -1236,12 +1236,15 @@ class Analyzer:
             The name of the file to which the animation is saved. It overrides the defauld name. Default is None.
         antialiasing : bool, optional
             If set to True, antialiasing is applied to the animation. Default is True.
+        save_as_mp4 : bool, optional
+            If set to True, saves the animation as an MP4 video in addition to GIF. Default is False.
 
         Notes
         -----
         This method generates a visually appealing animation that visualizes vehicles' trajectories across the transportation network over time.
         The animation provides information on vehicle positions, speeds, link names, node locations, and more, with Bezier curves used for smooth transitions.
         The generated animation is saved to the directory `out<W.name>` with a filename `anim_network_fancy.gif`.
+        If save_as_mp4 is True, an additional MP4 video is saved with filename `anim_network_fancy.mp4`.
 
         Temporary images used to create the animation are removed after the animation is generated.
         """
@@ -1300,7 +1303,7 @@ class Analyzer:
             t_smooth = np.linspace(0, 1, interp_size)
             bezier_spline = make_interp_spline(t, points, k=3)
             smooth_points = bezier_spline(t_smooth)
-            for i in lange(t_smooth):
+            for i in range(len(t_smooth)):
                 ii = max(0, i-trace_length)
                 if i < len(vs):
                     v = vs[i]
@@ -1344,19 +1347,41 @@ class Analyzer:
             draw = ImageDraw.Draw(img)
                 
             if network_font_size > 0:
+                s.font_file_like.seek(0)  # Reset cursor to allow BytesIO reuse
                 font = ImageFont.truetype(s.font_file_like, int(network_font_size))
 
             def flip(y):
                 return img.size[1]-y
 
+            drawn_pairs = set()
+            
+            # Draw links with thickness based on directionality
             for l in s.W.LINKS:
                 x1, y1 = l.start_node.x*coef-minx, l.start_node.y*coef-miny
                 x2, y2 = l.end_node.x*coef-minx, l.end_node.y*coef-miny
-                n_lane = l.number_of_lanes
-                draw.line([(x1, flip(y1)), (x2, flip(y2))], fill=(200,200,200), width=int(n_lane*scale), joint="curve")
-
-                if network_font_size > 0:
-                    draw.text(((x1+x2)/2, flip((y1+y2)/2)), l.name, font=font, fill="blue", anchor="mm")
+                
+                # Create pair key to avoid drawing same road segment multiple times
+                pair_key = tuple(sorted([l.start_node.name, l.end_node.name]))
+                
+                if pair_key not in drawn_pairs:
+                    drawn_pairs.add(pair_key)
+                    # Check if bidirectional (has reverse link)
+                    has_reverse = any(link.start_node.name == l.end_node.name and link.end_node.name == l.start_node.name for link in s.W.LINKS)
+                    # Thicker lines for bidirectional roads - make difference more pronounced
+                    base_width = max(2, int(l.number_of_lanes * scale))
+                    line_width = base_width * 3 if has_reverse else base_width
+                    draw.line([(x1, flip(y1)), (x2, flip(y2))], fill=(200,200,200), width=line_width, joint="curve")
+                    
+            # Draw nodes with their IDs
+            if network_font_size > 0:
+                for n in s.W.NODES:
+                    x, y = n.x*coef-minx, n.y*coef-miny
+                    # Draw node as larger circle for better visibility
+                    node_size = 12 * scale
+                    draw.ellipse((x-node_size, flip(y)-node_size, x+node_size, flip(y)+node_size), 
+                               fill=(100,100,255), outline=(50,50,150), width=1)
+                    # Draw node ID with white text for better contrast
+                    draw.text((x, flip(y)), n.name, font=font, fill="white", anchor="mm")
 
             traces = draw_dict[t]
             for trace in traces:
@@ -1366,16 +1391,32 @@ class Analyzer:
                 coords = [(l[0], flip(l[1])) for l in list(np.vstack([xs, ys]).T)]
                 try:
                     draw.line(coords,
-                            fill=(int(trace["c"][0]*255), int(trace["c"][1]*255), int(trace["c"][2]*255)), width=scale, joint="curve")
+                            fill=(int(trace["c"][0]*255), int(trace["c"][1]*255), int(trace["c"][2]*255)), width=scale*2, joint="curve")
                     draw.ellipse((xs[-1]-size, flip(ys[-1])-size, xs[-1]+size, flip(ys[-1])+size), 
                             fill=(int(trace["c"][0]*255), int(trace["c"][1]*255), int(trace["c"][2]*255)))
                 except:
                     pass
                 #draw.line([(x1, flip(y1)), (xmid1, flip(ymid1)), (xmid2, flip(ymid2)), (x2, flip(y2))]
 
-            font_file_like = io.BytesIO(s.font_data) #for unknown reason, s.font_file_like cannot be resued
-            font = ImageFont.truetype(font_file_like, int(30))
+            s.font_file_like.seek(0)  # Reset cursor to allow BytesIO reuse
+            font = ImageFont.truetype(s.font_file_like, int(30))
             draw.text((img.size[0]/2,20), f"t = {t :>8} (s)", font=font, fill="black", anchor="mm")
+            
+            # Add legend for link thickness with actual drawn lines
+            if network_font_size > 0:
+                # Draw actual lines to show thickness difference
+                legend_y1 = 65
+                legend_y2 = 100
+                legend_x_start = 20
+                legend_x_end = 60
+                
+                # Unidirectional line (thin)
+                draw.line([(legend_x_start, legend_y1), (legend_x_end, legend_y1)], fill=(200,200,200), width=2*scale)
+                draw.text((legend_x_end + 10, legend_y1), "Unidirectional", font=font, fill="black", anchor="lm")
+                
+                # Bidirectional line (thick)
+                draw.line([(legend_x_start, legend_y2), (legend_x_end, legend_y2)], fill=(200,200,200), width=4*scale)
+                draw.text((legend_x_end + 10, legend_y2), "Bidirectional", font=font, fill="black", anchor="lm")
 
             if antialiasing:
                 img = img.resize((int((maxx-minx)/scale), int((maxy-miny)/scale)), resample=Resampling.LANCZOS)
@@ -1392,6 +1433,31 @@ class Analyzer:
         if file_name != None:
             fname = file_name
         pics[0].save(fname, save_all=True, append_images=pics[1:], optimize=False, duration=animation_speed_inverse*speed_coef, loop=0)
+
+        # Save as MP4 if requested
+        if save_as_mp4:
+            import imageio
+            
+            # Convert PIL images to numpy arrays for imageio
+            frames = []
+            for img in pics:
+                frames.append(np.array(img))
+            
+            # Determine MP4 filename
+            if file_name != None:
+                mp4_fname = file_name.replace('.gif', '.mp4')
+                if not mp4_fname.endswith('.mp4'):
+                    mp4_fname += '.mp4'
+            else:
+                mp4_fname = f"out{s.W.name}/anim_network_fancy.mp4"
+            
+            # Calculate fps based on animation speed
+            fps = 1000 / (animation_speed_inverse * speed_coef)  # Convert from milliseconds
+            fps = max(1, min(fps, 30))  # Clamp between 1 and 30 fps
+            
+            # Save as MP4
+            imageio.mimsave(mp4_fname, frames, fps=fps)
+            s.W.print(f" MP4 video saved: {mp4_fname}")
 
         # for f in glob.glob(f"out{s.W.name}/tmp_anim_*.png"):
         #     os.remove(f)
