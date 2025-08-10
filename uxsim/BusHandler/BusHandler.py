@@ -73,13 +73,14 @@ class BusHandler:
         self.waiting_passengers = {}  # {stop_node: [BusPassengerRequest]}
         self.passenger_stats = []     # Completed passenger trip statistics
         self.pending_passengers = []  # Passengers waiting for their departure time
+        self.bus_route_journeys = {}  # Track bus route progression: {bus_name: [stop_visits]}
 
     def handle_boarding_alighting(self, bus, current_stop):
         """
         Handle passenger boarding and alighting when a bus stops.
 
         Policy: A passenger should only board if their stop lies ahead along
-        the current direction. Taxis/cars are point-to-point and don’t have
+        the current direction. Taxis/cars are point-to-point and don't have
         such direction constraints; buses do. We enforce "ahead-only" boarding
         for both circular and non-circular routes for simplicity.
 
@@ -93,10 +94,15 @@ class BusHandler:
         if bus.mode != "bus":
             return
 
+        # Record capacity before any passenger activity
+        capacity_before = len(bus.passengers)
+
         # Step 1: Alight passengers whose destination is current stop
         alighting_passengers = bus.alight_passengers(current_stop)
+        num_alighted = len(alighting_passengers)
         
         # Step 2: Board waiting passengers (up to available capacity)
+        boarded_passengers = []
         if current_stop in self.waiting_passengers:
             waiting_at_stop = self.waiting_passengers[current_stop]
             
@@ -116,6 +122,26 @@ class BusHandler:
             # Remove boarded passengers from waiting queue
             for passenger in boarded_passengers:
                 self.waiting_passengers[current_stop].remove(passenger)
+        
+        num_boarded = len(boarded_passengers)
+        capacity_after = len(bus.passengers)
+
+        # Record bus route journey (track stop-to-stop progression)
+        if bus.name not in self.bus_route_journeys:
+            self.bus_route_journeys[bus.name] = []
+        
+        # Only record if this is a new stop or first visit to this stop
+        journey = self.bus_route_journeys[bus.name]
+        if not journey or journey[-1]['stop_name'] != current_stop.name:
+            journey.append({
+                'stop_name': current_stop.name,
+                'arrival_time': self.W.TIME,
+                'capacity_before': capacity_before,
+                'passengers_alighted': num_alighted,
+                'passengers_boarded': num_boarded,
+                'capacity_after': capacity_after,
+                'bus_capacity': getattr(bus, 'capacity', 50)
+            })
         
         # Step 3: Record statistics for completed trips
         for passenger in alighting_passengers:
@@ -184,26 +210,80 @@ class BusHandler:
 
     def can_reach_destination(self, bus, current_stop, dest_stop):
         """
-        Direction-aware boarding check.
+        Direction-aware boarding check that respects road network connectivity.
 
-        Returns True only if the destination stop appears after the current
-        stop in the bus.route_stops order. This enforces that a passenger only
-        boards when their destination lies ahead along the current direction
-        of travel. For simplicity, the same policy is used for circular and
-        non-circular routes.
+        Returns True only if the destination stop is reachable by following the bus route
+        and available road links. For back-and-forth routes, checks both forward and 
+        backward directions. For circular routes, only allows forward direction.
+        This is more sophisticated than simple index comparison as it validates actual
+        road link existence between consecutive stops.
 
+        Parameters
+        ----------
+        bus : Vehicle
+            The bus vehicle being checked.
+        current_stop : Node  
+            The current bus stop node.
+        dest_stop : Node
+            The destination stop node.
+
+        Returns
+        -------
+        bool
+            True if destination is reachable via valid road connections, False otherwise.
+        
         Notes
         -----
-        - This is intentionally stricter than allowing "ride-the-loop" on
-          circular routes, to avoid capacity pollution and unrealistic trips.
-        - Taxis/cars are point-to-point and do not use this constraint.
+        - Intentionally stricter than allowing "ride-the-loop" on circular routes
+        - Validates each link in the path exists in the road network
+        - For back-and-forth routes: passenger can travel in either direction if links exist
         """
         try:
             current_idx = bus.route_stops.index(current_stop)
             dest_idx = bus.route_stops.index(dest_stop)
-            return dest_idx > current_idx
+            
+            if hasattr(bus, 'is_circular_route') and not bus.is_circular_route:
+                # Back-and-forth route: check connectivity in either direction
+                return (self._validate_path_links(bus, current_idx, dest_idx, forward=True) or
+                        self._validate_path_links(bus, current_idx, dest_idx, forward=False))
+            else:
+                # Circular route: forward only, validate connectivity
+                if dest_idx > current_idx:
+                    return self._validate_path_links(bus, current_idx, dest_idx, forward=True)
+                return False
         except ValueError:
             return False
+    
+    def _validate_path_links(self, bus, start_idx, dest_idx, forward):
+        """
+        Check if road links exist for path segment in specified direction
+        """
+        
+        def has_road_link(node_a_name, node_b_name):
+            node_a = self.W.get_node(node_a_name)
+            node_b = self.W.get_node(node_b_name)
+            return any(link.end_node == node_b for link in node_a.outlinks.values())
+        
+        if forward and dest_idx <= start_idx:
+            return False
+        if not forward and dest_idx >= start_idx:
+            # For backward, check: current->end, then end->dest (reverse)
+            stops = bus.route_stops
+            # Check current to end (reverse direction)
+            for i in range(start_idx, len(stops) - 1):
+                if not has_road_link(stops[i + 1], stops[i]):
+                    return False
+            # Check end to destination (reverse direction)
+            for i in range(len(stops) - 1, dest_idx, -1):
+                if not has_road_link(stops[i], stops[i - 1]):
+                    return False
+            return True
+        
+        # Forward direction
+        for i in range(start_idx, dest_idx):
+            if not has_road_link(bus.route_stops[i], bus.route_stops[i + 1]):
+                return False
+        return True
     
     def compute_stats(self):
         """
@@ -449,3 +529,71 @@ class BusHandler:
                 print(f"    [Bus count reflects service_frequency and simulation horizon.")
                 print(f"    route length: {route_length:.0f}m, avg cycles: {avg_cycles:.1f}")
                 print(f"    [Each complete route loop is {route_length/1000:.1f}km, buses completed {avg_cycles:.1f} loops on average]\n")
+
+    def print_bus_activity_history(self):
+        """
+        Print compact bus route journey showing stop-to-stop progression.
+        Shows route path with boarding/alighting at each stop and current waiting status.
+        """
+        if not self.bus_route_journeys:
+            print("\n=== BUS ROUTE JOURNEYS ===")
+            print("No bus journeys recorded during simulation")
+            return
+        
+        print("\n=== BUS ROUTE JOURNEYS ===")
+        print("Route progression with passenger activity at each stop\n")
+        
+        # Print journey for each bus
+        for bus_name, journey in self.bus_route_journeys.items():
+            if not journey:
+                continue
+                
+            print(f"🚌 {bus_name}:")
+            
+            # Build route path string with arrows
+            route_path = " → ".join([stop['stop_name'] for stop in journey])
+            print(f"   Path: {route_path}")
+            print()
+            
+            # Show details for each stop
+            print("   Stop | Arrival | Capacity | Boarded | Alighted | Details")
+            print("   -----|---------|----------|---------|----------|--------")
+            
+            for i, stop_info in enumerate(journey):
+                arrival_min = stop_info['arrival_time'] / 60
+                stop = stop_info['stop_name']
+                before = stop_info['capacity_before']
+                after = stop_info['capacity_after']
+                boarded = stop_info['passengers_boarded']
+                alighted = stop_info['passengers_alighted']
+                bus_cap = stop_info['bus_capacity']
+                
+                # Create details string
+                if boarded > 0 and alighted > 0:
+                    details = f"↑{boarded} ↓{alighted}"
+                elif boarded > 0:
+                    details = f"↑{boarded}"
+                elif alighted > 0:
+                    details = f"↓{alighted}"
+                else:
+                    details = "no activity"
+                
+                print(f"   {stop:4s} | {arrival_min:5.1f}m | {before:2d}→{after:2d}/{bus_cap:2d} | {boarded:7d} | {alighted:8d} | {details}")
+            
+            print()  # Empty line between buses
+        
+        # Summary of current waiting passengers by stop
+        print("📍 CURRENT WAITING PASSENGERS BY STOP:")
+        total_waiting = 0
+        waiting_stops = []
+        for stop_node, passenger_list in self.waiting_passengers.items():
+            if passenger_list:
+                count = len(passenger_list)
+                total_waiting += count
+                waiting_stops.append(f"{stop_node.name}({count})")
+        
+        if total_waiting == 0:
+            print("   No passengers currently waiting")
+        else:
+            print(f"   {' | '.join(waiting_stops)} | Total: {total_waiting}")
+        print()

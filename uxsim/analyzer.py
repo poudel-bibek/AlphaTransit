@@ -1391,7 +1391,7 @@ class Analyzer:
                 coords = [(l[0], flip(l[1])) for l in list(np.vstack([xs, ys]).T)]
                 try:
                     draw.line(coords,
-                            fill=(int(trace["c"][0]*255), int(trace["c"][1]*255), int(trace["c"][2]*255)), width=scale*2, joint="curve")
+                            fill=(int(trace["c"][0]*255), int(trace["c"][1]*255), int(trace["c"][2]*255)), width=scale*3, joint="curve")
                     draw.ellipse((xs[-1]-size, flip(ys[-1])-size, xs[-1]+size, flip(ys[-1])+size), 
                             fill=(int(trace["c"][0]*255), int(trace["c"][1]*255), int(trace["c"][2]*255)))
                 except:

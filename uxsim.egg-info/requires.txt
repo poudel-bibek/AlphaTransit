@@ -1,0 +1,15 @@
+numpy>=1.21.5
+matplotlib>=3.5.2
+pillow>=9.2.0
+tqdm>=4.64.1
+scipy>=1.9.1
+pandas>=1.4.4
+PyQt5>=5.15.7
+dill>=0.3.8
+networkx>=3.2.1
+
+[advanced]
+neatnet>=0.1.1
+osmnx>=2.0.0
+geopandas>=1.0.0
+shapely>=2.1.0
