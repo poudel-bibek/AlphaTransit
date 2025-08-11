@@ -1,19 +1,16 @@
-from typing import Any, Dict, Optional, Sequence
-import argparse
 import os
-import random
-
-import numpy as np
 import torch
-
+import random
+import argparse
+import numpy as np
+from rl.env import TransitEnv
+from typing import Any, Dict, Optional, Sequence
 
 def train(config: Dict[str, Any]) -> Dict[str, float]:
     """
-    Run the full training loop over many updates and timesteps.
-    Handles data collection, optimization, and periodic evaluation.
-    Implementation will be added in subsequent steps.
     """
-    pass
+    train_env = TransitEnv(config)
+    train_env.reset()
 
 
 def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003
@@ -43,7 +40,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     Define common RL, system, and sweepable hyperparameters.
     """
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
-    # Arguments unlikely to change during sweeps (static)
+    # Simulation setup: 
     parser.add_argument("--network", choices=["sioux_falls", "laval", "rivera", "mumford3"], default="sioux_falls", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
@@ -52,12 +49,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step")
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
 
+    # Learning environment specific: 
+    parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
+    parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing")
+
+    # Constraints:
+    parser.add_argument("--max_path_length", type=int, default=10, help="Maximum path length")
+    parser.add_argument("--min_path_length", type=int, default=1, help="Minimum path length")
+
     # Arguments likely to change during sweeps (tunable hyperparameters)
     parser.add_argument("--total_timesteps", type=int, default=10000, help="Total timesteps for training")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--clip_coef", type=float, default=0.2, help="PPO clip coefficient")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-    
+
     return parser
 
 
