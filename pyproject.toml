@@ -29,7 +29,12 @@ dependencies = [
     "pandas>=1.4.4",
     "PyQt5>=5.15.7",
     "dill>=0.3.8",
-    "networkx>=3.2.1"
+    "networkx>=3.2.1",
+    # RL core dependencies are required for this project
+    # Use >= pins so env-resolved GPU wheels remain valid
+    "torch>=2.7.0",
+    "torch-geometric>=2.6.0",
+    "gymnasium>=0.29.0"
 ]
 dynamic = ["version"] # Version is read from uxsim/__init__.py
 
@@ -39,6 +44,11 @@ advanced = [
     "osmnx>=2.0.0",
     "geopandas>=1.0.0",
     "shapely>=2.1.0"
+]
+
+# Optional dependencies for hyperparameter sweeps (e.g., using Weights & Biases).
+sweeps = [
+    "wandb>=0.16.0",
 ]
 
 [project.urls]

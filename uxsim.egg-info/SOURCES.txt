@@ -26,6 +26,8 @@ uxsim.egg-info/SOURCES.txt
 uxsim.egg-info/dependency_links.txt
 uxsim.egg-info/requires.txt
 uxsim.egg-info/top_level.txt
+uxsim/BusHandler/BusHandler.py
+uxsim/BusHandler/__init__.py
 uxsim/DTAsolvers/DTAsolvers.py
 uxsim/DTAsolvers/__init__.py
 uxsim/OSMImporter/OSMImporter.py

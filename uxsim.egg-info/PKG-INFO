@@ -28,11 +28,15 @@ Requires-Dist: pandas>=1.4.4
 Requires-Dist: PyQt5>=5.15.7
 Requires-Dist: dill>=0.3.8
 Requires-Dist: networkx>=3.2.1
+Requires-Dist: torch>=2.2.0
+Requires-Dist: torch-geometric>=2.4.0
 Provides-Extra: advanced
 Requires-Dist: neatnet>=0.1.1; extra == "advanced"
 Requires-Dist: osmnx>=2.0.0; extra == "advanced"
 Requires-Dist: geopandas>=1.0.0; extra == "advanced"
 Requires-Dist: shapely>=2.1.0; extra == "advanced"
+Provides-Extra: sweeps
+Requires-Dist: wandb>=0.16.0; extra == "sweeps"
 Dynamic: license-file
 
 # UXsim: Network traffic flow simulator in pure Python
