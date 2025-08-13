@@ -10,7 +10,7 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
     """
     """
     train_env = TransitEnv(config)
-    train_env.reset()
+    state, info = train_env.reset()
 
 
 def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003
