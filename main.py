@@ -52,7 +52,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing")
-
+    parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
+    parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
+    parser.add_argument("--random_path_init", action="store_true", help="Initialize path randomly (omit flag for False)")
     # Constraints:
     parser.add_argument("--max_path_length", type=int, default=10, help="Maximum path length")
     parser.add_argument("--min_path_length", type=int, default=1, help="Minimum path length")
