@@ -69,6 +69,14 @@ class GATV2ActorCritic(nn.Module):
             self.layer_init(nn.Linear(hidden_dim, 1), std=1.0)
         )
 
+        
+    def _apply_action_mask(self,) -> None:
+        """
+        """
+
+        MASK_VALUE = -1e10 # large negative 
+        pass
+    
     def layer_init(self, layer: nn.Linear, std: float = 1.0) -> nn.Linear:
         """
         Initialize layer with orthogonal weights and zero bias.

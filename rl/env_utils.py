@@ -1,4 +1,6 @@
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
+import numpy as np
+import pandas as pd
 from collections import defaultdict
 
 import matplotlib
@@ -6,6 +8,69 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int] = None, max_edges: Optional[int] = None, show_od: bool = True) -> None:
+    """
+    Print OD matrix and observation fields in a readable format.
+    Shows shapes, samples, and mappings.
+    """
+    # Node and edge counts
+    num_nodes_obs = state["node_features"].shape[0]
+    num_edges_obs = state["edge_index"].shape[1]
+    resolved_max_nodes = num_nodes_obs if max_nodes is None else max_nodes
+    resolved_max_edges = num_edges_obs if max_edges is None else max_edges
+
+    # Steps
+    steps_left = float(state["steps_left"][0])
+    steps_taken = len(self.current_path) - 1
+    print(f"\n=== State Summary ===")
+    print(f"Current path: {self.current_path}")
+    print(f"Steps taken / max: {steps_taken} / {self.MAX_PATH_LENGTH} (steps_left_norm={steps_left:.3f})")
+
+    # Action mask
+    action_mask = state["action_mask"]
+    allowed_indices = [int(i) for i, v in enumerate(action_mask) if int(v) == 1]
+    allowed_nodes = [self.idx_to_node[i] for i in allowed_indices]
+    print(f"Allowed next nodes ({len(allowed_nodes)}): {allowed_nodes}")
+
+    # Node features
+    feature_names = [
+        "x_norm", "y_norm", "degree_norm",
+        "d_out_norm", "d_in_norm",
+        "in_path_flag", "d_out_path_norm", "d_in_path_norm",
+    ]
+    nf_df = pd.DataFrame(state["node_features"], index=self.node_list, columns=feature_names)
+    with pd.option_context('display.max_rows', resolved_max_nodes, 'display.max_columns', 8, 'display.width', 120):
+        print("\nNode features (sample):\n", nf_df.round(4))
+
+    # Edges
+    edge_index = state["edge_index"]
+    edge_features = state["edge_features"]
+    num_edges = edge_index.shape[1]
+    print(f"\nEdges: {num_edges}")
+    preview = min(resolved_max_edges, num_edges)
+    rows = []
+    for e in range(preview):
+        src_idx = int(edge_index[0, e])
+        dst_idx = int(edge_index[1, e])
+        src = self.idx_to_node[src_idx]
+        dst = self.idx_to_node[dst_idx]
+        length_n, speed_n = [float(x) for x in edge_features[e]]
+        rows.append({
+            "src": src,
+            "dst": dst,
+            "length_norm": round(length_n, 4),
+            "speed_norm": round(speed_n, 4),
+        })
+    ef_df = pd.DataFrame(rows)
+    print("Edge samples:\n", ef_df)
+
+    # OD matrix
+    if show_od:
+        od_df = pd.DataFrame(self.od_matrix, index=self.node_list, columns=self.node_list)
+        total_demand = float(np.sum(self.od_matrix))
+        print(f"\nOD matrix shape: {od_df.shape}, total demand: {total_demand:.4f}")
+        with pd.option_context('display.max_rows', 20, 'display.max_columns', 20, 'display.width', 120):
+            print(od_df.round(4))
 
 def plot_network_and_demand(world, output_path: Optional[str] = None) -> None:
     """

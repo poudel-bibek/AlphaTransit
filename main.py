@@ -12,7 +12,6 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
     train_env = TransitEnv(config)
     state, info = train_env.reset()
 
-
 def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003
     """
     Evaluate a trained policy over fixed episodes.

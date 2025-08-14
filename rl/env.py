@@ -6,7 +6,7 @@ from uxsim import World
 from pathlib import Path
 from collections import defaultdict
 from uxsim.BusHandler import BusHandler
-from rl.env_utils import plot_network_and_demand
+from rl.env_utils import plot_network_and_demand, pretty_print_state
 from typing import Any, Dict, Optional, Tuple
 
 class TransitEnv(gym.Env):
@@ -48,12 +48,13 @@ class TransitEnv(gym.Env):
         demand_csv = self.network_dir / f"{self.config.get('network')}_demand.csv"
 
         df_nodes = pd.read_csv(nodes_csv, dtype={"name": str})
-        df_links = pd.read_csv(links_csv, dtype={"name": str})
+        df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
         df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
 
         # Sort node names numerically, even though they are strings
         self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: int(x))
         self.n_nodes = len(self.node_list)
+        self.n_edges = int(len(df_links))
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
 
@@ -65,7 +66,8 @@ class TransitEnv(gym.Env):
         # Compute adjacency matrix (assuming directed graph):
         self.adj = defaultdict(set)
         for _, row in df_links.iterrows():
-            x, y = row["start"], row["end"]
+            # Force to strings to match node identifiers
+            x, y = str(row["start"]), str(row["end"])
             self.adj[x].add(y)
         print(f"\nAdjacency matrix: {self.adj}")
 
@@ -76,21 +78,27 @@ class TransitEnv(gym.Env):
                 i = self.node_to_idx[row["orig"]]
                 j = self.node_to_idx[row["dest"]]
                 self.od_matrix[i, j] += row["q"]
-        print(f"\nOD matrix: {self.od_matrix}")
+        # Pretty OD matrix preview
+        try:
+            od_df = pd.DataFrame(self.od_matrix, index=self.node_list, columns=self.node_list)
+            with pd.option_context('display.max_rows', 20, 'display.max_columns', 20, 'display.width', 120):
+                print("\nOD matrix (preview):\n", od_df.round(4))
+        except Exception:
+            print(f"\nOD matrix: {self.od_matrix}")
 
         # Demand vectors:
-        demand_out = self.od_matrix.sum(axis=1)
-        demand_in = self.od_matrix.sum(axis=0)
-        print(f"\nDemand out: {demand_out}")
-        print(f"Demand in: {demand_in}")
+        self.demand_out = self.od_matrix.sum(axis=1) # Trips starting from node i
+        self.demand_in = self.od_matrix.sum(axis=0) # Trips ending at node i
+        print(f"\nDemand out: {self.demand_out}")
+        print(f"Demand in: {self.demand_in}")
 
         # Normalization constants: 
-        self.max_demand = max(demand_out.max(), demand_in.max()) if demand_out.size > 0 else 1.0
-        self.min_demand = min(demand_out.min(), demand_in.min()) if demand_out.size > 0 else 0.0
+        self.max_demand = max(self.demand_out.max(), self.demand_in.max()) 
+        self.min_demand = min(self.demand_out.min(), self.demand_in.min())
         print(f"Max demand: {self.max_demand}, Min demand: {self.min_demand}")
 
-        self.max_degree = max(len(neighbors) for neighbors in self.adj.values()) if self.adj else 0
-        self.min_degree = min(len(neighbors) for neighbors in self.adj.values()) if self.adj else 0
+        self.max_degree = max(len(neighbors) for neighbors in self.adj.values())
+        self.min_degree = min(len(neighbors) for neighbors in self.adj.values()) 
         print(f"Max degree: {self.max_degree}, Min degree: {self.min_degree}")
 
         self.min_x = df_nodes["x"].min()
@@ -101,9 +109,41 @@ class TransitEnv(gym.Env):
         self.max_length = df_links["length"].max()
         self.min_free_flow_speed = df_links["u"].min() # u = free_flow_speed
         self.max_free_flow_speed = df_links["u"].max()
-        self.min_jam_density = df_links["kappa"].min() # kappa = jam_density
-        self.max_jam_density = df_links["kappa"].max()
         
+        # Edge index and features:
+        edge_index_list = []
+        edge_attr_list = []
+        for _, row in df_links.iterrows():
+            x, y = str(row['start']), str(row['end'])
+            if x in self.node_to_idx and y in self.node_to_idx:
+                i, j = self.node_to_idx[x], self.node_to_idx[y]
+                edge_index_list.append([i, j]) # Add the i, j indices of the edge
+
+                # Now edge attributes: Normalize to [0,1] and add
+                length_norm = (row['length'] - self.min_length) / (self.max_length - self.min_length) 
+                speed_norm = (row['u'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) 
+                edge_attr_list.append([length_norm, speed_norm]) # Add the normalized edge attributes
+
+        self.edge_index = np.array(edge_index_list).T.astype(np.int64) # Transpose, shape (2, E)
+        self.edge_features = np.array(edge_attr_list, dtype=np.float32) # Shape (E, 3)
+
+        # For efficiency, pre-compute a number of things required in state during init (once):
+        self.node_coordinates_norm = np.zeros((self.n_nodes, 2), dtype=np.float32)
+        self.node_degrees_norm = np.zeros(self.n_nodes, dtype=np.float32)
+
+        for node_name in self.node_list:
+            node_idx = self.node_to_idx[node_name]
+            node_data = df_nodes.loc[df_nodes["name"] == node_name].iloc[0]
+
+            # Min max normalize
+            self.node_coordinates_norm[node_idx, 0] = (node_data["x"] - self.min_x) / (self.max_x - self.min_x)
+            self.node_coordinates_norm[node_idx, 1] = (node_data["y"] - self.min_y) / (self.max_y - self.min_y)
+            
+            # degree 
+            degree = len(self.adj.get(node_name, [])) # If not found in adj, return empty list
+            self.node_degrees_norm[node_idx] = (degree - self.min_degree) / (self.max_degree - self.min_degree)
+
+
     @property
     def observation_space(self) -> gym.Space:
         """
@@ -122,9 +162,9 @@ class TransitEnv(gym.Env):
         1. For each node, in the network, following features: 
             - coordinates (x, y) - min-max normalized
             - degree - divide by max degree in the network
-            - in_path - binary
             - d_out: sum of all O-D flows emanating from node i  - divide by max demand in the network
             - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
+            - in_path flag - binary
             - d_out_path: sum of all O-D flows emanating from node i to nodes within the path - divide by max demand in the network   
                 - "If I connect i to the path, how many of i's trips could be served by the current path?"
             - d_in_path: sum of all O-D flows arriving at node i from nodes within the path - divide by max demand in the network
@@ -134,8 +174,19 @@ class TransitEnv(gym.Env):
             - Not allowed actions:
                 - If node is already in the path.
             - This is not an intrinsic property of the node, it's a constraint.
-        3. Edge index: 
-            - Directed edges (start -> end) as indices into nodes.
+        3. Edges: 
+            - Edge index (to indicate connectivity):
+                - For policy networks like GATv2, edge index is required. edge_index = a compact list of directed edges using node indices.
+                (https://pytorch-geometric.readthedocs.io/en/2.6.1/generated/torch_geometric.nn.conv.GATv2Conv.html)
+                - Shape (2, E) where E is the number of edges in the graph.
+                - If the road is bidirectional, include both directions: 
+                    - e.g., nodes = ["1","5","8"] → indices 0,1,2
+                    - if edges 1→5, 5→1, 5→8, and 8→5 then edge_index: src: [0,1,1,2], dst: [1,0,2,1]
+            - Edge features:
+                - Since the policy network is a GAT, edge features can be provided.
+                - Edge features:
+                    - length
+                    - free_flow_speed (u)
         4. Steps left until max_route_length is reached.
         
         Notes: 
@@ -170,9 +221,21 @@ class TransitEnv(gym.Env):
                 - So that invalid actions are not sampled
                 - Compute log probabilities from the masked distribution. Use the masked distribution in the act, evaluate as necessary.
                 - Print a warning if invalid action slips through (In practice, with proper masking, this shouldn't happen and I dont expect this, but due to incorrect implementation, it could happen).
+
+        Important:
+        - action_mask type: Use a boolean/binary space (MultiBinary(N) or a Box with dtype=uint8/bool). A mask is a feasibility flag, not an integer value; this avoids accidental arithmetic on mask entries.
+        - edge_index dtype/ordering: Use int64 here so converting to torch tensors naturally yields torch.long, as required by PyG. Keep columns aligned with edge_features rows so edge_attr[i] corresponds to edge_index[:, i].
+        - edge_features normalization: Perform per-edge normalization (e.g., length_norm, u_norm, t_ff_norm scaled to [0,1]) to keep feature magnitudes comparable and stabilize attention/optimization.
         """
 
-        return gym.spaces.Box(low=0, high=1, shape=(1,))
+        return gym.spaces.Dict({
+            "node_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_nodes, 8), dtype=np.float32),
+            "action_mask": gym.spaces.MultiBinary(self.n_nodes), # Boolean flag per node
+            "edge_index": gym.spaces.Box(low=0, high=self.n_nodes - 1, shape=(2, self.n_edges), dtype=np.int64), # int64 so torch.from_numpy(...).long() matches PyG expectations
+            "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_edges, 2), dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
+            "steps_left": gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32), # Normalized to 0-1
+        })
+        
 
     @property
     def action_space(self) -> gym.Space:
@@ -224,7 +287,7 @@ class TransitEnv(gym.Env):
             print(f"Initializing route at node: {choice}")
             return [choice]
 
-    def _allocate_demand_by_service(self, world: World, demand_csv: str, current_path: list = None, alpha: float = 0.3, radius: float = 0.5) -> None:
+    def _allocate_demand_by_service(self, world: World, demand_csv: str, current_path: list = None) -> None:
         """
         Assigns mode-specific demands based on the current bus route:
         - for OD pairs served by the route (both O and D on route)
@@ -262,8 +325,8 @@ class TransitEnv(gym.Env):
             orig, dest = str(row["orig"]), str(row["dest"])
             start_t, end_t, flow_rate = row["start_t"], row["end_t"], row["q"]
             if self._is_od_served(orig, dest, current_path_str):
-                bus_demand += flow_rate * alpha
-                car_demand += flow_rate * (1 - alpha)
+                bus_demand += flow_rate * self.alpha
+                car_demand += flow_rate * (1 - self.alpha)
                 total_demand += flow_rate
 
                 # Add demand to the world:
@@ -271,14 +334,14 @@ class TransitEnv(gym.Env):
                                 dest=dest, 
                                 t_start=start_t, 
                                 t_end=end_t, 
-                                flow=flow_rate * (1 - alpha), 
+                                flow=flow_rate * (1 - self.alpha), 
                                 mode="vehicle")
 
                 world.adddemand(orig=orig, 
                                 dest=dest, 
                                 t_start=start_t, 
                                 t_end=end_t, 
-                                flow=flow_rate * alpha, 
+                                flow=flow_rate * self.alpha, 
                                 mode="bus_passenger")
             else: 
                 car_demand += flow_rate
@@ -306,14 +369,67 @@ class TransitEnv(gym.Env):
             return False
         return orig in current_path_str and dest in current_path_str
 
-    def _get_state(self) -> Dict[str, Any]:
+    def _get_state(self, pretty_print: bool = False) -> Dict[str, Any]:
         """
-        Build observation state as a dict with:
+        Build observation state as a dict
+        Normalize as necessary.
 
+        The agent is designing route for a bus, however, both demands in the state are total demands.
+        - Total demand does not reflect what can be influenced by the agent.
+        - However, since the total demand is split by a fixed alpha, higher total demand means higher bus demand as well. 
+        - So the current setup should work out.
+        - Or we can show only the capturable demand in the path-aware demands?
+        - TODO: add this alpha multuplier as optional argument later.
         """
-        pass
+
+        # Nodes and node features:
+        node_features = np.zeros((self.n_nodes, 8), dtype=np.float32)
+        # Static node features:
+        node_features[:, 0] = self.node_coordinates_norm[:, 0] # x
+        node_features[:, 1] = self.node_coordinates_norm[:, 1] # y
+        node_features[:, 2] = self.node_degrees_norm # degree
+        node_features[:, 3] = self.demand_out / self.max_demand # d_out
+        node_features[:, 4] = self.demand_in / self.max_demand # d_in
+        
+        # Dymanic node features (path-aware demands):
+        path_indices = np.array([self.node_to_idx[node] for node in self.current_path]) # Set of nodes in the path
+
+        node_features[path_indices, 5] = 1.0 # in_path flag
+
+        demand_out_path = self.od_matrix[:, path_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
+        demand_in_path = self.od_matrix[path_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
+
+        node_features[:, 6] = demand_out_path / self.max_demand # d_out_path
+        node_features[:, 7] = demand_in_path / self.max_demand # d_in_path
+
+        # Action mask (also dynamic):
+        action_mask = np.zeros(self.n_nodes, dtype=np.int64) # 0 = not allowed, 1 = allowed
+        for neighbor in self.adj[self.current_path[-1]]: # Neighbor of the current path end (i.e., frontier nodes) are allowed
+            if neighbor not in self.current_path: # Safety check: no loops
+                idx = self.node_to_idx[neighbor] # Set according to index
+                action_mask[idx] = 1
+            else: 
+                Warning(f"Node {neighbor} is already in the path. This should not happen.")
+
+        # Edge index and edge features dont dynamically change. Already set in __init__.
+        # Steps left:
+        steps_taken = len(self.current_path) - 1  # -1 because we start with 1 node
+        steps_left_norm = 1.0 - (steps_taken / self.MAX_PATH_LENGTH)
+
+        # Return the state as a dict
+        state: Dict[str, Any] = {
+            "node_features": node_features,
+            "action_mask": action_mask,
+            "edge_index": self.edge_index,
+            "edge_features": self.edge_features,
+            "steps_left": np.array([steps_left_norm], dtype=np.float32)
+        }
+        
+        if pretty_print:
+            pretty_print_state(self, state, show_od=False)
+
+        return state
     
-
     def reset( self, ) -> None:
         """
         """
@@ -325,7 +441,7 @@ class TransitEnv(gym.Env):
         plot_network_and_demand(self.world, f"{self.world.name}_demand_network.png") # Visualize after building world
 
         # initial state
-        state = self._get_state()
+        state = self._get_state(pretty_print=True)
         return state, {}
     
     def build_world(self, network: str) -> World:
@@ -365,7 +481,7 @@ class TransitEnv(gym.Env):
         world.set_bus_handler(BusHandler)
 
         # Size of the demand is required in observation space.
-        world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_path, alpha=self.alpha, radius=self.radius)
+        world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_path)
         return world
         
     def apply_action(self, action: Any) -> None:
@@ -373,13 +489,6 @@ class TransitEnv(gym.Env):
         Invoked internally by step prior to state transition.
         Based on the node selected, increase the route path by one hop.
         """
-        pass
-    
-    def _apply_action_mask(self,) -> None:
-        """
-        """
-
-        MASK_VALUE = -1e10 # large negative 
         pass
     
     def compute_reward(self) -> float:
