@@ -94,4 +94,8 @@ Time horizons can be adjusted during simulation setup.
 The demand flow rates (q) are in vehicles/second, so you can adjust the simulation horizon by changing start_t and end_t:
 
 ================================================================================
+
+The timing (start and end time for a given flow) can vary based on horizon set
+1 vehicle per secon
+
 """

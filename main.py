@@ -8,15 +8,58 @@ from typing import Any, Dict, Optional, Sequence
 
 def train(config: Dict[str, Any]) -> Dict[str, float]:
     """
+    Train the transit route design agent to "learn to design routes".
+
+    Note: 
+    # Partial Route Simulation (Per-Step Rewards):
+    - Step 1: Route [A] → Run simulation with 1-node bus "route" → Get reward R1
+    - Step 2: Route [A→B] → Run simulation with 2-node bus route → Get reward R2  
+    - Step 3: Route [A→B→C] → Run simulation with 3-node bus route → Get reward R3
+    Pro: Agent gets immediate feedback after each node addition
+    Cons: 
+        - Computationally expensive (compared to route simulation after route completion)
+        - Partial routes might connect zero O-D pairs -> zero reward (still useful for learning?)
+        - For very large networks/ long-routes, becomes a problem
+
+    Objective: max E[R₁ + γR₂ + γ²R₃ + γ³R₄ + ...]
+    Agent learns: "What next node maximizes total discounted reward?"
     """
+
     train_env = TransitEnv(config)
-    state, info = train_env.reset()
+    episode_rewards = []
+    for episode in range(config["max_episodes"]):
+
+        state, info = train_env.reset()
+        episode_reward = 0
+        
+        print(f"\n=== Episode {episode + 1} ===")
+        for step in range(config["max_steps_per_episode"]):
+            
+            # TODO: Sample random action for now (will be replaced with policy later)
+            # Sampled action is an index of the node
+            action = train_env.action_space.sample() 
+
+            next_state, reward, terminated, truncated, step_info = train_env.step(action)
+            
+            episode_reward += reward
+            
+            print(f"\n\nStep {step + 1}: Action {action}, Reward: {reward:.2f}")
+            
+            # Episode ends when route is complete or constraints violated
+            if terminated or truncated:
+                print(f"Episode {episode + 1} finished after {step + 1} steps. Total reward: {episode_reward:.2f}")
+                break
+                
+            # Update state for next step
+            state = next_state
+        
+        episode_rewards.append(episode_reward)
+    
+    return {"episode_rewards": episode_rewards, "avg_reward": np.mean(episode_rewards)}
 
 def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003
     """
-    Evaluate a trained policy over fixed episodes.
-    Computes metrics and optionally records trajectories.
-    Details are left to the implementation.
+    Evaluate a trained policy
     """
     pass
 
@@ -49,6 +92,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
+    parser.add_argument("--max_episodes", type=int, default=10, help="Maximum number of training episodes")
+    parser.add_argument("--max_steps_per_episode", type=int, default=20, help="Maximum steps per episode (safety limit)")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
@@ -71,9 +116,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """
-    Parse arguments and dispatch to train or eval routines.
-    Serves as the CLI entry point for single-run experiments.
-    Avoids W&B sweep-specific logic by design.
     """
     parser = build_arg_parser()
     args = parser.parse_args(argv)

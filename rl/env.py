@@ -54,7 +54,7 @@ class TransitEnv(gym.Env):
         df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
 
         # Sort node names numerically, even though they are strings
-        self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: int(x))
+        self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: str(x))
         self.n_nodes = len(self.node_list)
         self.n_edges = int(len(df_links))
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}
@@ -435,16 +435,18 @@ class TransitEnv(gym.Env):
     
     def reset( self, ) -> None:
         """
+        TODO: Can I just sample the action space and get a random initial state?
         """
 
         self.current_path = self._initialize_current_path(use_random=self.random_path_init)
-        self.world = self.build_world(self.config.get("network"))
-
-        self.n_nodes, self.n_links = len(self.world.NODES), len(self.world.LINKS)
-        plot_network_and_demand(self.world, f"{self.world.name}_demand_network.png") # Visualize after building world
+        
+        # Optional: Build temp world for initial visualization only (not persistent)
+        temp_world = self.build_world(self.config.get("network"))
+        plot_network_and_demand(temp_world, f"{temp_world.name}_demand_network.png") # Visualize only after building world
 
         # initial state
         state = self._get_state(pretty_print=True)
+
         return state, {}
     
     def build_world(self, network: str) -> World:
@@ -487,7 +489,7 @@ class TransitEnv(gym.Env):
         world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_path)
         return world
         
-    def _apply_action(self, action: Any) -> None:
+    def _apply_action(self, action: str) -> None:
         """
         Invoked internally by step prior to state transition.
         - Based on the action (new node selected), increase the route path by one hop.
@@ -500,7 +502,7 @@ class TransitEnv(gym.Env):
         """
 
         # 1. Create bus route based on current path
-        self.current_path = [str(node) for node in self.current_path] + [str(action)]
+        self.current_path = [str(node) for node in self.current_path] + [action]
         
         # 2. Determine bus stops based on STOP_SPACING
         # For simplicity, make all nodes in path as stops (can be refined later)
@@ -517,6 +519,7 @@ class TransitEnv(gym.Env):
         # For a 1-hour simulation with SERVICE_FREQUENCY=6, this gives us 6 buses
         # For a 2-hour simulation with SERVICE_FREQUENCY=6, this gives us 12 buses
         num_buses_to_spawn = int(self.horizon / headway_seconds)
+        print(f"Spawning {num_buses_to_spawn} buses")
         
         # Spawn buses at regular intervals throughout the simulation
         for bus_index in range(num_buses_to_spawn):
@@ -538,17 +541,18 @@ class TransitEnv(gym.Env):
                 # Set the bus route:
                 bus.set_bus_route(
                     path=self.current_path,
-                    stops=self.current_path,
+                    stops=bus_stops,
                     is_circular=False, # Do not make routes circular 
                     capacity=self.BUS_CAPACITY,
                     stop_duration=self.STOP_DURATION,
                     service_frequency=self.SERVICE_FREQUENCY, # Still pass this for record-keeping
                 )
+        
+        # Print bus summary AFTER all buses are created
+        buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
+        print(f"\nBuses in simulation: {len(buses)} - {[b.name for b in buses]}")
 
-                print(f"\nAdded bus {bus_name}\n")
-
-
-    def _step_until(self, until_t: int) -> Dict[str, int]:
+    def _step_until(self, until_t: int, print_metrics: bool = True) -> Dict[str, int]:
         """
         Run the simulation until the given time.
         Total travel time consists of passengers currently in bus still traveling as well as the ones who completed.
@@ -606,8 +610,22 @@ class TransitEnv(gym.Env):
             'time_s': int(self.world.TIME)
         })
         
-        return metrics
+        if print_metrics:
+            print("\n" + "="*50)
+            print("SIMULATION METRICS")
+            print("="*50)
+            print(f"Simulation Time:          {metrics['time_s']:,}s")
+            print(f"Passengers Wanting Bus:   {metrics['total_passengers_wanting_to_onboard']:,}")
+            print(f"Passengers Onboarded:     {metrics['total_passengers_onboarded']:,}")
+            print(f"Passengers Waiting:       {metrics['total_passengers_waiting_at_stops']:,}")
+            print(f"Passengers Completed:     {metrics['total_passengers_completed_trip']:,}")
+            print(f"Total Wait Time:          {metrics['total_wait_time']:,.1f}s")
+            print(f"Total Movement Time:      {metrics['total_movement_time']:,.1f}s")
+            print(f"Total Travel Time:        {metrics['total_travel_time']:,.1f}s")
+            print("="*50)
 
+        # self.world.bus_handler.print_bus_activity_history()
+        return metrics
 
     def compute_reward(self, sim_result: Dict[str, int]) -> float:
         """
@@ -629,21 +647,27 @@ class TransitEnv(gym.Env):
         reward_component_1 = -sim_result['total_travel_time']
         
         total_reward = reward_component_1
+
         print(f"Total reward: {total_reward}: \n\tComponent 1: {reward_component_1}")
         return total_reward
 
-    def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+    def step(self, action: str) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         """
         Return (obs, reward, terminated, truncated, info).
         Run the simulation on the current route and get metrics.
         """
 
-        # 0. During intialization, build_world already adds the network and the classified demand (bus vs car).
-        # 1. Add action to current_path, spawn necessary buses, and set their routes.
-        self._apply_action(action)
+        # 0. Build_world needs to happen every step.
+        # i.e., add the network and the classified demand (bus vs car).
+        self.world = self.build_world(self.config.get("network"))
 
+        # 1. Add action to current_path, spawn necessary buses, and set their routes.
+        action = self.idx_to_node[action]
+        self._apply_action(action)
+        print(f"Current path: {self.current_path}")
+        
         # 2. Run the full simulation upto horizon end.
-        sim_result = self._step_until(self.horizon_s)
+        sim_result = self._step_until(self.horizon)
 
         # 3. Compute reward
         reward = self.compute_reward(sim_result)
@@ -661,6 +685,7 @@ class TransitEnv(gym.Env):
 
     def render(self) -> None:
         """
+        - Episode simulation gif.
         """
         pass
 
