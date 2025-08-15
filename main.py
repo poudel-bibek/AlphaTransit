@@ -47,6 +47,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--horizon", type=int, default=3600, help="Simulation horizon")
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step")
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
+    parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
+    parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")

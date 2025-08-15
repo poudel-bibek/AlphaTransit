@@ -33,6 +33,8 @@ class TransitEnv(gym.Env):
         # Important params: 
         self.SERVICE_FREQUENCY = self.config.get("service_frequency")
         self.STOP_SPACING = self.config.get("stop_spacing")
+        self.BUS_CAPACITY = self.config.get("bus_capacity")
+        self.STOP_DURATION = self.config.get("stop_duration")
         self.alpha = self.config.get("alpha")
         self.radius = self.config.get("radius")
         self.random_path_init = self.config.get("random_path_init")
@@ -166,9 +168,11 @@ class TransitEnv(gym.Env):
             - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
             - in_path flag - binary
             - d_out_path: sum of all O-D flows emanating from node i to nodes within the path - divide by max demand in the network   
-                - "If I connect i to the path, how many of i's trips could be served by the current path?"
+                - "If I add node i to the path, how much demand from i could be served by the existing path nodes?"
+                - Ridership potential of each node i.e., if I add this node 5 to the path, how many passengers who start from node 5 want to go to nodes that are already in the current path?
             - d_in_path: sum of all O-D flows arriving at node i from nodes within the path - divide by max demand in the network
-                - "How much demand would ride from existing path nodes to i if i becomes served?"
+                - "If I add node i to the path, how much demand from existing path nodes could be reach node i?"
+                - Attractiveness of the node i.e., if I add this node 5 to the path, how many passengers from the current path nodes want to go to node 5?
         2. Action mask (to inform the policy about the feasible set):
             - For each node, binary i.e. 0 = allowed action, 1 = not allowed action.
             - Not allowed actions:
@@ -321,7 +325,7 @@ class TransitEnv(gym.Env):
         bus_demand = 0 
         car_demand = 0 
         for _, row in demand_df.iterrows():
-            # Coerce to strings explicitly to align with node names in World
+            
             orig, dest = str(row["orig"]), str(row["dest"])
             start_t, end_t, flow_rate = row["start_t"], row["end_t"], row["q"]
             if self._is_od_served(orig, dest, current_path_str):
@@ -356,7 +360,6 @@ class TransitEnv(gym.Env):
                                 mode="vehicle")
 
         print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
-        # Print demand split stats:
 
         return world
 
@@ -484,23 +487,170 @@ class TransitEnv(gym.Env):
         world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_path)
         return world
         
-    def apply_action(self, action: Any) -> None:
+    def _apply_action(self, action: Any) -> None:
         """
         Invoked internally by step prior to state transition.
-        Based on the node selected, increase the route path by one hop.
+        - Based on the action (new node selected), increase the route path by one hop.
+        - Add stops based on STOP_SPACING.
+
+        Add necessary vehicles to the world.
+        - Add buses based on the current path and SERVICE_FREQUENCY.
+        # TODO: This only works on a single path.
+
         """
-        pass
-    
-    def compute_reward(self) -> float:
+
+        # 1. Create bus route based on current path
+        self.current_path = [str(node) for node in self.current_path] + [str(action)]
+        
+        # 2. Determine bus stops based on STOP_SPACING
+        # For simplicity, make all nodes in path as stops (can be refined later)
+        bus_stops = self.current_path[::self.STOP_SPACING]
+
+        # Calculate headway (time between buses) based on SERVICE_FREQUENCY
+        # SERVICE_FREQUENCY is buses per hour, so:
+        # - If SERVICE_FREQUENCY = 1: headway = 3600s (one bus for the whole hour)
+        # - If SERVICE_FREQUENCY = 2: headway = 1800s (buses at 0s and 1800s)  
+        # - If SERVICE_FREQUENCY = 6: headway = 600s (buses every 10 minutes)
+        headway_seconds = 3600 / self.SERVICE_FREQUENCY
+        
+        # Calculate how many buses we need to spawn during the simulation
+        # For a 1-hour simulation with SERVICE_FREQUENCY=6, this gives us 6 buses
+        # For a 2-hour simulation with SERVICE_FREQUENCY=6, this gives us 12 buses
+        num_buses_to_spawn = int(self.horizon / headway_seconds)
+        
+        # Spawn buses at regular intervals throughout the simulation
+        for bus_index in range(num_buses_to_spawn):
+            # Calculate when this bus should start
+            departure_time = bus_index * headway_seconds
+            
+            bus_name = f"bus_route_{bus_index}"
+            # Only spawn if within simulation horizon
+            if departure_time < self.horizon:
+                # Create bus with staggered departure time
+                bus = self.world.addVehicle(
+                    orig=self.current_path[0], 
+                    dest=self.current_path[1],  # Next node in path
+                    departure_time=int(departure_time),
+                    name=bus_name, # unique name for each bus
+                    mode="bus"
+                )
+
+                # Set the bus route:
+                bus.set_bus_route(
+                    path=self.current_path,
+                    stops=self.current_path,
+                    is_circular=False, # Do not make routes circular 
+                    capacity=self.BUS_CAPACITY,
+                    stop_duration=self.STOP_DURATION,
+                    service_frequency=self.SERVICE_FREQUENCY, # Still pass this for record-keeping
+                )
+
+                print(f"\nAdded bus {bus_name}\n")
+
+
+    def _step_until(self, until_t: int) -> Dict[str, int]:
         """
+        Run the simulation until the given time.
+        Total travel time consists of passengers currently in bus still traveling as well as the ones who completed.
         """
-        pass
+
+        self.world.exec_simulation(until_t=until_t)
+        # self.world.analyzer.get_metrics()
+
+        # Only gather passenger specific metrics here:
+        metrics = {
+            'total_passengers_wanting_to_onboard': 0,
+            'total_passengers_onboarded': 0, 
+            'total_passengers_waiting_at_stops': 0,
+            'total_passengers_completed_trip': 0,
+            'total_wait_time': 0.0,
+            'total_movement_time': 0.0, 
+            'total_travel_time': 0.0,
+        }
+
+        handler = self.world.bus_handler
+            
+        # 1. Count passengers by current state
+        pending_count = len(handler.pending_passengers)
+        waiting_count = sum(len(passengers) for passengers in handler.waiting_passengers.values())
+        
+        # Count passengers currently on buses
+        onboard_count = 0
+        current_onboard_travel_time = 0.0  # Time spent by current passengers
+        
+        for vehicle in self.world.VEHICLES.values():
+            if hasattr(vehicle, 'mode') and vehicle.mode == 'bus':
+                if hasattr(vehicle, 'passengers'):
+                    onboard_count += len(vehicle.passengers)
+                    # Add partial travel time for current passengers
+                    for passenger in vehicle.passengers:
+                        if hasattr(passenger, 'board_time') and passenger.board_time is not None:
+                            current_onboard_travel_time += (self.world.TIME - passenger.board_time)
+        
+        completed_count = len(handler.passenger_stats)
+        
+        # 2. Calculate time metrics from completed passengers
+        completed_wait_time = sum(p['wait_time'] for p in handler.passenger_stats)
+        completed_movement_time = sum(p['in_vehicle_time'] for p in handler.passenger_stats) 
+        completed_total_time = sum(p['total_travel_time'] for p in handler.passenger_stats)
+        
+        # 3. Fill metrics
+        metrics.update({
+            'total_passengers_wanting_to_onboard': pending_count + waiting_count,
+            'total_passengers_onboarded': onboard_count,
+            'total_passengers_waiting_at_stops': waiting_count,
+            'total_passengers_completed_trip': completed_count,
+            'total_wait_time': completed_wait_time,
+            'total_movement_time': completed_movement_time + current_onboard_travel_time,
+            'total_travel_time': completed_total_time + current_onboard_travel_time,
+            'time_s': int(self.world.TIME)
+        })
+        
+        return metrics
+
+
+    def compute_reward(self, sim_result: Dict[str, int]) -> float:
+        """
+        Components: 
+        1.Travel efficiency: 
+        - First priority on what we are optimizing for. 
+        - Minimize total travel time across all passengers. 
+            - Do not use average travel time. This could lead to reward hacking i.e., agent may connect nodes with low demand.
+            - Using total travel time also accounts for ``demand-weighted efficiency''.
+
+        2. Further reward hacking prevention: 
+        - Add a utilization component to the reward
+        - Intuition: good routes cover high-demand O-D pairs 
+        - Set a minimum total demand that must be served by the route?
+        """
+ 
+        # 1. Extract travel time data and compute component 1: travel efficiency
+        # The negative of total travel time (minimize travel time = maximize negative travel time)
+        reward_component_1 = -sim_result['total_travel_time']
+        
+        total_reward = reward_component_1
+        print(f"Total reward: {total_reward}: \n\tComponent 1: {reward_component_1}")
+        return total_reward
 
     def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         """
         Return (obs, reward, terminated, truncated, info).
+        Run the simulation on the current route and get metrics.
         """
-        pass
+
+        # 0. During intialization, build_world already adds the network and the classified demand (bus vs car).
+        # 1. Add action to current_path, spawn necessary buses, and set their routes.
+        self._apply_action(action)
+
+        # 2. Run the full simulation upto horizon end.
+        sim_result = self._step_until(self.horizon_s)
+
+        # 3. Compute reward
+        reward = self.compute_reward(sim_result)
+
+        # 4. Return 
+        return self._get_state(), reward, False, False, {}
+
 
     def close(self) -> None:
         """
