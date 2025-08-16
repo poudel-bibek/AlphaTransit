@@ -1,4 +1,4 @@
-from typing import Any, Tuple
+from typing import Any, Tuple, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,8 +9,11 @@ from torch_geometric.data import Batch
 
 class GATV2ActorCritic(nn.Module):
     """
-    Actor-Critic with GATv2 backbone for graph-based RL.
-    Shared GATv2 features with separate actor/critic heads.
+    Actor-Critic with shared GATv2 features with separate actor/critic heads.
+    - GATv2 processes graph-structured data (nodes, edges) to produce node embeddings, 
+      which are then aggregated into a graph-level features in readout layer, where we have a fixed sized vector.
+    - The steps_left is a scalar that applies to the whole graph, which we concatentate after the graph-level features.
+        - i.e., injecting non graph global feature.
     """
 
     def __init__(
@@ -20,7 +23,8 @@ class GATV2ActorCritic(nn.Module):
         hidden_dim: int = 256,
         num_heads: int = 4,
         num_layers: int = 3,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        global_dim: int = 1  # For steps_left
     ) -> None:
         """
         Initialize GATv2 backbone and actor-critic heads.
@@ -35,6 +39,7 @@ class GATV2ActorCritic(nn.Module):
         """
         super().__init__()
         self.num_actions = num_actions
+        self.global_dim = global_dim
         
         # Build GATv2 backbone
         self.gat_layers = nn.ModuleList()
@@ -48,7 +53,8 @@ class GATV2ActorCritic(nn.Module):
                     out_dim,
                     heads=num_heads if i < num_layers - 1 else 1,
                     dropout=dropout,
-                    concat=i < num_layers - 1
+                    concat=i < num_layers - 1,
+                    edge_dim=2  # Our edge features: [length_norm, speed_norm]
                 )
             )
             in_dim = hidden_dim
@@ -57,14 +63,14 @@ class GATV2ActorCritic(nn.Module):
         
         # Actor head for node selection
         self.actor_net = nn.Sequential(
-            self.layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            self.layer_init(nn.Linear(hidden_dim + self.global_dim, hidden_dim)),
             nn.Tanh(),
             self.layer_init(nn.Linear(hidden_dim, num_actions), std=0.01)
         )
         
         # Critic head for value estimation
         self.critic_net = nn.Sequential(
-            self.layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            self.layer_init(nn.Linear(hidden_dim + self.global_dim, hidden_dim)),
             nn.Tanh(),
             self.layer_init(nn.Linear(hidden_dim, 1), std=1.0)
         )
@@ -73,7 +79,6 @@ class GATV2ActorCritic(nn.Module):
     def _apply_action_mask(self,) -> None:
         """
         """
-
         MASK_VALUE = -1e10 # large negative 
         pass
     
@@ -91,18 +96,18 @@ class GATV2ActorCritic(nn.Module):
         Forward pass through GATv2 backbone.
         Returns node-level features and batch assignment.
         """
-        x, edge_index = graph_batch.x, graph_batch.edge_index
+        x, edge_index, edge_attr = graph_batch.x, graph_batch.edge_index, graph_batch.edge_attr
         
         # Pass through GATv2 layers
         for i, gat_layer in enumerate(self.gat_layers):
-            x = gat_layer(x, edge_index)
+            x = gat_layer(x, edge_index, edge_attr)
             if i < len(self.gat_layers) - 1:
                 x = F.elu(x)
                 x = self.dropout(x)
         
         return x, graph_batch.batch
 
-    def readout_layer(self, graph_batch: Batch) -> torch.Tensor:
+    def readout_layer(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Aggregate node embeddings into graph-level features.
         Flexible pooling - can easily swap to max, sum, or attention pooling.
@@ -110,6 +115,11 @@ class GATV2ActorCritic(nn.Module):
         node_features, batch = self.forward(graph_batch)
         # Can easily change to global_max_pool, global_add_pool, etc.
         graph_features = global_mean_pool(node_features, batch)
+        
+        # Concatenate steps_left if provided
+        if steps_left is not None:
+            graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
+        
         return graph_features
 
     def actor(self, features: torch.Tensor) -> torch.Tensor:
@@ -126,7 +136,7 @@ class GATV2ActorCritic(nn.Module):
         """
         return self.critic_net(features).squeeze(-1)
 
-    def act(self, observations: Batch, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def act(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Select next node to add to route.
         Samples stochastically during training, can be deterministic for eval.
@@ -136,13 +146,13 @@ class GATV2ActorCritic(nn.Module):
             log_probs: Log probabilities of selections
             values: Value estimates
         """
-        features = self.readout_layer(observations)
+        features = self.readout_layer(graph_batch, steps_left)
         values = self.critic(features)
         logits = self.actor(features)
         
         # Mask invalid nodes if provided
-        if hasattr(observations, 'action_mask'):
-            logits = logits.masked_fill(~observations.action_mask, -1e8)
+        if hasattr(graph_batch, 'action_mask'):
+            logits = logits.masked_fill(~graph_batch.action_mask, -1e8)
         
         dist = Categorical(logits=logits)
         
@@ -155,7 +165,7 @@ class GATV2ActorCritic(nn.Module):
         
         return actions, log_probs, values
 
-    def evaluate(self, observations: Batch, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def evaluate(self, graph_batch: Batch, actions: torch.Tensor, steps_left: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute log-probs, entropy, and values for PPO loss.
         
@@ -164,13 +174,13 @@ class GATV2ActorCritic(nn.Module):
             entropy: Policy entropy for exploration
             values: Value estimates
         """
-        features = self.readout_layer(observations)
+        features = self.readout_layer(graph_batch, steps_left)
         values = self.critic(features)
         logits = self.actor(features)
         
         # Mask invalid nodes if provided
-        if hasattr(observations, 'action_mask'):
-            logits = logits.masked_fill(~observations.action_mask, -1e8)
+        if hasattr(graph_batch, 'action_mask'):
+            logits = logits.masked_fill(~graph_batch.action_mask, -1e8)
         
         dist = Categorical(logits=logits)
         log_probs = dist.log_prob(actions)

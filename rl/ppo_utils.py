@@ -28,7 +28,7 @@ def collate_fn(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     # Stack other tensors
     collated = {'obs': batched_obs}
     for key, values in other_data.items():
-        if isinstance(values[0], (int, float, np.ndarray)):
+        if isinstance(values[0], (int, float, np.number, np.ndarray)):
             collated[key] = torch.tensor(values, dtype=torch.float32)
         else:
             collated[key] = torch.stack(values)

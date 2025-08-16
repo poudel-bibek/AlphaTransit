@@ -1,12 +1,14 @@
+import os
 import random
 import numpy as np
 import pandas as pd
 import gymnasium as gym
 from uxsim import World
 from pathlib import Path
+from datetime import datetime
 from collections import defaultdict
 from uxsim.BusHandler import BusHandler
-from rl.env_utils import plot_network_and_demand, pretty_print_state
+from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, pretty_print_state
 from typing import Any, Dict, Optional, Tuple
 
 class TransitEnv(gym.Env):
@@ -29,6 +31,7 @@ class TransitEnv(gym.Env):
         self.delta_n = self.config.get("delta_n")
 
         self.network_dir = Path(__file__).resolve().parents[1] / "networks" / self.config.get("network")
+        self.training_save_dir = None
 
         # Important params: 
         self.SERVICE_FREQUENCY = self.config.get("service_frequency")
@@ -440,9 +443,16 @@ class TransitEnv(gym.Env):
 
         self.current_path = self._initialize_current_path(use_random=self.random_path_init)
         
+        now = datetime.now()
+        self.training_save_dir = f"./training_data/{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
+        img_dir = os.path.join(self.training_save_dir, "images")
+        os.makedirs(img_dir, exist_ok=True)
+
         # Optional: Build temp world for initial visualization only (not persistent)
         temp_world = self.build_world(self.config.get("network"))
-        plot_network_and_demand(temp_world, f"{temp_world.name}_demand_network.png") # Visualize only after building world
+        output_path = os.path.join(img_dir, f"00_{self.config.get('network')}_demand_network.png")
+
+        plot_network_and_demand(temp_world, output_path) # Visualize only after building world
 
         # initial state
         state = self._get_state(pretty_print=True)
@@ -655,12 +665,17 @@ class TransitEnv(gym.Env):
         """
         Return (obs, reward, terminated, truncated, info).
         Run the simulation on the current route and get metrics.
-        """
 
+        Terminal conditions: 
+            - Max path length reached. Max path length is also the number of steps in the episode.
+        Truncation conditions: 
+            - Gets stuck in a dead-end/ eating into previous path situation.
+        """
+        
         # 0. Build_world needs to happen every step.
         # i.e., add the network and the classified demand (bus vs car).
         self.world = self.build_world(self.config.get("network"))
-
+        
         # 1. Add action to current_path, spawn necessary buses, and set their routes.
         action = self.idx_to_node[action]
         self._apply_action(action)
@@ -668,24 +683,23 @@ class TransitEnv(gym.Env):
         
         # 2. Run the full simulation upto horizon end.
         sim_result = self._step_until(self.horizon)
-
+        
         # 3. Compute reward
         reward = self.compute_reward(sim_result)
+        
+        # 4. Check termination
+        terminated = len(self.current_path) >= self.MAX_PATH_LENGTH
+        truncated = False
+        
+        # 5. Return 
+        return self._get_state(), reward, terminated, truncated, {}
 
-        # 4. Return 
-        return self._get_state(), reward, False, False, {}
-
-
-    def close(self) -> None:
+    def render(self, render_name: str) -> None:
         """
-        Terminal conditions: 
-        - Max path length reached.
-        """
-        pass
-
-    def render(self) -> None:
-        """
+        - Visualize network + path.
         - Episode simulation gif.
         """
-        pass
+        img_dir = os.path.join(self.training_save_dir, "images")
+        output_loc = os.path.join(img_dir, render_name)
+        plot_network_demand_and_path(self.world, self.current_path, output_loc)
 

@@ -47,3 +47,12 @@ uxsim.egg-info/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+
+./training_data/
+
+training_data/
+
+./training_data/*
+
+training_data/*

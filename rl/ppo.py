@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
-from ppo_utils import DatasetClass, Memory, collate_fn
+from rl.ppo_utils import DatasetClass, Memory, collate_fn
 
 
 class PPO:
@@ -45,6 +45,8 @@ class PPO:
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         
+        self.device = next(self.model.parameters()).device
+        
         # Memory buffer
         self.memory = Memory()
 
@@ -74,14 +76,14 @@ class PPO:
         # PPO epochs
         for _ in range(self.ppo_epochs):
             for batch in dataloader:
-                obs = batch['obs']
-                actions = batch['actions']
-                old_log_probs = batch['log_probs']
-                advantages = batch['advantages']
-                returns = batch['returns']
+                obs = batch['obs'].to(self.model.device)
+                actions = batch['actions'].to(self.model.device)
+                old_log_probs = batch['log_probs'].to(self.model.device)
+                advantages = batch['advantages'].to(self.model.device)
+                returns = batch['returns'].to(self.model.device)
                 
                 # Get current policy outputs
-                log_probs, entropy, values = self.model.evaluate(obs, actions)
+                log_probs, entropy, values = self.model.evaluate(obs, actions, steps_left=obs.steps_left)
                 
                 # Normalize advantages
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -93,8 +95,8 @@ class PPO:
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                 
                 # Value loss (clipped)
-                values_clipped = batch['values'] + torch.clamp(
-                    values - batch['values'], -self.clip_ratio, self.clip_ratio
+                values_clipped = batch['values'].to(self.model.device) + torch.clamp(
+                    values - batch['values'].to(self.model.device), -self.clip_ratio, self.clip_ratio
                 )
                 value_loss1 = (values - returns) ** 2
                 value_loss2 = (values_clipped - returns) ** 2

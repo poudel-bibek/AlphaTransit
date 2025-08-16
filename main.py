@@ -4,7 +4,25 @@ import random
 import argparse
 import numpy as np
 from rl.env import TransitEnv
+from rl.models import GATV2ActorCritic
+from rl.ppo import PPO
+from torch_geometric.data import Data, Batch
 from typing import Any, Dict, Optional, Sequence
+
+def state_to_pyg(state: Dict[str, Any]) -> Data:
+    """
+    """
+    
+    x = torch.tensor(state["node_features"], dtype=torch.float32)
+    edge_index = torch.tensor(state["edge_index"], dtype=torch.long)
+    edge_attr = torch.tensor(state["edge_features"], dtype=torch.float32)
+    action_mask = torch.tensor(state["action_mask"], dtype=torch.bool)
+    steps_left = torch.tensor(state["steps_left"], dtype=torch.float32)
+    
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    data.action_mask = action_mask
+    data.steps_left = steps_left
+    return data
 
 def train(config: Dict[str, Any]) -> Dict[str, float]:
     """
@@ -23,37 +41,97 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
 
     Objective: max E[R₁ + γR₂ + γ²R₃ + γ³R₄ + ...]
     Agent learns: "What next node maximizes total discounted reward?"
+
+    # action = env.action_space.sample()
     """
-
-    train_env = TransitEnv(config)
+    
+    env = TransitEnv(config)
+    node_feature_dim = env.observation_space["node_features"].shape[1]
+    num_actions = env.action_space.n
+    
+    model = GATV2ActorCritic(node_feature_dim, num_actions)
+    model.to(config["device"])
+    
+    ppo = PPO(model, config)
+    
     episode_rewards = []
-    for episode in range(config["max_episodes"]):
-
-        state, info = train_env.reset()
-        episode_reward = 0
+    
+    for episode in range(1, config["max_episodes"] + 1):
+        print(f"\n=== Episode {episode} ===")
         
-        print(f"\n=== Episode {episode + 1} ===")
-        for step in range(config["max_steps_per_episode"]):
+        state, _ = env.reset()
+        episode_reward = 0
+        episode_steps = 0
+        
+        while True:
+            data = state_to_pyg(state)
+            batch = Batch.from_data_list([data]).to(config["device"])
+            steps_left = batch.steps_left.to(config["device"])
             
-            # TODO: Sample random action for now (will be replaced with policy later)
-            # Sampled action is an index of the node
-            action = train_env.action_space.sample() 
-
-            next_state, reward, terminated, truncated, step_info = train_env.step(action)
+            with torch.no_grad():
+                action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False)
+            
+            action = action_tensor.cpu().item()
+            log_prob = log_prob_tensor.cpu().item()
+            value = value_tensor.cpu().item()
+            
+            next_state, reward, terminated, truncated, _ = env.step(action)
             
             episode_reward += reward
             
-            print(f"\n\nStep {step + 1}: Action {action}, Reward: {reward:.2f}")
+            # Store on CPU
+            store_data = Data(
+                x=data.x.cpu(),
+                edge_index=data.edge_index.cpu(),
+                edge_attr=data.edge_attr.cpu(),
+                action_mask=data.action_mask.cpu(),
+                steps_left=data.steps_left.cpu()
+            )
             
-            # Episode ends when route is complete or constraints violated
-            if terminated or truncated:
-                print(f"Episode {episode + 1} finished after {step + 1} steps. Total reward: {episode_reward:.2f}")
-                break
-                
-            # Update state for next step
+            ppo.memory.store({
+                'obs': store_data,
+                'action': action,
+                'reward': reward,
+                'value': value,
+                'log_prob': log_prob,
+                'done': terminated or truncated
+            })
+            
             state = next_state
+            episode_steps += 1
+            
+            env.render(f"ep_{episode}_step_{episode_steps}.png")
+            
+            if terminated or truncated:
+                break
+        
+        # After episode, compute last value if not (terminated or truncated)
+        if not (terminated or truncated):
+            data = state_to_pyg(state)
+            batch = Batch.from_data_list([data]).to(config["device"])
+            steps_left = batch.steps_left.to(config["device"])
+            
+            with torch.no_grad():
+                _, _, last_value_tensor = model.act(batch, steps_left)
+            last_value = last_value_tensor.cpu().item()
+            
+            # Append dummy transition for last value
+            ppo.memory.store({
+                'obs': store_data,  # reuse last
+                'action': 0,  # dummy
+                'reward': 0,
+                'value': last_value,
+                'log_prob': 0,
+                'done': True
+            })
         
         episode_rewards.append(episode_reward)
+        print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
+        
+        # Update after each episode
+        if len(ppo.memory) > 0:
+            stats = ppo.update()
+            print("Update stats:", stats)
     
     return {"episode_rewards": episode_rewards, "avg_reward": np.mean(episode_rewards)}
 
@@ -93,7 +171,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--max_episodes", type=int, default=10, help="Maximum number of training episodes")
-    parser.add_argument("--max_steps_per_episode", type=int, default=20, help="Maximum steps per episode (safety limit)")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
@@ -120,7 +197,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     config: Dict[str, Any] = vars(args)
-
+    
+    # config["max_steps_per_episode"] = config["max_path_length"] # Not using at the moment.
+    
     # Set seeds as the very first thing after parsing CLI
     set_global_seeds(args.seed)
 
