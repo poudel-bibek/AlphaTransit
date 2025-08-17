@@ -46,6 +46,8 @@ class TransitEnv(gym.Env):
         self.MAX_PATH_LENGTH = self.config.get("max_path_length")
         self.MIN_PATH_LENGTH = self.config.get("min_path_length")
         self.world, self.current_path = None, []
+        self.N_NODE_FEATURES = 9
+        self.N_EDGE_FEATURES = 2
 
         # Lookup dicts for efficient queries:
         nodes_csv = self.network_dir / f"{self.config.get('network')}_nodes.csv"
@@ -57,16 +59,11 @@ class TransitEnv(gym.Env):
         df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
 
         # Sort node names numerically, even though they are strings
-        self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: str(x))
+        self.node_list = sorted(list(df_nodes["name"].unique()))
         self.n_nodes = len(self.node_list)
         self.n_edges = int(len(df_links))
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
-
-        print(f"Number of nodes: {self.n_nodes}")
-        print(f"Node list: {self.node_list}")
-        print(f"Node to idx: {self.node_to_idx}")
-        print(f"Idx to node: {self.idx_to_node}")
 
         # Compute adjacency matrix (assuming directed graph):
         self.adj = defaultdict(set)
@@ -74,8 +71,7 @@ class TransitEnv(gym.Env):
             # Force to strings to match node identifiers
             x, y = str(row["start"]), str(row["end"])
             self.adj[x].add(y)
-        print(f"\nAdjacency matrix: {self.adj}")
-
+        
         # Demand matrix: 
         self.od_matrix = np.zeros((self.n_nodes, self.n_nodes))
         for _, row in df_demand.iterrows():
@@ -83,29 +79,18 @@ class TransitEnv(gym.Env):
                 i = self.node_to_idx[row["orig"]]
                 j = self.node_to_idx[row["dest"]]
                 self.od_matrix[i, j] += row["q"]
-        # Pretty OD matrix preview
-        try:
-            od_df = pd.DataFrame(self.od_matrix, index=self.node_list, columns=self.node_list)
-            with pd.option_context('display.max_rows', 20, 'display.max_columns', 20, 'display.width', 120):
-                print("\nOD matrix (preview):\n", od_df.round(4))
-        except Exception:
-            print(f"\nOD matrix: {self.od_matrix}")
 
         # Demand vectors:
         self.demand_out = self.od_matrix.sum(axis=1) # Trips starting from node i
         self.demand_in = self.od_matrix.sum(axis=0) # Trips ending at node i
-        print(f"\nDemand out: {self.demand_out}")
-        print(f"Demand in: {self.demand_in}")
 
         # Normalization constants: 
         self.max_demand = max(self.demand_out.max(), self.demand_in.max()) 
         self.min_demand = min(self.demand_out.min(), self.demand_in.min())
-        print(f"Max demand: {self.max_demand}, Min demand: {self.min_demand}")
-
+                
         self.max_degree = max(len(neighbors) for neighbors in self.adj.values())
         self.min_degree = min(len(neighbors) for neighbors in self.adj.values()) 
-        print(f"Max degree: {self.max_degree}, Min degree: {self.min_degree}")
-
+        
         self.min_x = df_nodes["x"].min()
         self.max_x = df_nodes["x"].max()
         self.min_y = df_nodes["y"].min()
@@ -162,26 +147,26 @@ class TransitEnv(gym.Env):
             - Path nodes
         - Budget state:
             - Remaining number of nodes to add.
-
+        
         ##########
-        1. For each node, in the network, following features: 
+        1. For each node in the network: 
             - coordinates (x, y) - min-max normalized
             - degree - divide by max degree in the network
             - d_out: sum of all O-D flows emanating from node i  - divide by max demand in the network
             - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
-            - in_path flag - binary
             - d_out_path: sum of all O-D flows emanating from node i to nodes within the path - divide by max demand in the network   
                 - "If I add node i to the path, how much demand from i could be served by the existing path nodes?"
                 - Ridership potential of each node i.e., if I add this node 5 to the path, how many passengers who start from node 5 want to go to nodes that are already in the current path?
             - d_in_path: sum of all O-D flows arriving at node i from nodes within the path - divide by max demand in the network
                 - "If I add node i to the path, how much demand from existing path nodes could be reach node i?"
                 - Attractiveness of the node i.e., if I add this node 5 to the path, how many passengers from the current path nodes want to go to node 5?
-        2. Action mask (to inform the policy about the feasible set):
-            - For each node, binary i.e. 0 = allowed action, 1 = not allowed action.
-            - Not allowed actions:
-                - If node is already in the path.
-            - This is not an intrinsic property of the node, it's a constraint.
-        3. Edges: 
+            - in_path flag: binary (1 if node is in the path, else 0)
+            - is_valid_next: binary (1 if adjacent to current frontier and not in path, else 0)
+                - inform the policy about the validity of next nodes to select
+                - Not allowed if:
+                    - Node is already in the path.
+                    - Node is not adjacent to the current frontier.
+        2. Edges: 
             - Edge index (to indicate connectivity):
                 - For policy networks like GATv2, edge index is required. edge_index = a compact list of directed edges using node indices.
                 (https://pytorch-geometric.readthedocs.io/en/2.6.1/generated/torch_geometric.nn.conv.GATv2Conv.html)
@@ -194,15 +179,16 @@ class TransitEnv(gym.Env):
                 - Edge features:
                     - length
                     - free_flow_speed (u)
-        4. Steps left until max_route_length is reached.
+
+        3. Steps left until max_route_length is reached. (Constraint)
         
         Notes: 
         - d_out_path and d_in_path are "path-aware" demand service vectors
         - How to enforce the action mask?
-            - I could enforece it simulation level i.e., by just disallowing the action (env rejection) but this is not a good idea for several reasons.
+            # Option 1: Enforce it simulation level i.e., by simply disallowing the action (when it is selected). However, this is not a good idea for several reasons.
                 1. Hurts learning stability: 
-                - PPO computes log_probs from policy's distribution, if samplles are rejected (and env substitutes the action for another) then the log_probs are not valid.
-
+                - PPO computes log_probs from policy's distribution, if samples are rejected (and env substitutes the action for another) then the log_probs are not valid.
+                
                 2. Hurts sample efficiency.
                 - For discrete action spaces, entropy is calculated over the full action set.
                     - Lets say there were 24 actions (N=24) among which only 3 were valid, entropy for categorial policy is -sum_0^(N)(p_i * log(p_i))
@@ -211,39 +197,43 @@ class TransitEnv(gym.Env):
                     - i.e., each action gets (1/24) of the probability mass. However (21/24)= 87.5% of the probability mass is wasted (not useful for learning).
                     - Most samples hit invalid actions, policy gradient increases probability of actions that cannot execute.
                     - P.S. 21 out of 24 nodes being invalid is a realistic scenario.
-
+                    
                     - On the other hand, when a mask is used, each valid action initially gets (1/3) of the probability mass and all of the mass (100%) is useful for learning.
                     - Every sample is actionable and gradients focus among feasible choices. 
-
+                    
                     - When there is waste, more samples are needed to learn.
-
+                
                 3. Leads to incorrect credit assignment: 
                 - The reward is credited to the actions the policy did not choose (this injects bias and noise in the learning process).
 
-            - So the approriate way to enforce is: 
+            # Option 2: Enforce using an action_mask (without agent awareness).
                 - Keep action space fixed: Discrete(N) where N is the number of nodes in the network.
-                - Use action mask in the observation to inform the policy about the feasible set.
                 - When constructing a categorical distribution from the policy output, mask out the logits related to invalid actions i.e., logits[invalid] = -inf (or a large negative)
-                    - Lets call this a masked distribution.
-                - So that invalid actions are not sampled
+                - So that this action has a near zero probability of being sampled this masked distribution.
                 - Compute log probabilities from the masked distribution. Use the masked distribution in the act, evaluate as necessary.
                 - Print a warning if invalid action slips through (In practice, with proper masking, this shouldn't happen and I dont expect this, but due to incorrect implementation, it could happen).
-
+                - However, this is also a problem for several reasons:
+                    - The policy is not aware of the mask (because it is not a part of the observation space).
+                    - Without a negative feedback from the reward function, it does not truly know (and learn) that it assigned a higher logit to an invalid action.
+                        - Since we assigned a zero probability to the invalid action, this action is never sampled and the policy has no "practice" of selecting it.
+            
+            # Option 3: Supply validity as a part of node feature in the observation space.
+                - Keep action space fixed: Discrete(N) where N is the number of nodes in the network.
+                - Use a binary flag (feature is_valid_next) in the observation to inform the policy about the feasible set.
+                - Add a large negative penalty in the reward function for selecting an invalid action and truncate the episode.
+                
         Important:
-        - action_mask type: Use a boolean/binary space (MultiBinary(N) or a Box with dtype=uint8/bool). A mask is a feasibility flag, not an integer value; this avoids accidental arithmetic on mask entries.
         - edge_index dtype/ordering: Use int64 here so converting to torch tensors naturally yields torch.long, as required by PyG. Keep columns aligned with edge_features rows so edge_attr[i] corresponds to edge_index[:, i].
         - edge_features normalization: Perform per-edge normalization (e.g., length_norm, u_norm, t_ff_norm scaled to [0,1]) to keep feature magnitudes comparable and stabilize attention/optimization.
         """
-
+        
         return gym.spaces.Dict({
-            "node_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_nodes, 8), dtype=np.float32),
-            "action_mask": gym.spaces.MultiBinary(self.n_nodes), # Boolean flag per node
+            "node_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_nodes, self.N_NODE_FEATURES), dtype=np.float32),  # +1 for is_valid_next
             "edge_index": gym.spaces.Box(low=0, high=self.n_nodes - 1, shape=(2, self.n_edges), dtype=np.int64), # int64 so torch.from_numpy(...).long() matches PyG expectations
-            "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_edges, 2), dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
+            "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_edges, self.N_EDGE_FEATURES), dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
             "steps_left": gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32), # Normalized to 0-1
         })
         
-
     @property
     def action_space(self) -> gym.Space:
         """
@@ -379,7 +369,7 @@ class TransitEnv(gym.Env):
         """
         Build observation state as a dict
         Normalize as necessary.
-
+        
         The agent is designing route for a bus, however, both demands in the state are total demands.
         - Total demand does not reflect what can be influenced by the agent.
         - However, since the total demand is split by a fixed alpha, higher total demand means higher bus demand as well. 
@@ -387,45 +377,42 @@ class TransitEnv(gym.Env):
         - Or we can show only the capturable demand in the path-aware demands?
         - TODO: add this alpha multuplier as optional argument later.
         """
-
+        
         # Nodes and node features:
-        node_features = np.zeros((self.n_nodes, 8), dtype=np.float32)
-        # Static node features:
+        node_features = np.zeros((self.n_nodes, self.N_NODE_FEATURES), dtype=np.float32)  # +1 for is_valid_next
+
+        # Static node features (0-4):
         node_features[:, 0] = self.node_coordinates_norm[:, 0] # x
         node_features[:, 1] = self.node_coordinates_norm[:, 1] # y
         node_features[:, 2] = self.node_degrees_norm # degree
         node_features[:, 3] = self.demand_out / self.max_demand # d_out
         node_features[:, 4] = self.demand_in / self.max_demand # d_in
         
-        # Dymanic node features (path-aware demands):
+        # Dymanic node features (5-6, path-aware demands):
         path_indices = np.array([self.node_to_idx[node] for node in self.current_path]) # Set of nodes in the path
-
-        node_features[path_indices, 5] = 1.0 # in_path flag
-
         demand_out_path = self.od_matrix[:, path_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
         demand_in_path = self.od_matrix[path_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
-
-        node_features[:, 6] = demand_out_path / self.max_demand # d_out_path
-        node_features[:, 7] = demand_in_path / self.max_demand # d_in_path
-
-        # Action mask (also dynamic):
-        action_mask = np.zeros(self.n_nodes, dtype=np.int64) # 0 = not allowed, 1 = allowed
-        for neighbor in self.adj[self.current_path[-1]]: # Neighbor of the current path end (i.e., frontier nodes) are allowed
-            if neighbor not in self.current_path: # Safety check: no loops
-                idx = self.node_to_idx[neighbor] # Set according to index
-                action_mask[idx] = 1
-            else: 
-                Warning(f"Node {neighbor} is already in the path. This should not happen.")
+        
+        node_features[:, 5] = demand_out_path / self.max_demand # d_out_path
+        node_features[:, 6] = demand_in_path / self.max_demand # d_in_path
+        
+        # Node features that are Binary flags (7-8):
+        node_features[path_indices, 7] = 1.0 # in_path flag
+        
+        frontier = self.current_path[-1]
+        path_set = set(self.current_path)  # O(1) lookup
+        valid_neighbors = self.adj[frontier] - path_set  # Set difference
+        valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
+        node_features[valid_indices, 8] = 1.0  # is_valid_next
 
         # Edge index and edge features dont dynamically change. Already set in __init__.
         # Steps left:
         steps_taken = len(self.current_path) - 1  # -1 because we start with 1 node
         steps_left_norm = 1.0 - (steps_taken / self.MAX_PATH_LENGTH)
-
+        
         # Return the state as a dict
         state: Dict[str, Any] = {
             "node_features": node_features,
-            "action_mask": action_mask,
             "edge_index": self.edge_index,
             "edge_features": self.edge_features,
             "steps_left": np.array([steps_left_norm], dtype=np.float32)
@@ -433,7 +420,7 @@ class TransitEnv(gym.Env):
         
         if pretty_print:
             pretty_print_state(self, state, show_od=False)
-
+        
         return state
     
     def reset( self, ) -> None:

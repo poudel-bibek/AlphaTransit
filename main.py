@@ -3,6 +3,7 @@ import torch
 import random
 import argparse
 import numpy as np
+import pandas as pd
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
 from rl.ppo import PPO
@@ -16,7 +17,7 @@ def state_to_pyg(state: Dict[str, Any]) -> Data:
     x = torch.tensor(state["node_features"], dtype=torch.float32)
     edge_index = torch.tensor(state["edge_index"], dtype=torch.long)
     edge_attr = torch.tensor(state["edge_features"], dtype=torch.float32)
-    action_mask = torch.tensor(state["action_mask"], dtype=torch.bool)
+    action_mask = torch.tensor(state["action_mask"], dtype=torch.bool)  # Ensure bool for ~mask
     steps_left = torch.tensor(state["steps_left"], dtype=torch.float32)
     
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
@@ -44,11 +45,35 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
 
     # action = env.action_space.sample()
     """
-    
+
+    print("Training started... on network: ", config["network"])
     env = TransitEnv(config)
-    node_feature_dim = env.observation_space["node_features"].shape[1]
+    node_feature_dim = env.N_NODE_FEATURES
     num_actions = env.action_space.n
     
+    print("\tObservation space:")
+    for key, space in env.observation_space.items():
+        print(f"\t  {key}: {space}")
+    print(f"\tAction space: {env.action_space}")
+
+    print(f"\nNetwork details:")
+    print(f"\tNumber of nodes: {env.n_nodes}")
+    print(f"\tNumber of edges: {env.n_edges}")
+    print(f"\tNode list: {env.node_list}")
+    print(f"\tIdx to node: {env.idx_to_node}")
+
+    print("\n\tAdjacency list:")
+    for node in env.node_list:
+        neighbors = env.adj[node]
+        print(f"\t  {node}: {', '.join(neighbors)}")
+    print(f"\tMax degree: {env.max_degree}, Min degree: {env.min_degree}")
+
+    od_df = pd.DataFrame(env.od_matrix, index=env.node_list, columns=env.node_list)
+    with pd.option_context('display.max_rows', 20, 'display.max_columns', 20, 'display.width', 120):
+        print("\n\tOD matrix (preview):\n", od_df.round(4))
+    print(f"\tMax demand: {env.max_demand}, Min demand: {env.min_demand}")
+
+    # Only node features are supplied at GATv2 init, edge features are injected at each attention layer.
     model = GATV2ActorCritic(node_feature_dim, num_actions)
     model.to(config["device"])
     
@@ -114,7 +139,7 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
             with torch.no_grad():
                 _, _, last_value_tensor = model.act(batch, steps_left)
             last_value = last_value_tensor.cpu().item()
-            
+
             # Append dummy transition for last value
             ppo.memory.store({
                 'obs': store_data,  # reuse last

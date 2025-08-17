@@ -150,9 +150,10 @@ class GATV2ActorCritic(nn.Module):
         values = self.critic(features)
         logits = self.actor(features)
         
-        # Mask invalid nodes if provided
-        if hasattr(graph_batch, 'action_mask'):
-            logits = logits.masked_fill(~graph_batch.action_mask, -1e8)
+        # Mask invalid nodes if provided (commented to let model learn from is_valid_next feature)
+        # if hasattr(graph_batch, 'action_mask'):
+        #     print(f"Applying action mask of shape {graph_batch.action_mask.shape}")
+        #     logits = logits.masked_fill(~graph_batch.action_mask, -1e8)
         
         dist = Categorical(logits=logits)
         
@@ -178,9 +179,9 @@ class GATV2ActorCritic(nn.Module):
         values = self.critic(features)
         logits = self.actor(features)
         
-        # Mask invalid nodes if provided
-        if hasattr(graph_batch, 'action_mask'):
-            logits = logits.masked_fill(~graph_batch.action_mask, -1e8)
+        # Mask invalid nodes if provided (commented to let model learn from is_valid_next feature)
+        # if hasattr(graph_batch, 'action_mask'):
+        #     logits = logits.masked_fill(~graph_batch.action_mask, -1e8)
         
         dist = Categorical(logits=logits)
         log_probs = dist.log_prob(actions)
