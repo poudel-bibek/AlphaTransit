@@ -15,7 +15,7 @@ class PPO:
         
         # PPO hyperparameters
         self.clip_ratio = kwargs.get('clip_ratio')
-        self.ppo_epochs = kwargs.get('ppo_epochs')
+        self.K_epochs = kwargs.get('K_epochs')
         self.mini_batch_size = kwargs.get('mini_batch_size')
         self.value_loss_coef = kwargs.get('value_loss_coef')
         self.entropy_coef = kwargs.get('entropy_coef')
@@ -23,12 +23,13 @@ class PPO:
         self.gae_lambda = kwargs.get('gae_lambda')
         self.gamma = kwargs.get('gamma')
         self.current_timestep = 0
+        
+        # Learning rate settings
+        self.lr = kwargs.get('lr')
+        self.lr_schedule = kwargs.get('lr_schedule')
+
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
-
-        # Learning rate settings
-        self.lr = kwargs.get('learning_rate')
-        self.lr_schedule = kwargs.get('lr_schedule')
 
         # Memory buffer
         self.memory = Memory()
@@ -40,7 +41,7 @@ class PPO:
         Returns:
             Dictionary of training statistics
         """
-        
+
         self.compute_gae()
         
         dataset = DatasetClass(self.memory)
@@ -51,7 +52,7 @@ class PPO:
         clip_fractions = []
         
         # PPO epochs
-        for _ in range(self.ppo_epochs):
+        for _ in range(self.K_epochs):
             for batch in dataloader:
                 obs = batch['obs'].to(self.model.device)
                 actions = batch['actions'].to(self.model.device)
@@ -59,8 +60,11 @@ class PPO:
                 advantages = batch['advantages'].to(self.model.device)
                 returns = batch['returns'].to(self.model.device)
                 
+                # Retrieve stored valid_indices
+                valid_indices = torch.tensor(batch['valid_indices'], dtype=torch.long, device=self.model.device)
+                
                 # Get current policy outputs
-                log_probs, entropy, values = self.model.evaluate(obs, actions, steps_left=obs.steps_left)
+                log_probs, entropy, values = self.model.evaluate(obs, actions, steps_left=obs.steps_left, valid_indices=valid_indices)
                 
                 # Normalize advantages
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)

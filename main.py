@@ -91,7 +91,7 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
     print(f"\nPolicy parameters on device = {config['device']}:")
     for k, v in param_counts.items():
         print(f"  {k}: {v:,}")
-    ppo = PPO(model, config)
+    ppo = PPO(model, **config)
     
     episode_rewards = []
     
@@ -106,9 +106,10 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
             data = state_to_pyg(state)
             batch = Batch.from_data_list([data]).to(config["device"])
             steps_left = batch.steps_left.to(config["device"])
+            valid_indices = torch.tensor(env._get_valid_indices(), dtype=torch.long, device=config["device"])
             
             with torch.no_grad():
-                action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False)
+                action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices)
             
             action = action_tensor.cpu().item()
             log_prob = log_prob_tensor.cpu().item()
@@ -132,7 +133,8 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
                 'reward': reward,
                 'value': value,
                 'log_prob': log_prob,
-                'done': terminated or truncated
+                'done': terminated or truncated,
+                'valid_indices': valid_indices.cpu().tolist()
             })
             
             state = next_state
@@ -148,9 +150,10 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
             data = state_to_pyg(state)
             batch = Batch.from_data_list([data]).to(config["device"])
             steps_left = batch.steps_left.to(config["device"])
+            valid_indices = torch.tensor(env._get_valid_indices(), dtype=torch.long, device=config["device"])
             
             with torch.no_grad():
-                _, _, last_value_tensor = model.act(batch, steps_left)
+                _, _, last_value_tensor = model.act(batch, steps_left, valid_indices=valid_indices)
             last_value = last_value_tensor.cpu().item()
 
             # Append dummy transition for last value
@@ -220,12 +223,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_path_length", type=int, default=10, help="Maximum path length")
     parser.add_argument("--min_path_length", type=int, default=1, help="Minimum path length")
 
-    # Arguments likely to change during sweeps (tunable hyperparameters)
-    parser.add_argument("--total_timesteps", type=int, default=10000, help="Total timesteps for training")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--clip_coef", type=float, default=0.2, help="PPO clip coefficient")
-    parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=10, help="Number of PPO epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="Mini-batch size")
@@ -235,6 +232,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--lr_schedule", type=str, default="linear", help="Learning rate schedule") 
 
     return parser
@@ -264,5 +262,3 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-
-

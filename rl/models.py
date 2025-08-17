@@ -138,7 +138,32 @@ class GATV2ActorCritic(nn.Module):
         # Critic output layer with gain 1 (slightly smaller than sqrt(2))
         critic_layers.append(self.layer_init(nn.Linear(critic_sizes[-1], 1), std=1.0))
         self.critic_net = nn.Sequential(*critic_layers)  # Changed from self.critic
-    
+
+    def _mask_logits(self, logits: torch.Tensor, valid_indices: Optional[torch.Tensor]) -> torch.Tensor:
+        """
+        Option 2: Mask out logits for invalid actions.
+        Mask everything except valid actions.
+        """
+        MASK_VALUE = float('-inf')
+        mask = torch.zeros_like(logits, dtype=torch.bool)
+        mask[0, valid_indices] = True
+        return logits.masked_fill(~mask, MASK_VALUE)
+
+    def _compute_dist_and_value(self, graph_batch: Batch, steps_left: Optional[torch.Tensor], valid_indices: Optional[torch.Tensor]) -> Tuple[Categorical, torch.Tensor]:
+        """
+        """
+        features = self.readout_layer(graph_batch, steps_left)
+
+        logits = self.actor_net(features)
+
+        values = self.critic_net(features).squeeze(-1)
+
+        masked_logits = self._mask_logits(logits, valid_indices)
+
+        dist = Categorical(logits=masked_logits)
+        
+        return dist, values
+
     def layer_init(self, layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Linear:
         """
         Orthogoal initialization of weights and Constant initialization of biases.
@@ -190,7 +215,6 @@ class GATV2ActorCritic(nn.Module):
                 x = self.activation(x)
         
         return x, batch
-        
 
     def readout_layer(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -198,16 +222,20 @@ class GATV2ActorCritic(nn.Module):
         Flexible pooling - can easily swap to max, sum, or attention pooling.
         """
         node_features, batch = self.forward(graph_batch)
+        print(f"DEBUG: node_features after forward has NaN: {torch.isnan(node_features).any()}")
+        
         # Can easily change to global_max_pool, global_add_pool, etc.
         graph_features = global_mean_pool(node_features, batch)
+        print(f"DEBUG: graph_features after pooling has NaN: {torch.isnan(graph_features).any()}")
         
         # Concatenate global features (steps_left)
         print(f"graph_features.shape: {graph_features.shape}, steps_left.shape: {steps_left.shape}")
         graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
+        print(f"DEBUG: graph_features after concat has NaN: {torch.isnan(graph_features).any()}")
         
         return graph_features
-
-    def act(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    
+    def act(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None, deterministic: bool = False, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Select next node to add to route.
         Samples stochastically during training, can be deterministic for eval.
@@ -217,22 +245,21 @@ class GATV2ActorCritic(nn.Module):
             log_probs: Log probabilities of selections
             values: Value estimates
         """
-        features = self.readout_layer(graph_batch, steps_left)
-        logits = self.actor_net(features)
-        values = self.critic_net(features).squeeze(-1)
         
-        dist = Categorical(logits=logits)
+        dist, values = self._compute_dist_and_value(graph_batch, steps_left, valid_indices)
         
         if deterministic:
-            actions = logits.argmax(-1)
+            actions = dist.logits.argmax(-1)
+            print(f" Deterministic: Action {actions}")
         else:
             actions = dist.sample()
+            print(f" Stochastic: Action {actions}")
         
         log_probs = dist.log_prob(actions)
         
         return actions, log_probs, values
-
-    def evaluate(self, graph_batch: Batch, actions: torch.Tensor, steps_left: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    
+    def evaluate(self, graph_batch: Batch, actions: torch.Tensor, steps_left: Optional[torch.Tensor] = None, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute log-probs, entropy, and values for PPO loss.
         
@@ -241,11 +268,9 @@ class GATV2ActorCritic(nn.Module):
             entropy: Policy entropy for exploration
             values: Value estimates
         """
-        features = self.readout_layer(graph_batch, steps_left)
-        logits = self.actor_net(features)
-        values = self.critic_net(features).squeeze(-1)
         
-        dist = Categorical(logits=logits)
+        dist, values = self._compute_dist_and_value(graph_batch, steps_left, valid_indices)
+        
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
         

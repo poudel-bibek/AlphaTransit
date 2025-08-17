@@ -1,81 +1,24 @@
-from typing import Any, Dict, Iterable, Sequence, List
+from typing import Any, Dict, List, Optional
 import torch
 import numpy as np
 from torch_geometric.data import Batch, Data
 from torch.utils.data import Dataset
 
-
-def collate_fn(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Collate samples into mini-batch for PPO training.
     Handles both graph observations and standard tensors.
     """
-    # Separate graphs from other data
-    graphs = []
-    other_data = {key: [] for key in batch[0].keys() if key != 'obs'}
-    
-    for sample in batch:
-        graphs.append(sample['obs'])
-        for key in other_data:
-            other_data[key].append(sample[key])
-    
-    # Batch graphs if they're PyG Data objects
-    if isinstance(graphs[0], Data):
-        batched_obs = Batch.from_data_list(graphs)
-    else:
-        batched_obs = torch.stack(graphs)
-    
-    # Stack other tensors
-    collated = {'obs': batched_obs}
-    for key, values in other_data.items():
-        if isinstance(values[0], (int, float, np.number, np.ndarray)):
-            collated[key] = torch.tensor(values, dtype=torch.float32)
-        else:
-            collated[key] = torch.stack(values)
-    
+    collated = {
+        'obs': Batch.from_data_list([item['obs'] for item in batch]),
+        'actions': torch.tensor([item['actions'] for item in batch], dtype=torch.long),
+        'log_probs': torch.tensor([item['log_probs'] for item in batch], dtype=torch.float32),
+        'advantages': torch.tensor([item['advantages'] for item in batch], dtype=torch.float32),
+        'returns': torch.tensor([item['returns'] for item in batch], dtype=torch.float32),
+        'values': torch.tensor([item['values'] for item in batch], dtype=torch.float32),
+        'valid_indices': [item['valid_indices'] for item in batch]
+    }
     return collated
-
-
-class DatasetClass(Dataset):
-    """
-    Dataset wrapper for PPO experience replay.
-    Handles rollout data with computed advantages.
-    """
-
-    def __init__(self, memory: 'Memory') -> None:
-        """
-        Create dataset from memory buffer.
-        
-        Args:
-            memory: Memory buffer with rollout data
-        """
-        self.observations = memory.observations
-        self.actions = memory.actions
-        self.log_probs = memory.log_probs
-        self.values = memory.values
-        self.advantages = memory.advantages
-        self.returns = memory.returns
-
-    def __len__(self) -> int:
-        """Return number of transitions."""
-        return len(self.observations)
-
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        """
-        Get single transition by index.
-        
-        Returns:
-            Dictionary with obs, action, advantages, etc.
-        """
-        return {
-            'obs': self.observations[index],
-            'actions': self.actions[index],
-            'log_probs': self.log_probs[index],
-            'values': self.values[index],
-            'advantages': self.advantages[index],
-            'returns': self.returns[index]
-        }
-
 
 class Memory:
     """
@@ -85,16 +28,17 @@ class Memory:
 
     def __init__(self) -> None:
         """Initialize empty rollout buffers."""
-        self.observations: List[Any] = []
+        self.obs: List[Any] = []
         self.actions: List[Any] = []
+        self.log_probs: List[float] = []
         self.rewards: List[float] = []
         self.values: List[float] = []
-        self.log_probs: List[float] = []
         self.dones: List[bool] = []
         
         # Computed during GAE
-        self.advantages: np.ndarray = None
-        self.returns: np.ndarray = None
+        self.advantages: Optional[np.ndarray] = None
+        self.returns: Optional[np.ndarray] = None
+        self.valid_indices: List[List[int]] = []
 
     def store(self, transition: Dict[str, Any]) -> None:
         """
@@ -103,16 +47,17 @@ class Memory:
         Args:
             transition: Dict with obs, action, reward, value, log_prob, done
         """
-        self.observations.append(transition['obs'])
+        self.obs.append(transition['obs'])
         self.actions.append(transition['action'])
         self.rewards.append(transition['reward'])
         self.values.append(transition['value'])
         self.log_probs.append(transition['log_prob'])
         self.dones.append(transition['done'])
+        self.valid_indices.append(transition.get('valid_indices', []))
 
     def clear(self) -> None:
         """Reset all buffers after PPO update."""
-        self.observations.clear()
+        self.obs.clear()
         self.actions.clear()
         self.rewards.clear()
         self.values.clear()
@@ -120,10 +65,35 @@ class Memory:
         self.dones.clear()
         self.advantages = None
         self.returns = None
+        self.valid_indices.clear()
 
     def __len__(self) -> int:
         """Return number of stored transitions."""
-        return len(self.observations)
+        return len(self.obs)
+
+
+class DatasetClass(Dataset):
+    """
+    Dataset wrapper for PPO experience replay.
+    Handles rollout data with computed advantages.
+    """
+    def __init__(self, memory: Memory) -> None:
+        self.memory = memory
+        
+    def __len__(self) -> int:
+        return len(self.memory)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+
+        return {
+            'obs': self.memory.obs[idx],
+            'actions': self.memory.actions[idx],
+            'log_probs': self.memory.log_probs[idx],
+            'advantages': self.memory.advantages[idx],
+            'returns': self.memory.returns[idx],
+            'values': self.memory.values[idx],
+            'valid_indices': self.memory.valid_indices[idx]
+        }
 
 
 class WelfordNormalizer:

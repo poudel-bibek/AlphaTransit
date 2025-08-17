@@ -220,8 +220,23 @@ class TransitEnv(gym.Env):
             # Option 3: Supply validity as a part of node feature in the observation space.
                 - Keep action space fixed: Discrete(N) where N is the number of nodes in the network.
                 - Use a binary flag (feature is_valid_next) in the observation to inform the policy about the feasible set.
-                - Add a large negative penalty in the reward function for selecting an invalid action and truncate the episode.
+                - Add a large negative penalty in the reward function for selecting an invalid action and truncate the episode based on these conditions: 
+                    - New node selected is not connected to the current frontier 
+                    - New node is connected to the current frontier but is already in the path.
+                    - New node is the same as the current frontier.
+                - Theoritically this is good. But requires a lot of samples to learn to select valid actions.
+
+            # Option 4: A combination of option 2 and 3.
+                - However: 
+                    - If I am doing action masking, invalid actions are simply not sampled. 
+                    - So what is the point of including option 3 with option 2?
+                        - Episodes are not going to get truncated.
+                        - Agent is not going to get a reward for bad actions anyway.. so its not going to learn to select valid actions.
+                    - We need a solution that is scalable to large networks. Option 3 is not scalable. Option 2 is scalable. Option 4 is not scalable.
                 
+            # Finally, Option 2 is chosen and some components of option 3 are included (without the reward penalty i.e., just including the is_valid_next flag).
+            - This is the way to go, validated: https://arxiv.org/pdf/2006.14171
+
         Important:
         - edge_index dtype/ordering: Use int64 here so converting to torch tensors naturally yields torch.long, as required by PyG. Keep columns aligned with edge_features rows so edge_attr[i] corresponds to edge_index[:, i].
         - edge_features normalization: Perform per-edge normalization (e.g., length_norm, u_norm, t_ff_norm scaled to [0,1]) to keep feature magnitudes comparable and stabilize attention/optimization.
@@ -637,6 +652,7 @@ class TransitEnv(gym.Env):
         - Add a utilization component to the reward
         - Intuition: good routes cover high-demand O-D pairs 
         - Set a minimum total demand that must be served by the route?
+
         """
  
         # 1. Extract travel time data and compute component 1: travel efficiency
@@ -653,33 +669,59 @@ class TransitEnv(gym.Env):
         Return (obs, reward, terminated, truncated, info).
         Run the simulation on the current route and get metrics.
 
-        Terminal conditions: 
+        Episode termination conditions: 
             - Max path length reached. Max path length is also the number of steps in the episode.
-        Truncation conditions: 
-            - Gets stuck in a dead-end/ eating into previous path situation.
+        Episode truncation conditions: 
+            - Gets stuck in a dead-end i.e., had only 1 neighbor, (which is already in the path)      
         """
         
-        # 0. Build_world needs to happen every step.
+        # 1. Check truncation (before action is applied)
+        truncated = False
+        valid_indices = self._get_valid_indices()
+        if len(valid_indices) == 0:
+            truncated = True
+            print(f" ❌ Invalid: Action {action} is a dead-end. No valid next nodes.")
+            # Immediately return with truncated=True, reward=0, terminated=False
+            truncation_penalty = -100.0
+            return self._get_state(), truncation_penalty, False, truncated, {}
+
+        # 2. Build_world needs to happen every step.
         # i.e., add the network and the classified demand (bus vs car).
         self.world = self.build_world(self.config.get("network"))
         
-        # 1. Add action to current_path, spawn necessary buses, and set their routes.
+        # 3. Add action to current_path, spawn necessary buses, and set their routes.
         action = self.idx_to_node[action]
         self._apply_action(action)
         print(f"Current path: {self.current_path}")
         
-        # 2. Run the full simulation upto horizon end.
+        # 4. Run the full simulation upto horizon end.
         sim_result = self._step_until(self.horizon)
         
-        # 3. Compute reward
+        # 5. Compute reward
         reward = self.compute_reward(sim_result)
         
-        # 4. Check termination
+        # 6. Check termination
         terminated = len(self.current_path) >= self.MAX_PATH_LENGTH
-        truncated = False
-        
-        # 5. Return 
+
         return self._get_state(), reward, terminated, truncated, {}
+    
+    def _get_valid_indices(self) -> list:
+        """
+        For a given frontier node, get the indices of valid next nodes.
+        - When this is called, the action has not yet been applied i.e. current_path does not have the action attached.
+        """
+        frontier = self.current_path[-1]
+        path_set = set(self.current_path)  # O(1) lookup
+
+        # 1. Get all neighbors of frontier
+        valid_neighbors = self.adj[frontier] 
+        
+        # 2. Remove nodes that are already in the path
+        valid_neighbors = valid_neighbors - path_set  
+
+        # 3. Get the indices of valid next nodes
+        valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
+        return valid_indices
 
     def render(self, render_name: str) -> None:
         """
