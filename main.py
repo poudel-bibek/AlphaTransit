@@ -73,14 +73,14 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
 
     # Set policy hyper-param defaults
     policy_kwargs = {
-        "num_layers": config.get("num_layers", 2),
-        "gat_channels": config.get("gat_channels", [node_feature_dim, 32, 1]),
-        "num_heads": config.get("num_heads", [4, 1]),
+        "num_layers": config.get("num_layers", 3),
+        "gat_channels": config.get("gat_channels", [node_feature_dim, 36, 16, 1]),
+        "num_heads": config.get("num_heads", [8, 4, 1]),
         "num_edge_features": config.get("num_edge_features", 2),
         "dropout": config.get("dropout", 0.0),
         "global_dim": config.get("global_dim", 1),
         "activation": config.get("activation", "elu"),
-        "model_size": config.get("model_size", "small"),
+        "model_size": config.get("model_size", "medium"),
         "concat": config.get("concat", False),
     }
 
@@ -225,6 +225,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--clip_coef", type=float, default=0.2, help="PPO clip coefficient")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
+
+    # PPO params: 
+    parser.add_argument("--K_epochs", type=int, default=10, help="Number of PPO epochs")
+    parser.add_argument("--batch_size", type=int, default=64, help="Mini-batch size")
+    parser.add_argument("--clip_frac", type=int, default=0.2, help="PPO clipping ratio")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
+    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
+    parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
+    parser.add_argument("--lr_schedule", type=str, default="linear", help="Learning rate schedule") 
 
     return parser
 

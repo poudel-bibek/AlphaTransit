@@ -8,45 +8,28 @@ from rl.ppo_utils import DatasetClass, Memory, collate_fn
 
 
 class PPO:
-    """
-    Proximal Policy Optimization agent for graph-based RL.
-    Handles rollout collection, GAE computation, and policy updates.
-    """
-
-    def __init__(self, 
-                 model: nn.Module,
-                 config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, model: nn.Module, **kwargs) -> None:
         """
-        Initialize PPO agent with model and hyperparameters.
-        
-        Args:
-            model: Actor-critic network (e.g., GATV2ActorCritic)
-            config: PPO hyperparameters and training settings
         """
         self.model = model
-        self.config = config or {}
         
         # PPO hyperparameters
-        self.clip_ratio = self.config.get('clip_ratio', 0.2)
-        self.ppo_epochs = self.config.get('ppo_epochs', 10)
-        self.mini_batch_size = self.config.get('mini_batch_size', 64)
-        self.value_loss_coef = self.config.get('value_loss_coef', 0.5)
-        self.entropy_coef = self.config.get('entropy_coef', 0.01)
-        self.max_grad_norm = self.config.get('max_grad_norm', 0.5)
-        self.gae_lambda = self.config.get('gae_lambda', 0.95)
-        self.gamma = self.config.get('gamma', 0.99)
-        
-        # Learning rate settings
-        self.lr = self.config.get('learning_rate', 3e-4)
-        self.lr_schedule = self.config.get('lr_schedule', 'linear')
-        self.total_timesteps = self.config.get('total_timesteps', 1e6)
+        self.clip_ratio = kwargs.get('clip_ratio')
+        self.ppo_epochs = kwargs.get('ppo_epochs')
+        self.mini_batch_size = kwargs.get('mini_batch_size')
+        self.value_loss_coef = kwargs.get('value_loss_coef')
+        self.entropy_coef = kwargs.get('entropy_coef')
+        self.max_grad_norm = kwargs.get('max_grad_norm')
+        self.gae_lambda = kwargs.get('gae_lambda')
+        self.gamma = kwargs.get('gamma')
         self.current_timestep = 0
-        
-        # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
-        
-        self.device = next(self.model.parameters()).device
-        
+        self.device = kwargs.get('device')
+
+        # Learning rate settings
+        self.lr = kwargs.get('learning_rate')
+        self.lr_schedule = kwargs.get('lr_schedule')
+
         # Memory buffer
         self.memory = Memory()
 
@@ -57,17 +40,11 @@ class PPO:
         Returns:
             Dictionary of training statistics
         """
-        # Compute GAE before creating dataset
+        
         self.compute_gae()
         
-        # Create dataset from memory
         dataset = DatasetClass(self.memory)
-        dataloader = DataLoader(
-            dataset, 
-            batch_size=self.mini_batch_size,
-            shuffle=True,
-            collate_fn=collate_fn
-        )
+        dataloader = DataLoader(dataset, batch_size=self.mini_batch_size,shuffle=True, collate_fn=collate_fn )
         
         # Training stats
         pg_losses, value_losses, entropy_losses = [], [], []

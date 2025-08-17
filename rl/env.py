@@ -59,7 +59,7 @@ class TransitEnv(gym.Env):
         df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
 
         # Sort node names numerically, even though they are strings
-        self.node_list = sorted(list(df_nodes["name"].unique()))
+        self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: int(x))
         self.n_nodes = len(self.node_list)
         self.n_edges = int(len(df_links))
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}

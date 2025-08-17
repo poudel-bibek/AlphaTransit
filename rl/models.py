@@ -69,8 +69,8 @@ class GATV2ActorCritic(nn.Module):
             actor_sizes = [128, 64]
             critic_sizes = [128, 64]
         elif model_size == "medium":
-            actor_sizes = [256, 128]
-            critic_sizes = [256, 128]
+            actor_sizes = [256, 128, 64]
+            critic_sizes = [256, 128, 64]
 
         self.concat = kwargs.get("concat")
 
@@ -183,7 +183,7 @@ class GATV2ActorCritic(nn.Module):
         
         # Pass through GAT layers
         for i, conv in enumerate(self.gat_layers):
-            x = conv(x, edge_index, edge_attr=edge_attr)
+            x = conv(x, edge_index, edge_attr=edge_attr) # Inject edge features at each GATv2 layer
             
             # Apply activation except for last layer
             if i < len(self.gat_layers) - 1:
@@ -202,7 +202,8 @@ class GATV2ActorCritic(nn.Module):
         graph_features = global_mean_pool(node_features, batch)
         
         # Concatenate global features (steps_left)
-        graph_features = torch.cat([graph_features, steps_left], dim=1)
+        print(f"graph_features.shape: {graph_features.shape}, steps_left.shape: {steps_left.shape}")
+        graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
         
         return graph_features
 
