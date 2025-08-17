@@ -17,11 +17,9 @@ def state_to_pyg(state: Dict[str, Any]) -> Data:
     x = torch.tensor(state["node_features"], dtype=torch.float32)
     edge_index = torch.tensor(state["edge_index"], dtype=torch.long)
     edge_attr = torch.tensor(state["edge_features"], dtype=torch.float32)
-    action_mask = torch.tensor(state["action_mask"], dtype=torch.bool)  # Ensure bool for ~mask
     steps_left = torch.tensor(state["steps_left"], dtype=torch.float32)
     
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    data.action_mask = action_mask
     data.steps_left = steps_left
     return data
 
@@ -73,10 +71,26 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         print("\n\tOD matrix (preview):\n", od_df.round(4))
     print(f"\tMax demand: {env.max_demand}, Min demand: {env.min_demand}")
 
+    # Set policy hyper-param defaults
+    policy_kwargs = {
+        "num_layers": config.get("num_layers", 2),
+        "gat_channels": config.get("gat_channels", [node_feature_dim, 32, 1]),
+        "num_heads": config.get("num_heads", [4, 1]),
+        "num_edge_features": config.get("num_edge_features", 2),
+        "dropout": config.get("dropout", 0.0),
+        "global_dim": config.get("global_dim", 1),
+        "activation": config.get("activation", "elu"),
+        "model_size": config.get("model_size", "small"),
+        "concat": config.get("concat", False),
+    }
+
     # Only node features are supplied at GATv2 init, edge features are injected at each attention layer.
-    model = GATV2ActorCritic(node_feature_dim, num_actions)
+    model = GATV2ActorCritic(num_actions, **policy_kwargs)
     model.to(config["device"])
-    
+    param_counts = model.param_count()
+    print(f"\nPolicy parameters on device = {config['device']}:")
+    for k, v in param_counts.items():
+        print(f"  {k}: {v:,}")
     ppo = PPO(model, config)
     
     episode_rewards = []
@@ -109,7 +123,6 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
                 x=data.x.cpu(),
                 edge_index=data.edge_index.cpu(),
                 edge_attr=data.edge_attr.cpu(),
-                action_mask=data.action_mask.cpu(),
                 steps_left=data.steps_left.cpu()
             )
             

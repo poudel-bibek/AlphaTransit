@@ -26,17 +26,10 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     print(f"Current path: {self.current_path}")
     print(f"Steps taken / max: {steps_taken} / {self.MAX_PATH_LENGTH} (steps_left_norm={steps_left:.3f})")
 
-    # Action mask
-    action_mask = state["action_mask"]
-    allowed_indices = [int(i) for i, v in enumerate(action_mask) if int(v) == 1]
-    allowed_nodes = [self.idx_to_node[i] for i in allowed_indices]
-    print(f"Allowed next nodes ({len(allowed_nodes)}): {allowed_nodes}")
-
     # Node features
     feature_names = [
-        "x_norm", "y_norm", "degree_norm",
-        "d_out_norm", "d_in_norm",
-        "in_path_flag", "d_out_path_norm", "d_in_path_norm",
+        "x_norm", "y_norm", "degree_norm", "d_out_norm", "d_in_norm",
+        "d_out_path_norm", "d_in_path_norm", "in_path_flag", "is_valid_next"
     ]
     nf_df = pd.DataFrame(state["node_features"], index=self.node_list, columns=feature_names)
     with pd.option_context('display.max_rows', resolved_max_nodes, 'display.max_columns', 8, 'display.width', 120):
