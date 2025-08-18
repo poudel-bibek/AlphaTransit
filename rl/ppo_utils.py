@@ -35,6 +35,9 @@ class Memory:
         self.values: List[float] = []
         self.dones: List[bool] = []
         
+        # Bootstrap value for GAE computation
+        self.bootstrap_value: float = 0.0
+        
         # Computed during GAE
         self.advantages: Optional[np.ndarray] = None
         self.returns: Optional[np.ndarray] = None
@@ -55,6 +58,15 @@ class Memory:
         self.dones.append(transition['done'])
         self.valid_indices.append(transition.get('valid_indices', []))
 
+    def set_bootstrap_value(self, value: float) -> None:
+        """
+        Set bootstrap value for GAE computation.
+        
+        Args:
+            value: Bootstrap value for final state (0.0 if terminated, critic value if truncated)
+        """
+        self.bootstrap_value = value
+
     def clear(self) -> None:
         """Reset all buffers after PPO update."""
         self.obs.clear()
@@ -63,6 +75,7 @@ class Memory:
         self.values.clear()
         self.log_probs.clear()
         self.dones.clear()
+        self.bootstrap_value = 0.0
         self.advantages = None
         self.returns = None
         self.valid_indices.clear()

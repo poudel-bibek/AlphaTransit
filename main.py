@@ -1,4 +1,5 @@
 import os
+from rl.env_utils import pretty_print_state
 import torch
 import random
 import argparse
@@ -42,6 +43,14 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
     Agent learns: "What next node maximizes total discounted reward?"
 
     # action = env.action_space.sample()
+
+    --------------
+    Value bootstraping: 
+    - Required when an episode ends premeturely (truncated)
+    - If terminated naturally, value = 0 (no more rewards coming)
+    - If truncated, value = value of the last state. 
+        - We preserve the partial solution which has some utility in learning.
+
     """
 
     print("Training started... on network: ", config["network"])
@@ -99,24 +108,31 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         print(f"\n=== Episode {episode} ===")
         
         state, _ = env.reset()
+        pretty_print_state(env, state)
+
         episode_reward = 0
         episode_steps = 0
         
         while True:
             data = state_to_pyg(state)
+            print(f"\nData: type: {type(data)}, value: {data}")
+
             batch = Batch.from_data_list([data]).to(config["device"])
+
             steps_left = batch.steps_left.to(config["device"])
+
+            # Constraints.
             valid_indices = torch.tensor(env._get_valid_indices(), dtype=torch.long, device=config["device"])
+            print(f"\nValid indices: type: {type(valid_indices)}, shape: {valid_indices.shape}, value: {valid_indices}, device: {valid_indices.device}")
             
             with torch.no_grad():
                 action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices)
+                print(f"\nAction tensor: type: {type(action_tensor)}, shape: {action_tensor.shape}, value: {action_tensor}, device: {action_tensor.device}")
+                print(f"\nLog prob tensor: type: {type(log_prob_tensor)}, shape: {log_prob_tensor.shape}, value: {log_prob_tensor}, device: {log_prob_tensor.device}")
+                print(f"\nValue tensor: type: {type(value_tensor)}, shape: {value_tensor.shape}, value: {value_tensor}, device: {value_tensor.device}")
             
-            action = action_tensor.cpu().item()
-            log_prob = log_prob_tensor.cpu().item()
-            value = value_tensor.cpu().item()
-            
+            action = action_tensor.cpu().item() 
             next_state, reward, terminated, truncated, _ = env.step(action)
-            
             episode_reward += reward
             
             # Store on CPU
@@ -131,52 +147,56 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
                 'obs': store_data,
                 'action': action,
                 'reward': reward,
-                'value': value,
-                'log_prob': log_prob,
+                'value': value_tensor.cpu().item(),
+                'log_prob': log_prob_tensor.cpu().item(),
                 'done': terminated or truncated,
                 'valid_indices': valid_indices.cpu().tolist()
             })
             
             state = next_state
             episode_steps += 1
-            
+    
             env.render(f"ep_{episode}_step_{episode_steps}.png")
             
             if terminated or truncated:
                 break
         
-        # After episode, compute last value if not (terminated or truncated)
-        if not (terminated or truncated):
+        # Compute bootstrap value for GAE calculation
+        if truncated:
+            # Get value of final state
             data = state_to_pyg(state)
             batch = Batch.from_data_list([data]).to(config["device"])
             steps_left = batch.steps_left.to(config["device"])
             valid_indices = torch.tensor(env._get_valid_indices(), dtype=torch.long, device=config["device"])
             
             with torch.no_grad():
-                _, _, last_value_tensor = model.act(batch, steps_left, valid_indices=valid_indices)
-            last_value = last_value_tensor.cpu().item()
-
-            # Append dummy transition for last value
-            ppo.memory.store({
-                'obs': store_data,  # reuse last
-                'action': 0,  # dummy
-                'reward': 0,
-                'value': last_value,
-                'log_prob': 0,
-                'done': True
-            })
+                _, _, bootstrap_value_tensor = model.act(batch, steps_left, valid_indices=valid_indices)
+            bootstrap_value = bootstrap_value_tensor.cpu().item()
+            print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
+            
+            # Store bootstrap value in PPO memory for GAE calculation
+            ppo.memory.bootstrap_value = bootstrap_value
+        else:
+            # Episode terminated naturally - no bootstrap needed (value = 0)
+            ppo.memory.bootstrap_value = 0.0
+            print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
         
         episode_rewards.append(episode_reward)
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
         
-        # Update after each episode
-        if len(ppo.memory) > 0:
+        # Update PPO when we have enough samples in memory
+        if len(ppo.memory) >= config["update_frequency"]:
             stats = ppo.update()
-            print("Update stats:", stats)
+            print(f"PPO Update after {len(ppo.memory)} samples collected:", stats)
+    
+    # Final update if there's remaining data in memory
+    if len(ppo.memory) > 0:
+        stats = ppo.update()
+        print("Final PPO Update:", stats)
     
     return {"episode_rewards": episode_rewards, "avg_reward": np.mean(episode_rewards)}
 
-def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003
+def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003Value
     """
     Evaluate a trained policy
     """
@@ -205,13 +225,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--network", choices=["sioux_falls", "laval", "rivera", "mumford3"], default="sioux_falls", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--gpu", action="store_true", help="Use CUDA if available; defaults to CPU when not set or unavailable")
+    parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
     parser.add_argument("--horizon", type=int, default=3600, help="Simulation horizon")
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step")
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--max_episodes", type=int, default=10, help="Maximum number of training episodes")
+    parser.add_argument("--update_frequency", type=int, default=8, help="Update PPO when memory has N samples")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
@@ -234,7 +255,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--lr_schedule", type=str, default="linear", help="Learning rate schedule") 
-
     return parser
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from uxsim.BusHandler import BusHandler
-from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, pretty_print_state
+from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path
 from typing import Any, Dict, Optional, Tuple
 
 class TransitEnv(gym.Env):
@@ -380,7 +380,7 @@ class TransitEnv(gym.Env):
             return False
         return orig in current_path_str and dest in current_path_str
 
-    def _get_state(self, pretty_print: bool = False) -> Dict[str, Any]:
+    def _get_state(self, ) -> Dict[str, Any]:
         """
         Build observation state as a dict
         Normalize as necessary.
@@ -433,9 +433,6 @@ class TransitEnv(gym.Env):
             "steps_left": np.array([steps_left_norm], dtype=np.float32)
         }
         
-        if pretty_print:
-            pretty_print_state(self, state, show_od=False)
-        
         return state
     
     def reset( self, ) -> None:
@@ -457,7 +454,7 @@ class TransitEnv(gym.Env):
         plot_network_and_demand(temp_world, output_path) # Visualize only after building world
 
         # initial state
-        state = self._get_state(pretty_print=True)
+        state = self._get_state()
 
         return state, {}
     

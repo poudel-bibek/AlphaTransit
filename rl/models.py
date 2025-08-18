@@ -222,16 +222,12 @@ class GATV2ActorCritic(nn.Module):
         Flexible pooling - can easily swap to max, sum, or attention pooling.
         """
         node_features, batch = self.forward(graph_batch)
-        print(f"DEBUG: node_features after forward has NaN: {torch.isnan(node_features).any()}")
-        
+
         # Can easily change to global_max_pool, global_add_pool, etc.
         graph_features = global_mean_pool(node_features, batch)
-        print(f"DEBUG: graph_features after pooling has NaN: {torch.isnan(graph_features).any()}")
         
         # Concatenate global features (steps_left)
-        print(f"graph_features.shape: {graph_features.shape}, steps_left.shape: {steps_left.shape}")
         graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
-        print(f"DEBUG: graph_features after concat has NaN: {torch.isnan(graph_features).any()}")
         
         return graph_features
     
@@ -250,10 +246,10 @@ class GATV2ActorCritic(nn.Module):
         
         if deterministic:
             actions = dist.logits.argmax(-1)
-            print(f" Deterministic: Action {actions}")
+            print(f"\nAction (Deterministic): {actions}")
         else:
             actions = dist.sample()
-            print(f" Stochastic: Action {actions}")
+            print(f"\nAction (Stochastic): {actions}")
         
         log_probs = dist.log_prob(actions)
         

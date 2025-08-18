@@ -12,11 +12,12 @@ class PPO:
         """
         """
         self.model = model
-        
+        self.device = kwargs.get('device')
+
         # PPO hyperparameters
-        self.clip_ratio = kwargs.get('clip_ratio')
+        self.clip_frac = kwargs.get('clip_frac')
         self.K_epochs = kwargs.get('K_epochs')
-        self.mini_batch_size = kwargs.get('mini_batch_size')
+        self.batch_size = kwargs.get('batch_size')
         self.value_loss_coef = kwargs.get('value_loss_coef')
         self.entropy_coef = kwargs.get('entropy_coef')
         self.max_grad_norm = kwargs.get('max_grad_norm')
@@ -37,15 +38,15 @@ class PPO:
     def update(self) -> Dict[str, float]:
         """
         Perform PPO update using collected rollouts.
-        
-        Returns:
-            Dictionary of training statistics
+        Returns a Dict of training stats
+        - Includes GAE
+        - For the choice between KL Divergence vs. Clipping, we use clipping.
         """
 
         self.compute_gae()
         
         dataset = DatasetClass(self.memory)
-        dataloader = DataLoader(dataset, batch_size=self.mini_batch_size,shuffle=True, collate_fn=collate_fn )
+        dataloader = DataLoader(dataset, batch_size=self.batch_size,shuffle=True, collate_fn=collate_fn )
         
         # Training stats
         pg_losses, value_losses, entropy_losses = [], [], []
@@ -53,15 +54,16 @@ class PPO:
         
         # PPO epochs
         for _ in range(self.K_epochs):
-            for batch in dataloader:
-                obs = batch['obs'].to(self.model.device)
-                actions = batch['actions'].to(self.model.device)
-                old_log_probs = batch['log_probs'].to(self.model.device)
-                advantages = batch['advantages'].to(self.model.device)
-                returns = batch['returns'].to(self.model.device)
+            for batch_data in dataloader:
+
+                obs = batch_data['obs'].to(self.device)
+                actions = batch_data['actions'].to(self.device)
+                old_log_probs = batch_data['log_probs'].to(self.device)
+                advantages = batch_data['advantages'].to(self.device)
+                returns = batch_data['returns'].to(self.device)
                 
                 # Retrieve stored valid_indices
-                valid_indices = torch.tensor(batch['valid_indices'], dtype=torch.long, device=self.model.device)
+                valid_indices = torch.tensor(batch_data['valid_indices'], dtype=torch.long, device=self.device)
                 
                 # Get current policy outputs
                 log_probs, entropy, values = self.model.evaluate(obs, actions, steps_left=obs.steps_left, valid_indices=valid_indices)
@@ -72,12 +74,12 @@ class PPO:
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
                 pg_loss1 = -advantages * ratio
-                pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio)
+                pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_frac, 1 + self.clip_frac)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                 
                 # Value loss (clipped)
-                values_clipped = batch['values'].to(self.model.device) + torch.clamp(
-                    values - batch['values'].to(self.model.device), -self.clip_ratio, self.clip_ratio
+                values_clipped = batch_data['values'].to(self.device) + torch.clamp(
+                    values - batch_data['values'].to(self.device), -self.clip_frac, self.clip_frac
                 )
                 value_loss1 = (values - returns) ** 2
                 value_loss2 = (values_clipped - returns) ** 2
@@ -115,7 +117,9 @@ class PPO:
         """
         Compute Generalized Advantage Estimation for trajectories.
         Updates advantages and returns in memory.
+
         """
+
         with torch.no_grad():
             rewards = torch.tensor(self.memory.rewards, dtype=torch.float32)
             values = torch.tensor(self.memory.values, dtype=torch.float32)
@@ -125,15 +129,21 @@ class PPO:
             last_advantage = 0
             
             # Reverse iteration for GAE
-            for t in reversed(range(len(rewards))):
-                if t == len(rewards) - 1:
-                    next_value = 0  # Assuming terminal state
+            for step in reversed(range(len(rewards))):
+
+                if step == len(rewards) - 1:
+                    # Use bootstrap value for final state
+                    next_value = self.memory.bootstrap_value
                 else:
-                    next_value = values[t + 1]
+                    next_value = values[step + 1]
                 
-                delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
-                advantages[t] = delta + self.gamma * self.gae_lambda * (1 - dones[t]) * last_advantage
-                last_advantage = advantages[t]
+                # For each step, we calculate the TD error (delta). Equation 12 in the paper. delta = r + γV(s') - V(s)
+                delta = rewards[step] + self.gamma * next_value * (1 - dones[step]) - values[step]
+                
+                # Equation 11 in the paper. GAE(t) = δ(t) + (γλ)δ(t+1) + (γλ)²δ(t+2) + ...
+                advantages[step] = delta + self.gamma * self.gae_lambda * (1 - dones[step]) * last_advantage
+
+                last_advantage = advantages[step]
             
             returns = advantages + values
             

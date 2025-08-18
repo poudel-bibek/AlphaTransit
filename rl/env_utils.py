@@ -8,9 +8,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int] = None, max_edges: Optional[int] = None, show_od: bool = True) -> None:
+def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int] = None, max_edges: Optional[int] = None) -> None:
     """
-    Print OD matrix and observation fields in a readable format.
+    Print observation fields in a readable format.
     Shows shapes, samples, and mappings.
     """
     # Node and edge counts
@@ -56,14 +56,6 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
         })
     ef_df = pd.DataFrame(rows)
     print("Edge samples:\n", ef_df)
-
-    # OD matrix
-    if show_od:
-        od_df = pd.DataFrame(self.od_matrix, index=self.node_list, columns=self.node_list)
-        total_demand = float(np.sum(self.od_matrix))
-        print(f"\nOD matrix shape: {od_df.shape}, total demand: {total_demand:.4f}")
-        with pd.option_context('display.max_rows', 20, 'display.max_columns', 20, 'display.width', 120):
-            print(od_df.round(4))
 
 def plot_network_and_demand(world, output_loc: str) -> None:
     """
