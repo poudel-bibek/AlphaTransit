@@ -4,11 +4,34 @@ import numpy as np
 from torch_geometric.data import Batch, Data
 from torch.utils.data import Dataset
 
+
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Collate samples into mini-batch for PPO training.
-    Handles both graph observations and standard tensors.
+    Collate samples into mini-batch.
+    Pads valid_indices with -1; model ignores -1 during masking.
     """
+    # Handle variable-length valid_indices
+    valid_indices_list = [item['valid_indices'] for item in batch]
+    
+    if valid_indices_list and valid_indices_list[0]:  # Check if we have valid indices
+        max_valid_len = max(len(indices) for indices in valid_indices_list)
+        
+        padded_valid_indices = []
+        
+        for indices in valid_indices_list:
+            pad_len = max_valid_len - len(indices)
+            # Pad with -1 (invalid index that won't match any actual action)
+            padded = indices + [-1] * pad_len
+            
+            padded_valid_indices.append(padded)
+        
+        valid_indices_tensor = torch.tensor(padded_valid_indices, dtype=torch.long)
+    else:
+        # No constraints, all actions valid
+        batch_size = len(batch)
+        num_actions = batch[0]['actions'] if isinstance(batch[0]['actions'], int) else len(batch[0]['actions'])
+        valid_indices_tensor = None
+    
     collated = {
         'obs': Batch.from_data_list([item['obs'] for item in batch]),
         'actions': torch.tensor([item['actions'] for item in batch], dtype=torch.long),
@@ -16,74 +39,67 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         'advantages': torch.tensor([item['advantages'] for item in batch], dtype=torch.float32),
         'returns': torch.tensor([item['returns'] for item in batch], dtype=torch.float32),
         'values': torch.tensor([item['values'] for item in batch], dtype=torch.float32),
-        'valid_indices': [item['valid_indices'] for item in batch]
+        'valid_indices': valid_indices_tensor
     }
     return collated
 
-class Memory:
-    """
-    On-policy memory buffer for PPO rollouts.
-    Stores full trajectories until update.
-    """
 
+class Memory:
     def __init__(self) -> None:
-        """Initialize empty rollout buffers."""
+        """
+        Initialize empty rollout buffers.
+        """
         self.obs: List[Any] = []
         self.actions: List[Any] = []
         self.log_probs: List[float] = []
         self.rewards: List[float] = []
         self.values: List[float] = []
-        self.dones: List[bool] = []
-        
-        # Bootstrap value for GAE computation
-        self.bootstrap_value: float = 0.0
-        
-        # Computed during GAE
-        self.advantages: Optional[np.ndarray] = None
-        self.returns: Optional[np.ndarray] = None
+        self.dones: List[bool] = []  # True for terminated episodes only
         self.valid_indices: List[List[int]] = []
+        
+        # Bootstrap values for each episode (if truncated)
+        self.bootstrap_values: List[float] = []  # One per episode
+        self.episode_boundaries: List[int] = []  # Indices where episodes end
+        self.advantages = None # Will be added during GAE
+        self.returns = None
+
+    def __len__(self) -> int:
+        return len(self.obs)
 
     def store(self, transition: Dict[str, Any]) -> None:
         """
         Add transition to memory.
-        
-        Args:
-            transition: Dict with obs, action, reward, value, log_prob, done
         """
         self.obs.append(transition['obs'])
         self.actions.append(transition['action'])
         self.rewards.append(transition['reward'])
         self.values.append(transition['value'])
         self.log_probs.append(transition['log_prob'])
-        self.dones.append(transition['done'])
+        self.dones.append(transition.get('terminated', False))  # Only terminated!
         self.valid_indices.append(transition.get('valid_indices', []))
-
-    def set_bootstrap_value(self, value: float) -> None:
-        """
-        Set bootstrap value for GAE computation.
         
-        Args:
-            value: Bootstrap value for final state (0.0 if terminated, critic value if truncated)
+    def mark_episode_end(self, bootstrap_value: float = 0.0) -> None:
         """
-        self.bootstrap_value = value
+        Mark the end of an episode and store bootstrap value if needed.
+        """
+        self.episode_boundaries.append(len(self.obs) - 1)
+        self.bootstrap_values.append(bootstrap_value)
 
     def clear(self) -> None:
-        """Reset all buffers after PPO update."""
+        """
+        Reset all buffers after PPO update.
+        """
         self.obs.clear()
         self.actions.clear()
         self.rewards.clear()
         self.values.clear()
         self.log_probs.clear()
         self.dones.clear()
-        self.bootstrap_value = 0.0
-        self.advantages = None
-        self.returns = None
         self.valid_indices.clear()
-
-    def __len__(self) -> int:
-        """Return number of stored transitions."""
-        return len(self.obs)
-
+        self.bootstrap_values.clear()
+        self.episode_boundaries.clear()
+        self.advantages = None # Will be added during GAE
+        self.returns = None
 
 class DatasetClass(Dataset):
     """

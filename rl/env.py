@@ -31,7 +31,8 @@ class TransitEnv(gym.Env):
         self.delta_n = self.config.get("delta_n")
 
         self.network_dir = Path(__file__).resolve().parents[1] / "networks" / self.config.get("network")
-        self.training_save_dir = None
+        now = datetime.now()
+        self.training_save_dir = f"./training_data/{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
 
         # Important params: 
         self.SERVICE_FREQUENCY = self.config.get("service_frequency")
@@ -442,8 +443,6 @@ class TransitEnv(gym.Env):
 
         self.current_path = self._initialize_current_path(use_random=self.random_path_init)
         
-        now = datetime.now()
-        self.training_save_dir = f"./training_data/{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
         img_dir = os.path.join(self.training_save_dir, "images")
         os.makedirs(img_dir, exist_ok=True)
 

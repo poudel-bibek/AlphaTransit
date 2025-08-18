@@ -23,7 +23,6 @@ class PPO:
         self.max_grad_norm = kwargs.get('max_grad_norm')
         self.gae_lambda = kwargs.get('gae_lambda')
         self.gamma = kwargs.get('gamma')
-        self.current_timestep = 0
         
         # Learning rate settings
         self.lr = kwargs.get('lr')
@@ -31,8 +30,7 @@ class PPO:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
-
-        # Memory buffer
+        self.total_timesteps = kwargs.get('total_timesteps')
         self.memory = Memory()
 
     def update(self) -> Dict[str, float]:
@@ -61,21 +59,20 @@ class PPO:
                 old_log_probs = batch_data['log_probs'].to(self.device)
                 advantages = batch_data['advantages'].to(self.device)
                 returns = batch_data['returns'].to(self.device)
-                
-                # Retrieve stored valid_indices
-                valid_indices = torch.tensor(batch_data['valid_indices'], dtype=torch.long, device=self.device)
+
+                valid_indices = batch_data['valid_indices'].to(self.device)
                 
                 # Get current policy outputs
                 log_probs, entropy, values = self.model.evaluate(obs, actions, steps_left=obs.steps_left, valid_indices=valid_indices)
                 
                 # Normalize advantages
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero
                 
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
-                pg_loss1 = -advantages * ratio
-                pg_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_frac, 1 + self.clip_frac)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                surrogate_loss1 = -advantages * ratio
+                surrogate_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_frac, 1 + self.clip_frac)
+                surrogate_loss = torch.max(surrogate_loss1, surrogate_loss2).mean()
                 
                 # Value loss (clipped)
                 values_clipped = batch_data['values'].to(self.device) + torch.clamp(
@@ -83,13 +80,15 @@ class PPO:
                 )
                 value_loss1 = (values - returns) ** 2
                 value_loss2 = (values_clipped - returns) ** 2
+
+                # Value loss is scaled by 0.5
                 value_loss = 0.5 * torch.max(value_loss1, value_loss2).mean()
                 
                 # Entropy loss (for exploration)
                 entropy_loss = -entropy.mean()
-                
+
                 # Total loss
-                loss = pg_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
+                loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
                 
                 # Backprop
                 self.optimizer.zero_grad()
@@ -98,14 +97,15 @@ class PPO:
                 self.optimizer.step()
                 
                 # Track stats
-                pg_losses.append(pg_loss.item())
+                pg_losses.append(surrogate_loss.item())
                 value_losses.append(value_loss.item())
                 entropy_losses.append(entropy_loss.item())
-                clip_fractions.append(((ratio - 1).abs() > self.clip_ratio).float().mean().item())
+                clip_fractions.append(((ratio - 1).abs() > self.clip_frac).float().mean().item())
         
         # Clear memory after update
         self.memory.clear()
         
+        # These are average losses over the batch.
         return {
             'pg_loss': np.mean(pg_losses),
             'value_loss': np.mean(value_losses),
@@ -115,49 +115,98 @@ class PPO:
 
     def compute_gae(self) -> None:
         """
-        Compute Generalized Advantage Estimation for trajectories.
+        Generalized Advantage Estimation: reduces variance in advantage estimates compared to simple n-step returns while maintaing low bias.
         Updates advantages and returns in memory.
 
+        GAE is computed for the entire size of the buffer (but is done masking for done states). 
         """
 
         with torch.no_grad():
-            rewards = torch.tensor(self.memory.rewards, dtype=torch.float32)
-            values = torch.tensor(self.memory.values, dtype=torch.float32)
-            dones = torch.tensor(self.memory.dones, dtype=torch.float32)
-            
-            advantages = torch.zeros_like(rewards)
-            last_advantage = 0
-            
-            # Reverse iteration for GAE
-            for step in reversed(range(len(rewards))):
+            all_rewards = torch.tensor(self.memory.rewards, dtype=torch.float32)
+            all_values = torch.tensor(self.memory.values, dtype=torch.float32)
+            all_dones = torch.tensor(self.memory.dones, dtype=torch.float32)
 
-                if step == len(rewards) - 1:
-                    # Use bootstrap value for final state
-                    next_value = self.memory.bootstrap_value
-                else:
-                    next_value = values[step + 1]
+            all_advantages = torch.zeros_like(all_rewards)
+
+            # Process each episode separately to respect boundaries
+            episode_start = 0
+            for ep_idx, episode_end in enumerate(self.memory.episode_boundaries):
+                # Get episode slice
+                rewards = all_rewards[episode_start:episode_end + 1]
+                values = all_values[episode_start:episode_end + 1]
+                dones = all_dones[episode_start:episode_end + 1]
+
+                # Get bootstrap for this episode 
+                bootstrap_value = self.memory.bootstrap_values[ep_idx]
                 
-                # For each step, we calculate the TD error (delta). Equation 12 in the paper. delta = r + γV(s') - V(s)
-                delta = rewards[step] + self.gamma * next_value * (1 - dones[step]) - values[step]
+                # Initialize GAE for this episode
+                advantages = torch.zeros_like(rewards)
+
+                # Initialize the running (last) advantage to 0. This is used in the backward recursion.
+                # It represents the accumulated discounted future advantages.
+                last_advantage = 0
                 
-                # Equation 11 in the paper. GAE(t) = δ(t) + (γλ)δ(t+1) + (γλ)²δ(t+2) + ...
-                advantages[step] = delta + self.gamma * self.gae_lambda * (1 - dones[step]) * last_advantage
+                # Reverse iteration for GAE: We compute advantages starting from the end of the trajectory
+                # and work backwards. This allows us to efficiently accumulate the discounted sum
+                # without recomputing sums for each timestep (O(T) time complexity).
+                for step in reversed(range(len(rewards))):
+                
+                    # Determine the next state's value estimate (V(s_{t+1})).
+                    # For the last step (step == len(rewards) - 1), use the bootstrap value if the episode
+                    # was truncated, which estimates potential future rewards beyond the truncation point
+                    # If terminated naturally, bootstrap_value should be 0.
+                    # For earlier steps, use the critic's value estimate from the next timestep.
+                    if step == len(rewards) - 1:
+                        # For final step: use bootstrap if not terminal
+                        next_value = bootstrap_value
+                        # For truncated episodes, we DON'T want to mask the next_value
+                        # For terminated episodes, next_value is already 0
+                        next_non_terminal = 1.0 - dones[step]  # Only mask if terminated
+                    else:
+                        next_value = values[step + 1]
+                        next_non_terminal = 1.0  # Mid-episode, always non-terminal
+                
+                    # Calculate the TD error (delta) for this timestep. This is Equation (11) from the GAE paper: δ_t = r_{t} + γ * V(s_{t+1}) - V(s_t)
+                    # Where:
+                    #   - r_t (rewards[step]) is the reward received after action at step t
+                    #   - V(s_{t+1}) (next_value) is the value of the next state
+                    #   - V(s_t) (values[step]) is the value of the current state
+                    #   - The next_non_terminal mask ensures that if the step is done (terminal), we don't add γ * V(s_{t+1}), as there are no future rewards.
+                    delta = rewards[step] + self.gamma * next_value * next_non_terminal - values[step]
+                    
+                    # Compute the GAE for this timestep. This is the recursive form of: Â_t = δ_t + (γ λ) * Â_{t+1} (with masking for done states)
+                    # Where Â_{t+1} is the 'last_advantage' from the previous iteration
+                    # Unfolding this recursion gives the full sum: Â_t = δ_t + (γ λ) δ_{t+1} + (γ λ)^2 δ_{t+2} + ...
+                    # The next_non_terminal mask prevents propagating advantages across episode boundaries.
+                    advantages[step] = delta + self.gamma * self.gae_lambda * next_non_terminal * last_advantage
 
-                last_advantage = advantages[step]
-            
-            returns = advantages + values
-            
-            # Store computed values
-            self.memory.advantages = advantages.numpy()
-            self.memory.returns = returns.numpy()
+                    # Update running advantage
+                    last_advantage = advantages[step]
 
-    def update_learning_rate(self) -> None:
+                # Store to global
+                all_advantages[episode_start:episode_end + 1] = advantages
+
+                # Next episode
+                episode_start = episode_end + 1
+
+            # Compute returns = advantages + values
+            all_returns = all_advantages + all_values
+
+            # Debug print sample
+            print(f"[DEBUG] Sample advantages: {all_advantages[:5].tolist()}")
+            print(f"[DEBUG] Sample returns: {all_returns[:5].tolist()}")
+
+            # Store
+            self.memory.advantages = all_advantages.numpy()
+            self.memory.returns = all_returns.numpy()
+
+    def update_learning_rate(self, current_timestep: int) -> None:
         """
         Update learning rate according to schedule.
         Supports linear and constant schedules.
         """
         if self.lr_schedule == 'linear':
-            progress = self.current_timestep / self.total_timesteps
+            progress = current_timestep / self.total_timesteps
             new_lr = self.lr * (1 - progress)
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = new_lr

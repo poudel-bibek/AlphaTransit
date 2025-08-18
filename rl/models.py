@@ -1,4 +1,4 @@
-from typing import Any, Tuple, Optional
+from typing import Any, Tuple, Optional, Union, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -141,12 +141,23 @@ class GATV2ActorCritic(nn.Module):
 
     def _mask_logits(self, logits: torch.Tensor, valid_indices: Optional[torch.Tensor]) -> torch.Tensor:
         """
-        Option 2: Mask out logits for invalid actions.
-        Mask everything except valid actions.
+        Mask invalid actions by setting their logits to -inf.
+        Handles batches: valid_indices [batch, max_valid] padded with -1.
+        Ignores -1 during masking.
         """
+        if valid_indices is None:
+            return logits
+
         MASK_VALUE = float('-inf')
         mask = torch.zeros_like(logits, dtype=torch.bool)
-        mask[0, valid_indices] = True
+
+        batch_size = logits.shape[0]
+        for b in range(batch_size):
+            valid = valid_indices[b]
+            valid = valid[valid >= 0]  # Ignore padding
+            if len(valid) > 0:
+                mask[b, valid] = True
+
         return logits.masked_fill(~mask, MASK_VALUE)
 
     def _compute_dist_and_value(self, graph_batch: Batch, steps_left: Optional[torch.Tensor], valid_indices: Optional[torch.Tensor]) -> Tuple[Categorical, torch.Tensor]:
@@ -242,14 +253,20 @@ class GATV2ActorCritic(nn.Module):
             values: Value estimates
         """
         
+        # Handle dead-end: no valid actions, return dummy action and value only
+        if valid_indices.shape[1] == 0:
+            features = self.readout_layer(graph_batch, steps_left)
+            values = self.critic_net(features).squeeze(-1)
+            return torch.tensor([-1], device=graph_batch.x.device), torch.tensor([0.0], device=graph_batch.x.device), values
+        
         dist, values = self._compute_dist_and_value(graph_batch, steps_left, valid_indices)
         
         if deterministic:
             actions = dist.logits.argmax(-1)
-            print(f"\nAction (Deterministic): {actions}")
+            print(f"\n\tAction (Deterministic): {actions}\n")
         else:
             actions = dist.sample()
-            print(f"\nAction (Stochastic): {actions}")
+            print(f"\n\tAction (Stochastic): {actions}\n")
         
         log_probs = dist.log_prob(actions)
         

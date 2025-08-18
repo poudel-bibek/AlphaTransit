@@ -102,9 +102,12 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         print(f"  {k}: {v:,}")
     ppo = PPO(model, **config)
     
+    steps_elapsed = 0
     episode_rewards = []
     
-    for episode in range(1, config["max_episodes"] + 1):
+    episode = 0
+    while steps_elapsed < config["total_timesteps"]:
+        episode += 1
         print(f"\n=== Episode {episode} ===")
         
         state, _ = env.reset()
@@ -115,24 +118,34 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         
         while True:
             data = state_to_pyg(state)
-            print(f"\nData: type: {type(data)}, value: {data}")
+            print("\nEpisode data: ")
+            print(f"\tData: type: {type(data)}, value: {data}")
 
             batch = Batch.from_data_list([data]).to(config["device"])
 
             steps_left = batch.steps_left.to(config["device"])
 
             # Constraints.
-            valid_indices = torch.tensor(env._get_valid_indices(), dtype=torch.long, device=config["device"])
-            print(f"\nValid indices: type: {type(valid_indices)}, shape: {valid_indices.shape}, value: {valid_indices}, device: {valid_indices.device}")
+            valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
+            print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
             
             with torch.no_grad():
                 action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices)
-                print(f"\nAction tensor: type: {type(action_tensor)}, shape: {action_tensor.shape}, value: {action_tensor}, device: {action_tensor.device}")
-                print(f"\nLog prob tensor: type: {type(log_prob_tensor)}, shape: {log_prob_tensor.shape}, value: {log_prob_tensor}, device: {log_prob_tensor.device}")
-                print(f"\nValue tensor: type: {type(value_tensor)}, shape: {value_tensor.shape}, value: {value_tensor}, device: {value_tensor.device}")
+                print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
+                print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
+                print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
             
-            action = action_tensor.cpu().item() 
-            next_state, reward, terminated, truncated, _ = env.step(action)
+            action = action_tensor.cpu().item()
+
+            if action == -1:
+                print("[DEBUG] Dead-end: No valid actions, truncating with penalty")
+                reward = -100.0
+                terminated = False
+                truncated = True
+                next_state = state
+            else:
+                next_state, reward, terminated, truncated, _ = env.step(action)
+
             episode_reward += reward
             
             # Store on CPU
@@ -149,10 +162,11 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
                 'reward': reward,
                 'value': value_tensor.cpu().item(),
                 'log_prob': log_prob_tensor.cpu().item(),
-                'done': terminated or truncated,
-                'valid_indices': valid_indices.cpu().tolist()
+                'terminated': terminated,  # Natural end
+                'truncated': truncated,    # Time limit
+                'valid_indices': valid_indices.squeeze(0).cpu().tolist()  # Flatten to list[int] (single env)
             })
-            
+                    
             state = next_state
             episode_steps += 1
     
@@ -162,37 +176,62 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
                 break
         
         # Compute bootstrap value for GAE calculation
-        if truncated:
-            # Get value of final state
-            data = state_to_pyg(state)
-            batch = Batch.from_data_list([data]).to(config["device"])
-            steps_left = batch.steps_left.to(config["device"])
-            valid_indices = torch.tensor(env._get_valid_indices(), dtype=torch.long, device=config["device"])
+        if terminated or truncated:
+
+            bootstrap_value = 0.0
+            if truncated:
+                # Compute bootstrap value only if truncated.
+                data = state_to_pyg(state)
+                batch = Batch.from_data_list([data]).to(config["device"])
+                steps_left = batch.steps_left.to(config["device"])
+                valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
+                
+                with torch.no_grad(): 
+                    print("[DEBUG] Computing bootstrap value for truncated episode")
+                    _, _, bootstrap_value_tensor = model.act(batch, steps_left, deterministic=True, valid_indices=valid_indices) # Get value of final state
+                bootstrap_value = bootstrap_value_tensor.cpu().item()
+                print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
             
-            with torch.no_grad():
-                _, _, bootstrap_value_tensor = model.act(batch, steps_left, valid_indices=valid_indices)
-            bootstrap_value = bootstrap_value_tensor.cpu().item()
-            print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
-            
-            # Store bootstrap value in PPO memory for GAE calculation
-            ppo.memory.bootstrap_value = bootstrap_value
-        else:
-            # Episode terminated naturally - no bootstrap needed (value = 0)
-            ppo.memory.bootstrap_value = 0.0
-            print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
+            else:
+                # Episode terminated naturally - no bootstrap needed (value = 0)
+                print("[DEBUG] Natural termination - bootstrap=0")
+                print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
         
+            # Mark episode boundary with bootstrap value.
+            ppo.memory.mark_episode_end(bootstrap_value)
+
+        steps_elapsed += episode_steps
         episode_rewards.append(episode_reward)
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
+            # update learning rate
+            ppo.update_learning_rate(steps_elapsed)
+            mem_len = len(ppo.memory)  # Store before update clears it
             stats = ppo.update()
-            print(f"PPO Update after {len(ppo.memory)} samples collected:", stats)
+            print("\n=== PPO Update ===")
+            print(f"Step: {steps_elapsed}")
+            print(f"Samples: {mem_len}")
+            print(f"PG Loss: {stats['pg_loss']:.4f}")
+            print(f"Value Loss: {stats['value_loss']:.4f}")
+            print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
+            print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
+            print("==================\n")
     
     # Final update if there's remaining data in memory
     if len(ppo.memory) > 0:
+        ppo.update_learning_rate(steps_elapsed)
+        mem_len = len(ppo.memory)
         stats = ppo.update()
-        print("Final PPO Update:", stats)
+        print("\n=== Final PPO Update ===")
+        print(f"Step: {steps_elapsed}")
+        print(f"Samples: {mem_len}")
+        print(f"PG Loss: {stats['pg_loss']:.4f}")
+        print(f"Value Loss: {stats['value_loss']:.4f}")
+        print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
+        print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
+        print("======================\n")
     
     return {"episode_rewards": episode_rewards, "avg_reward": np.mean(episode_rewards)}
 
@@ -231,8 +270,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--max_episodes", type=int, default=10, help="Maximum number of training episodes")
     parser.add_argument("--update_frequency", type=int, default=8, help="Update PPO when memory has N samples")
+    parser.add_argument("--total_timesteps", type=int, default=100000, help="Total training timesteps")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
@@ -247,7 +286,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=10, help="Number of PPO epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="Mini-batch size")
-    parser.add_argument("--clip_frac", type=int, default=0.2, help="PPO clipping ratio")
+    parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
     parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
