@@ -115,17 +115,22 @@ class PPO:
 
     def compute_gae(self) -> None:
         """
-        Generalized Advantage Estimation: reduces variance in advantage estimates compared to simple n-step returns while maintaing low bias.
-        Updates advantages and returns in memory.
-
-        GAE is computed for the entire size of the buffer (but is done masking for done states). 
+        Generalized Advantage Estimation
+        The setup has:
+        - a single environment
+        - episode truncation based on certain conditions
+        - a buffer that collects samples till update() is called after a threshold size.
+        However, advantage calculations cannot cross episode boundaries i.e., we must reset calculation at the start of each episode.
+        Hence we make use of: 
+        - episode_boundaries: indices where episodes end
+        - bootstrap_values: values of the last state of each episode
         """
 
         with torch.no_grad():
+            # Get potentially multi-episode data.
             all_rewards = torch.tensor(self.memory.rewards, dtype=torch.float32)
             all_values = torch.tensor(self.memory.values, dtype=torch.float32)
             all_dones = torch.tensor(self.memory.dones, dtype=torch.float32)
-
             all_advantages = torch.zeros_like(all_rewards)
 
             # Process each episode separately to respect boundaries
@@ -150,22 +155,22 @@ class PPO:
                 # and work backwards. This allows us to efficiently accumulate the discounted sum
                 # without recomputing sums for each timestep (O(T) time complexity).
                 for step in reversed(range(len(rewards))):
-                
+                    
+                    # For truncated episodes, we DON'T want to mask the next_value (because we want to use the bootstrap value)
+                    # For terminated episodes, next_value is already 0
+                    next_non_terminal = 1.0 - dones[step]  # Only mask if terminated
+
                     # Determine the next state's value estimate (V(s_{t+1})).
                     # For the last step (step == len(rewards) - 1), use the bootstrap value if the episode
                     # was truncated, which estimates potential future rewards beyond the truncation point
                     # If terminated naturally, bootstrap_value should be 0.
                     # For earlier steps, use the critic's value estimate from the next timestep.
                     if step == len(rewards) - 1:
-                        # For final step: use bootstrap if not terminal
-                        next_value = bootstrap_value
-                        # For truncated episodes, we DON'T want to mask the next_value
-                        # For terminated episodes, next_value is already 0
-                        next_non_terminal = 1.0 - dones[step]  # Only mask if terminated
+                        next_value = bootstrap_value # For final step: use bootstrap. This value is 0.0 if terminated.
+                        # This this is 0.0, this automatically acts as a mask for the next_non_terminal. But still keeping next_non_terminal because is used in the last equation.
                     else:
                         next_value = values[step + 1]
-                        next_non_terminal = 1.0  # Mid-episode, always non-terminal
-                
+
                     # Calculate the TD error (delta) for this timestep. This is Equation (11) from the GAE paper: δ_t = r_{t} + γ * V(s_{t+1}) - V(s_t)
                     # Where:
                     #   - r_t (rewards[step]) is the reward received after action at step t
@@ -191,10 +196,6 @@ class PPO:
 
             # Compute returns = advantages + values
             all_returns = all_advantages + all_values
-
-            # Debug print sample
-            print(f"[DEBUG] Sample advantages: {all_advantages[:5].tolist()}")
-            print(f"[DEBUG] Sample returns: {all_returns[:5].tolist()}")
 
             # Store
             self.memory.advantages = all_advantages.numpy()

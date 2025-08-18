@@ -160,19 +160,19 @@ class GATV2ActorCritic(nn.Module):
 
         return logits.masked_fill(~mask, MASK_VALUE)
 
-    def _compute_dist_and_value(self, graph_batch: Batch, steps_left: Optional[torch.Tensor], valid_indices: Optional[torch.Tensor]) -> Tuple[Categorical, torch.Tensor]:
+    def _compute_dist_and_value(self, 
+                                graph_batch: Batch, 
+                                steps_left: Optional[torch.Tensor], 
+                                valid_indices: Optional[torch.Tensor]
+                                ) -> Tuple[Categorical, torch.Tensor]:
         """
+        Returns a dummy action (-1) if episode is truncated. Still need to return a value in this case.
         """
         features = self.readout_layer(graph_batch, steps_left)
-
         logits = self.actor_net(features)
-
         values = self.critic_net(features).squeeze(-1)
-
         masked_logits = self._mask_logits(logits, valid_indices)
-
         dist = Categorical(logits=masked_logits)
-        
         return dist, values
 
     def layer_init(self, layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Linear:
@@ -242,22 +242,27 @@ class GATV2ActorCritic(nn.Module):
         
         return graph_features
     
-    def act(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None, deterministic: bool = False, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def act(self, graph_batch: Batch, 
+            steps_left: Optional[torch.Tensor] = None, 
+            deterministic: bool = False, 
+            valid_indices: Optional[torch.Tensor] = None
+            ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Select next node to add to route.
         Samples stochastically during training, can be deterministic for eval.
-        
         Returns:
             actions: Selected node indices
             log_probs: Log probabilities of selections
             values: Value estimates
         """
         
-        # Handle dead-end: no valid actions, return dummy action and value only
+        # Handle truncation
         if valid_indices.shape[1] == 0:
             features = self.readout_layer(graph_batch, steps_left)
             values = self.critic_net(features).squeeze(-1)
-            return torch.tensor([-1], device=graph_batch.x.device), torch.tensor([0.0], device=graph_batch.x.device), values
+            dummy_action = torch.tensor([-1], device=graph_batch.x.device)
+            dummy_log_prob = torch.tensor([0.0], device=graph_batch.x.device)
+            return dummy_action, dummy_log_prob, values
         
         dist, values = self._compute_dist_and_value(graph_batch, steps_left, valid_indices)
         

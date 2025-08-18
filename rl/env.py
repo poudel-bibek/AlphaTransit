@@ -666,40 +666,28 @@ class TransitEnv(gym.Env):
         Run the simulation on the current route and get metrics.
 
         Episode termination conditions: 
-            - Max path length reached. Max path length is also the number of steps in the episode.
-        Episode truncation conditions: 
-            - Gets stuck in a dead-end i.e., had only 1 neighbor, (which is already in the path)      
+            - Max path length reached. Max path length is also the number of steps in the episode.   
         """
-        
-        # 1. Check truncation (before action is applied)
-        truncated = False
-        valid_indices = self._get_valid_indices()
-        if len(valid_indices) == 0:
-            truncated = True
-            print(f" ❌ Invalid: Action {action} is a dead-end. No valid next nodes.")
-            # Immediately return with truncated=True, reward=0, terminated=False
-            truncation_penalty = -100.0
-            return self._get_state(), truncation_penalty, False, truncated, {}
 
-        # 2. Build_world needs to happen every step.
+        # 1. Build_world needs to happen every step.
         # i.e., add the network and the classified demand (bus vs car).
         self.world = self.build_world(self.config.get("network"))
         
-        # 3. Add action to current_path, spawn necessary buses, and set their routes.
+        # 2. Add action to current_path, spawn necessary buses, and set their routes.
         action = self.idx_to_node[action]
         self._apply_action(action)
         print(f"Current path: {self.current_path}")
         
-        # 4. Run the full simulation upto horizon end.
+        # 3. Run the full simulation upto horizon end.
         sim_result = self._step_until(self.horizon)
         
-        # 5. Compute reward
+        # 4. Compute reward
         reward = self.compute_reward(sim_result)
         
-        # 6. Check termination
+        # 5. Check termination
         terminated = len(self.current_path) >= self.MAX_PATH_LENGTH
 
-        return self._get_state(), reward, terminated, truncated, {}
+        return self._get_state(), reward, terminated, {}
     
     def _get_valid_indices(self) -> list:
         """

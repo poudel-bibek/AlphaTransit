@@ -78,11 +78,11 @@ class Memory:
         self.dones.append(transition.get('terminated', False))  # Only terminated!
         self.valid_indices.append(transition.get('valid_indices', []))
         
-    def mark_episode_end(self, bootstrap_value: float = 0.0) -> None:
+    def mark_episode_end(self, bootstrap_value: float) -> None:
         """
         Mark the end of an episode and store bootstrap value if needed.
         """
-        self.episode_boundaries.append(len(self.obs) - 1)
+        self.episode_boundaries.append(len(self.obs) - 1) # 0-indexed
         self.bootstrap_values.append(bootstrap_value)
 
     def clear(self) -> None:
