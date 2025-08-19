@@ -104,14 +104,18 @@ class TransitEnv(gym.Env):
         # Edge index and features:
         edge_index_list = []
         edge_attr_list = []
+        self.link_lengths = {}
         for _, row in df_links.iterrows():
             x, y = str(row['start']), str(row['end'])
             if x in self.node_to_idx and y in self.node_to_idx:
                 i, j = self.node_to_idx[x], self.node_to_idx[y]
                 edge_index_list.append([i, j]) # Add the i, j indices of the edge
 
+                length = row['length']
+                self.link_lengths[(x, y)] = length
+
                 # Now edge attributes: Normalize to [0,1] and add
-                length_norm = (row['length'] - self.min_length) / (self.max_length - self.min_length) 
+                length_norm = (length - self.min_length) / (self.max_length - self.min_length) 
                 speed_norm = (row['u'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) 
                 edge_attr_list.append([length_norm, speed_norm]) # Add the normalized edge attributes
 
@@ -640,20 +644,46 @@ class TransitEnv(gym.Env):
         Components: 
         1.Travel efficiency: 
         - First priority on what we are optimizing for. 
-        - Minimize total travel time across all passengers. 
-            - Do not use average travel time. This could lead to reward hacking i.e., agent may connect nodes with low demand.
-            - Using total travel time also accounts for ``demand-weighted efficiency''.
+        - Reward = # of passengers served (routes completed) / (total travel time + c.route_length)
+            - encourages smaller total travel time
+            - encourages shorter routes (physical length)
+            - encourages serving high number of passengers (i.e., routes need to connect to high-demand O-D pairs)
+        - c is a constant. 
 
-        2. Further reward hacking prevention: 
-        - Add a utilization component to the reward
-        - Intuition: good routes cover high-demand O-D pairs 
-        - Set a minimum total demand that must be served by the route?
+        ---------
+        An improper reward formulation could lead to reward hacking: 
+        - Example: 
+            - Maximize reward by selecting nodes with low demand so the average travel time is low.
+        - How to prevent: 
+            - Add an utilization component
 
+        ---------
+        On normalizing the reward: 
+        - Applying the Welford Normalization to the returns, not the absolute reward values.
+        - Normalizing raw rewards can be a problem, example: 
+            - Episode 1: Total travel time = 1000s → reward = -1000
+            - Episode 100: Total travel time = 500s → reward = -500
+            - Without normalization: Clear improvement! (-500 > -1000)
+            - With normalization: Both might map to ~0 (relative to running mean)
+            - The agent can't tell it's improving!
         """
- 
-        # 1. Extract travel time data and compute component 1: travel efficiency
-        # The negative of total travel time (minimize travel time = maximize negative travel time)
-        reward_component_1 = -sim_result['total_travel_time']
+        c = 0.1
+        # Calculate route length
+        route_length = 0.0
+        for i in range(len(self.current_path) - 1):
+            route_length += self.link_lengths[(str(self.current_path[i]), str(self.current_path[i+1]))]
+        
+        passengers_served = sim_result['total_passengers_completed_trip']
+        total_travel_time = sim_result['total_travel_time'] # Includes waiting time as well. 
+        
+        denominator = total_travel_time + c * route_length
+        
+        if denominator == 0:
+            # maybe due to total_travel_time being zero i.e., did not form a route yet.
+            # it wont be because route_length is zero.
+            reward_component_1 = -50.0
+        else:
+            reward_component_1 = passengers_served / denominator
         
         total_reward = reward_component_1
 

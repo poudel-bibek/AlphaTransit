@@ -1,4 +1,3 @@
-from operator import concat
 import os
 from rl.env_utils import pretty_print_state
 import torch
@@ -25,6 +24,47 @@ def state_to_pyg(state: Dict[str, Any]) -> Data:
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
     data.steps_left = steps_left
     return data
+
+def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
+    """
+    """
+    print("\n==================\n")
+    print("Memory contents:")
+    print(f"\tNumber of transitions: {len(ppo.memory)}")
+    print(f"\tRewards: {ppo.memory.rewards}")
+    print(f"\tActions: {ppo.memory.actions}")
+    print(f"\tLog probs: {ppo.memory.log_probs}")
+    print(f"\tValues: {ppo.memory.values}")
+    print(f"\tDones: {ppo.memory.dones}")
+    print(f"\tEpisode boundaries: {ppo.memory.episode_boundaries}")
+    print(f"\tBootstrap values: {ppo.memory.bootstrap_values}")
+
+    if anneal_lr:
+        ppo.update_learning_rate(steps_elapsed)
+
+    mem_len = len(ppo.memory)  
+    stats = ppo.update() # Also clears the memory.
+
+    print("\n=== PPO Update ===")
+    print(f"Step: {steps_elapsed}")
+    print(f"Samples: {mem_len}")
+    print(f"PG Loss: {stats['pg_loss']:.4f}")
+    print(f"Value Loss: {stats['value_loss']:.4f}")
+    print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
+    print(f"Clipping Frequency: {stats['clipping_frequency']:.4f}")
+    print(f"Mean Reward: {stats['mean_reward']:.4f}")
+    print(f"Approx KL: {stats['approx_kl']:.4f}")
+    print(f"Mean Clip Ratio: {stats['mean_clip_ratio']:.4f}")
+    print("==================\n")
+    wandb.log({
+        "policy_loss": stats['pg_loss'],
+        "value_loss": stats['value_loss'],
+        "entropy_loss": stats['entropy_loss'],
+        "clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
+        "mean_reward": stats['mean_reward'], # Average reward over the batch.
+        "approx_kl": stats['approx_kl'],
+        "mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
+    }, step=steps_elapsed)
 
 def train(config: Dict[str, Any]) -> None:
     """
@@ -118,7 +158,7 @@ def train(config: Dict[str, Any]) -> None:
         state, _ = env.reset()
         pretty_print_state(env, state)
         episode_reward, episode_steps = 0, 0
-        truncated, terminated = False, False
+        terminated = False
         bootstrap_value = None  # Initialize outside loop
 
         while True:
@@ -131,32 +171,19 @@ def train(config: Dict[str, Any]) -> None:
             valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
             print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
             
-            if valid_indices.shape[1] == 0:
-                truncated = True
-                reward = -100.0 # Penalty for truncation.
+            if valid_indices.shape[1] == 0: # Episode is truncated.
 
-                action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices, truncated=True)
-                
-                store_data = Data(
-                    x=data.x.cpu(),
-                    edge_index=data.edge_index.cpu(),
-                    edge_attr=data.edge_attr.cpu(),
-                    steps_left=data.steps_left.cpu()
-                )
+                # TODO: Penalty set to an arbitrary high value (hard-coded).
+                # Make it configurable based on how bad of the truncation was.
+                truncation_penalty = -100.0
 
-                # Need to store this final transition
-                ppo.memory.store({
-                    'obs': store_data,
-                    'action': action_tensor.cpu().item(),  # Will be a dummy node i.e., -1. 
-                    'reward': reward,
-                    'value': value_tensor.cpu().item(),
-                    'log_prob': log_prob_tensor.cpu().item(),
-                    'terminated': False,
-                    'truncated': True,
-                    'valid_indices': []
-                })
+                _, _, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices, truncated=True)
+                bootstrap_value = value_tensor.cpu().item()
 
-                bootstrap_value = value_tensor.cpu().item()  # Use this for bootstrap
+                if len(ppo.memory) > 0:
+                    ppo.memory.rewards[-1] += truncation_penalty  # Add penalty to the reward of the action that led here
+                episode_reward += truncation_penalty
+
                 print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
                 break
 
@@ -168,10 +195,9 @@ def train(config: Dict[str, Any]) -> None:
             
             action = action_tensor.cpu().item() 
             next_state, reward, terminated, _ = env.step(action)
-
             episode_reward += reward
             
-            # Store on CPU
+            # Store transition
             store_data = Data(
                 x=data.x.cpu(),
                 edge_index=data.edge_index.cpu(),
@@ -185,14 +211,12 @@ def train(config: Dict[str, Any]) -> None:
                 'reward': reward,
                 'value': value_tensor.cpu().item(),
                 'log_prob': log_prob_tensor.cpu().item(),
-                'terminated': terminated,  # Natural end
-                'truncated': truncated,    
+                'terminated': terminated,  # Natural end    
                 'valid_indices': valid_indices.squeeze(0).cpu().tolist()  # Flatten to list[int] (single env)
             })
                     
             state = next_state
             episode_steps += 1
-    
             env.render(f"ep_{episode}_step_{episode_steps}.png")
             
             if terminated:
@@ -204,65 +228,21 @@ def train(config: Dict[str, Any]) -> None:
         ppo.memory.mark_episode_end(bootstrap_value)
 
         steps_elapsed += episode_steps
-        episode_rewards.append(episode_reward)
+        episode_rewards.append(episode_reward) # This reward is not logged
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
-            print("\n==================\n")
-            print("Memory contents:")
-            print(f"\tNumber of transitions: {len(ppo.memory)}")
-            print(f"\tRewards: {ppo.memory.rewards}")
-            print(f"\tActions: {ppo.memory.actions}")
-            print(f"\tLog probs: {ppo.memory.log_probs}")
-            print(f"\tValues: {ppo.memory.values}")
-            print(f"\tDones: {ppo.memory.dones}")
-            print(f"\tEpisode boundaries: {ppo.memory.episode_boundaries}")
-            print(f"\tBootstrap values: {ppo.memory.bootstrap_values}")
-
-            ppo.update_learning_rate(steps_elapsed)
-            mem_len = len(ppo.memory)  
-            stats = ppo.update() # Also clears the memory.
-            print("\n=== PPO Update ===")
-            print(f"Step: {steps_elapsed}")
-            print(f"Samples: {mem_len}")
-            print(f"PG Loss: {stats['pg_loss']:.4f}")
-            print(f"Value Loss: {stats['value_loss']:.4f}")
-            print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
-            print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
-            print("==================\n")
-            wandb.log({
-                "policy_loss": stats['pg_loss'],
-                "value_loss": stats['value_loss'],
-                "entropy_loss": stats['entropy_loss'],
-                "clip_fraction": stats['clip_fraction'],
-            }, step=steps_elapsed)
+            perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
     
     # Final update if there's remaining data in memory
     if len(ppo.memory) > 0:
-        ppo.update_learning_rate(steps_elapsed)
-        mem_len = len(ppo.memory)
-        stats = ppo.update()
-        print("\n=== Final PPO Update ===")
-        print(f"Step: {steps_elapsed}")
-        print(f"Samples: {mem_len}")
-        print(f"PG Loss: {stats['pg_loss']:.4f}")
-        print(f"Value Loss: {stats['value_loss']:.4f}")
-        print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
-        print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
-        print("======================\n")
-        wandb.log({
-            "policy_loss": stats['pg_loss'],
-            "value_loss": stats['value_loss'],
-            "entropy_loss": stats['entropy_loss'],
-            "clip_fraction": stats['clip_fraction'],
-        }, step=steps_elapsed)
-    
+        perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
+
     avg_reward = np.mean(episode_rewards)
     wandb.log({"avg_episode_reward": avg_reward}, step=steps_elapsed)
     
-
-def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003Value
+def eval(config: Dict[str, Any]) -> Dict[str, float]: 
     """
     Evaluate a trained policy
     """
@@ -307,7 +287,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=16, help="Update PPO when memory has N samples")
-    parser.add_argument("--total_timesteps", type=int, default=100000, help="Total training timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=500000, help="Total training timesteps")
+    parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")

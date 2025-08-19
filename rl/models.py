@@ -1,7 +1,6 @@
-from typing import Any, Tuple, Optional, Union, List
+from typing import Tuple, Optional
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from torch.distributions import Categorical
 from torch_geometric.nn import GATv2Conv, global_mean_pool
@@ -86,10 +85,17 @@ class GATV2ActorCritic(nn.Module):
         # Second layer should output [num_nodes, hidden_gat_dims[1]] (concat = True)
         gat_layers = []
         for i in range(self.num_layers):
-            if self.concat:
-                in_dim = self.gat_channels[0] if i == 0 else self.gat_channels[i]*self.num_heads[i-1]
+            if i == 0:
+                # First layer always takes original node features
+                in_dim = self.gat_channels[0]
             else:
-                in_dim = self.gat_channels[i]
+                # Subsequent layers depend on concat setting
+                if self.concat:
+                    # Previous layer output: out_channels * num_heads
+                    in_dim = self.gat_channels[i] * self.num_heads[i-1]
+                else:
+                    # Previous layer output: out_channels (averaged across heads)
+                    in_dim = self.gat_channels[i]
 
             out_dim = self.gat_channels[i+1]
             
@@ -148,7 +154,7 @@ class GATV2ActorCritic(nn.Module):
         if valid_indices is None:
             return logits
 
-        MASK_VALUE = float('-inf')
+        MASK_VALUE = -1e9  # Large negative instead of -inf to avoid NaNs
         mask = torch.zeros_like(logits, dtype=torch.bool)
 
         batch_size = logits.shape[0]
@@ -158,7 +164,12 @@ class GATV2ActorCritic(nn.Module):
             if len(valid) > 0:
                 mask[b, valid] = True
 
-        return logits.masked_fill(~mask, MASK_VALUE)
+        # print("[DEBUG] Original logits:\n", logits)
+        # print("[DEBUG] Valid indices:\n", valid_indices)
+        # print("[DEBUG] Mask (True for valid):\n", mask)
+        masked = logits.masked_fill(~mask, MASK_VALUE)
+        # print("[DEBUG] Masked logits:\n", masked)
+        return masked
 
     def _compute_dist_and_value(self, 
                                 graph_batch: Batch, 
@@ -173,6 +184,7 @@ class GATV2ActorCritic(nn.Module):
         values = self.critic_net(features).squeeze(-1)
         masked_logits = self._mask_logits(logits, valid_indices)
         dist = Categorical(logits=masked_logits)
+        # print("[DEBUG] Distribution probs:\n", dist.probs)
         return dist, values
 
     def layer_init(self, layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Linear:
@@ -275,6 +287,7 @@ class GATV2ActorCritic(nn.Module):
             print(f"\n\tAction (Stochastic): {actions}\n")
         
         log_probs = dist.log_prob(actions)
+        # print(f"[DEBUG] Log probs: {log_probs}")
         return actions, log_probs, values
     
     def evaluate(self, graph_batch: Batch, actions: torch.Tensor, steps_left: Optional[torch.Tensor] = None, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

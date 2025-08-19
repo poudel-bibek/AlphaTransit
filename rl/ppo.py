@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Dict
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -48,7 +48,8 @@ class PPO:
         
         # Training stats
         pg_losses, value_losses, entropy_losses = [], [], []
-        clip_fractions = []
+        clipping_frequencies = []
+        approx_kls, clip_ratios = [], []
         
         # PPO epochs
         for _ in range(self.K_epochs):
@@ -86,6 +87,8 @@ class PPO:
                 
                 # Entropy loss (for exploration)
                 entropy_loss = -entropy.mean()
+                approx_kls.append((old_log_probs - log_probs).mean().item())
+                clip_ratios.append(ratio.mean().item())
 
                 # Total loss
                 loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
@@ -100,8 +103,9 @@ class PPO:
                 pg_losses.append(surrogate_loss.item())
                 value_losses.append(value_loss.item())
                 entropy_losses.append(entropy_loss.item())
-                clip_fractions.append(((ratio - 1).abs() > self.clip_frac).float().mean().item())
+                clipping_frequencies.append(((ratio - 1).abs() > self.clip_frac).float().mean().item())
         
+        mean_reward = np.mean(self.memory.rewards)
         # Clear memory after update
         self.memory.clear()
         
@@ -110,7 +114,10 @@ class PPO:
             'pg_loss': np.mean(pg_losses),
             'value_loss': np.mean(value_losses),
             'entropy_loss': np.mean(entropy_losses),
-            'clip_fraction': np.mean(clip_fractions)
+            'clipping_frequency': np.mean(clipping_frequencies),
+            'mean_reward': mean_reward,
+            'approx_kl': np.mean(approx_kls),
+            'mean_clip_ratio': np.mean(clip_ratios)
         }
 
     def compute_gae(self) -> None:

@@ -1,7 +1,7 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import torch
 import numpy as np
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import Batch
 from torch.utils.data import Dataset
 
 
@@ -28,8 +28,6 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         valid_indices_tensor = torch.tensor(padded_valid_indices, dtype=torch.long)
     else:
         # No constraints, all actions valid
-        batch_size = len(batch)
-        num_actions = batch[0]['actions'] if isinstance(batch[0]['actions'], int) else len(batch[0]['actions'])
         valid_indices_tensor = None
     
     collated = {
