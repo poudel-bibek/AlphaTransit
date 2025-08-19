@@ -1,100 +1,64 @@
+import torch
+import wandb
+from main import get_config, train, set_global_seeds
 from typing import Any, Dict, Optional, Sequence
-
-# Import the train entrypoint to demonstrate config flow
-from main import train
-
-
-class SweepRunner:
-    """
-    Orchestrates hyperparameter sweeps compatible with W&B.
-    Wraps training entrypoints with a config-driven interface.
-    Only the interfaces are provided here.
-    """
-
-    def __init__(self, base_config: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Accept a base configuration to be merged with sweep values.
-        No external services are initialized in the skeleton.
-        Prepares for later integration with logging backends.
-        """
-        self.base_config = dict(base_config or {})
-
-    def run(self, sampled_params: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Merge base config with sampled parameters and run training.
-        Returns the metrics dict produced by the training routine.
-        This is the per-trial entrypoint for sweep agents.
-        """
-        final_config = merge_configs(self.base_config, sampled_params)
-        return sweep_main(final_config)
-
 
 def build_sweep_config() -> Dict[str, Any]:
     """
-    Define the sweep search space and default settings.
-    Return a config dict suitable for W&B or custom runners.
-    Implementation will populate parameters later.
+    Define the sweep search space 
     """
-    # Example sweep config with a few hyperparameters.
+
     return {
-        "method": "bayes",
-        "metric": {"name": "evals/avg_ped_arrival", "goal": "minimize"},
+        "method": "random",
+        
+        "metric": {"name": "avg_reward", 
+                    "goal": "maximize"},
+
         "parameters": {
-            "lr": {"values": [1e-4, 3e-4, 1e-3]},
-            "clip_coef": {"values": [0.1, 0.2, 0.3]},
-            "gae_lambda": {"values": [0.9, 0.95]},
-            "num_envs": {"values": [4, 8]},
-            "seed": {"values": [0, 1, 2]},
+            "lr": {"distribution": "uniform", "min": 1e-5, "max": 1e-3},
+            "clip_frac": {"values": [0.1, 0.2, 0.3]},
+            "gae_lambda": {"values": [0.9, 0.95, 0.98]},
+            "batch_size": {"values": [32, 64, 128]},
+            "seed": {"values": [0, 1, 2, 3]},
         },
     }
 
-
-def merge_configs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def agent_train() -> None:
     """
-    Shallow-merge two configuration dictionaries.
-    Values in override take precedence over values in base.
-    Returns a new dictionary without mutating inputs.
+    Function to be called by wandb.agent for each sweep run.
+    Initializes WandB run, merges configs, runs training, logs metrics.
     """
-    merged = dict(base)
-    merged.update(dict(override))
-    return merged
+    with wandb.init() as run:
+        # Get sampled params from sweep
+        sampled_params = dict(wandb.config)
+        
+        # Get defaults and merge with sampled
+        base_config = get_config()
+        config = {**base_config, **sampled_params}
+        config["wandb_off"] = True  # Disable nested WandB in train
+        
+        set_global_seeds(config["seed"])
+        device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
+        config["device"] = device
+        
+        # Run training
+        metrics = train(config)
+        
+        # Log the key metric
+        wandb.log({"avg_reward": metrics["avg_reward"]})
 
-
-def sweep_main(config: Dict[str, Any]) -> None:
+def main() -> None:
     """
-    Entry point used by an agent to run a single trial.
-    Delegates to the training routine with the provided config.
-    Logging and checkpointing will be added later.
     """
-    return train(config)
-
-
-def main(argv: Optional[Sequence[str]] = None) -> None:
-    """
-    Optionally launch a local sweep controller or agent.
-    Keeps sweep orchestration separate from CLI main.
-    Implement the actual sweep setup in subsequent steps.
-    """
-    # Demonstrate local, dependency-free sweep execution using 3 trials.
-    base_config = {
-        "total_timesteps": 5000,
-        "exp_name": "dummy_sweep",
-    }
-    runner = SweepRunner(base_config)
-
-    # Pick a few representative configurations as if sampled by a sweep service
-    trial_params = [
-        {"lr": 3e-4, "clip_coef": 0.2, "gae_lambda": 0.95, "num_envs": 4, "seed": 0},
-        {"lr": 1e-4, "clip_coef": 0.1, "gae_lambda": 0.90, "num_envs": 8, "seed": 1},
-        {"lr": 1e-3, "clip_coef": 0.3, "gae_lambda": 0.95, "num_envs": 4, "seed": 2},
-    ]
-
-    print("[sweep] Running", len(trial_params), "dummy trials...")
-    for idx, params in enumerate(trial_params, start=1):
-        print(f"\n[sweep] Trial {idx} with params: {params}")
-        metrics = runner.run(params)
-        print(f"[sweep] Trial {idx} result: {metrics}")
-
+    sweep_config = build_sweep_config()
+    base_config = get_config()
+    
+    sweep_id = wandb.sweep(
+        sweep=sweep_config, 
+        project=base_config["wandb_project"], 
+        entity=base_config["wandb_entity"]
+    )
+    wandb.agent(sweep_id, function=agent_train, count=20)
 
 if __name__ == "__main__":
     main()

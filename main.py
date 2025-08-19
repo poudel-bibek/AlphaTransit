@@ -10,6 +10,7 @@ from rl.models import GATV2ActorCritic
 from rl.ppo import PPO
 from torch_geometric.data import Data, Batch
 from typing import Any, Dict, Optional, Sequence
+import wandb
 
 def state_to_pyg(state: Dict[str, Any]) -> Data:
     """
@@ -55,6 +56,10 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
     """
 
     print("Training started... on network: ", config["network"])
+    
+    if not config.get("wandb_off", False):
+        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
+
     env = TransitEnv(config)
     node_feature_dim = env.N_NODE_FEATURES
     num_actions = env.action_space.n
@@ -195,6 +200,7 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         steps_elapsed += episode_steps
         episode_rewards.append(episode_reward)
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
+        wandb.log({"episode_reward": episode_reward, "episode": episode, "steps_elapsed": steps_elapsed})
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
@@ -220,6 +226,13 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
             print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
             print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
             print("==================\n")
+            wandb.log({
+                "pg_loss": stats['pg_loss'],
+                "value_loss": stats['value_loss'],
+                "entropy_loss": stats['entropy_loss'],
+                "clip_fraction": stats['clip_fraction'],
+                "global_step": steps_elapsed
+            })
     
     # Final update if there's remaining data in memory
     if len(ppo.memory) > 0:
@@ -234,8 +247,17 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
         print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
         print("======================\n")
+        wandb.log({
+            "policy_loss": stats['pg_loss'],
+            "value_loss": stats['value_loss'],
+            "entropy_loss": stats['entropy_loss'],
+            "clip_fraction": stats['clip_fraction'],
+            "global_step": steps_elapsed
+        })
     
+    wandb.finish()
     return {"episode_rewards": episode_rewards, "avg_reward": np.mean(episode_rewards)}
+    
 
 def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003Value
     """
@@ -243,6 +265,15 @@ def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003Value
     """
     pass
 
+def get_config() -> Dict[str, Any]:
+    """
+    A unified  config interface for both main and sweep.
+    Parses CLI args if provided, otherwise uses defaults.
+    Does NOT set seeds or device here to allow overrides from sweep.
+    """
+    parser = build_arg_parser()
+    args = parser.parse_args([])
+    return vars(args)
 
 def set_global_seeds(seed: int) -> None:
     """
@@ -296,30 +327,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--lr_schedule", type=str, default="linear", help="Learning rate schedule") 
+    
+    # WandB:
+    parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
+    parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
+    parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+def main() -> None:
     """
     """
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-    config: Dict[str, Any] = vars(args)
-    
-    # config["max_steps_per_episode"] = config["max_path_length"] # Not using at the moment.
-    
-    # Set seeds as the very first thing after parsing CLI
-    set_global_seeds(args.seed)
+    config = get_config()
 
+    # Set seeds as the very first thing after parsing CLI
+    set_global_seeds(config["seed"])
+    
     # Set compute device based on --gpu flag
-    device = torch.device("cuda" if (args.gpu and torch.cuda.is_available()) else "cpu")
+    device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
     config["device"] = device
 
-    if args.mode == "train":
+    if config["mode"] == "train":
         train(config)
     else:
         eval(config)
-
 
 if __name__ == "__main__":
     main()
