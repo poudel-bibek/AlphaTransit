@@ -55,4 +55,12 @@ training_data/
 
 ./training_data/*
 
-training_data/*
+training_data/*wandb/
+*.wandb
+
+./wandb/
+/wandb
+
+./wandb/*
+/wandb/*
+

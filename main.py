@@ -9,7 +9,7 @@ from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
 from rl.ppo import PPO
 from torch_geometric.data import Data, Batch
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict
 import wandb
 
 def state_to_pyg(state: Dict[str, Any]) -> Data:
@@ -25,7 +25,7 @@ def state_to_pyg(state: Dict[str, Any]) -> Data:
     data.steps_left = steps_left
     return data
 
-def train(config: Dict[str, Any]) -> Dict[str, float]:
+def train(config: Dict[str, Any]) -> None:
     """
     Train the transit route design agent to "learn to design routes".
 
@@ -57,9 +57,6 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
 
     print("Training started... on network: ", config["network"])
     
-    if not config.get("wandb_off", False):
-        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
-
     env = TransitEnv(config)
     node_feature_dim = env.N_NODE_FEATURES
     num_actions = env.action_space.n
@@ -200,7 +197,6 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
         steps_elapsed += episode_steps
         episode_rewards.append(episode_reward)
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
-        wandb.log({"episode_reward": episode_reward, "episode": episode, "steps_elapsed": steps_elapsed})
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
@@ -227,12 +223,11 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
             print(f"Clip Fraction: {stats['clip_fraction']:.4f}")
             print("==================\n")
             wandb.log({
-                "pg_loss": stats['pg_loss'],
+                "policy_loss": stats['pg_loss'],
                 "value_loss": stats['value_loss'],
                 "entropy_loss": stats['entropy_loss'],
                 "clip_fraction": stats['clip_fraction'],
-                "global_step": steps_elapsed
-            })
+            }, step=steps_elapsed)
     
     # Final update if there's remaining data in memory
     if len(ppo.memory) > 0:
@@ -252,11 +247,10 @@ def train(config: Dict[str, Any]) -> Dict[str, float]:
             "value_loss": stats['value_loss'],
             "entropy_loss": stats['entropy_loss'],
             "clip_fraction": stats['clip_fraction'],
-            "global_step": steps_elapsed
-        })
+        }, step=steps_elapsed)
     
-    wandb.finish()
-    return {"episode_rewards": episode_rewards, "avg_reward": np.mean(episode_rewards)}
+    avg_reward = np.mean(episode_rewards)
+    wandb.log({"avg_episode_reward": avg_reward}, step=steps_elapsed)
     
 
 def eval(config: Dict[str, Any]) -> Dict[str, float]:  # noqa: A003Value
@@ -348,7 +342,10 @@ def main() -> None:
     config["device"] = device
 
     if config["mode"] == "train":
+        if not config.get("wandb_off", False):
+            wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
         train(config)
+        wandb.finish()
     else:
         eval(config)
 

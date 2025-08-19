@@ -1,7 +1,7 @@
 import torch
 import wandb
 from main import get_config, train, set_global_seeds
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict
 
 def build_sweep_config() -> Dict[str, Any]:
     """
@@ -35,17 +35,12 @@ def agent_train() -> None:
         # Get defaults and merge with sampled
         base_config = get_config()
         config = {**base_config, **sampled_params}
-        config["wandb_off"] = True  # Disable nested WandB in train
         
         set_global_seeds(config["seed"])
         device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
         config["device"] = device
         
-        # Run training
-        metrics = train(config)
-        
-        # Log the key metric
-        wandb.log({"avg_reward": metrics["avg_reward"]})
+        train(config)
 
 def main() -> None:
     """
@@ -62,5 +57,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
