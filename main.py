@@ -1,3 +1,4 @@
+from operator import concat
 import os
 from rl.env_utils import pretty_print_state
 import torch
@@ -89,11 +90,12 @@ def train(config: Dict[str, Any]) -> None:
         "gat_channels": config.get("gat_channels", [node_feature_dim, 36, 16, 1]),
         "num_heads": config.get("num_heads", [8, 4, 1]),
         "num_edge_features": config.get("num_edge_features", 2),
-        "dropout": config.get("dropout", 0.0),
-        "global_dim": config.get("global_dim", 1),
-        "activation": config.get("activation", "elu"),
-        "model_size": config.get("model_size", "medium"),
-        "concat": config.get("concat", False),
+
+        "dropout": config.get("dropout"),
+        "global_dim": config.get("global_dim"),
+        "activation": config.get("activation"),
+        "model_size": config.get("model_size"),
+        "concat": config.get("concat"),
     }
 
     # Only node features are supplied at GATv2 init, edge features are injected at each attention layer.
@@ -117,6 +119,7 @@ def train(config: Dict[str, Any]) -> None:
         pretty_print_state(env, state)
         episode_reward, episode_steps = 0, 0
         truncated, terminated = False, False
+        bootstrap_value = None  # Initialize outside loop
 
         while True:
             data = state_to_pyg(state)
@@ -131,6 +134,30 @@ def train(config: Dict[str, Any]) -> None:
             if valid_indices.shape[1] == 0:
                 truncated = True
                 reward = -100.0 # Penalty for truncation.
+
+                action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices, truncated=True)
+                
+                store_data = Data(
+                    x=data.x.cpu(),
+                    edge_index=data.edge_index.cpu(),
+                    edge_attr=data.edge_attr.cpu(),
+                    steps_left=data.steps_left.cpu()
+                )
+
+                # Need to store this final transition
+                ppo.memory.store({
+                    'obs': store_data,
+                    'action': action_tensor.cpu().item(),  # Will be a dummy node i.e., -1. 
+                    'reward': reward,
+                    'value': value_tensor.cpu().item(),
+                    'log_prob': log_prob_tensor.cpu().item(),
+                    'terminated': False,
+                    'truncated': True,
+                    'valid_indices': []
+                })
+
+                bootstrap_value = value_tensor.cpu().item()  # Use this for bootstrap
+                print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
                 break
 
             with torch.no_grad():
@@ -168,31 +195,13 @@ def train(config: Dict[str, Any]) -> None:
     
             env.render(f"ep_{episode}_step_{episode_steps}.png")
             
-            if terminated or truncated:
-                break
-        
-        # Compute bootstrap value for GAE calculation
-        if terminated or truncated:
-
-            bootstrap_value = 0.0
-            if truncated:
-                # Compute bootstrap value only if truncated.
-                data = state_to_pyg(state)
-                batch = Batch.from_data_list([data]).to(config["device"])
-                steps_left = batch.steps_left.to(config["device"])
-                valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
-                
-                with torch.no_grad(): 
-                    _, _, bootstrap_value_tensor = model.act(batch, steps_left, deterministic=True, valid_indices=valid_indices) # Get value of final state
-                bootstrap_value = bootstrap_value_tensor.cpu().item()
-                print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
-            
-            else:
-                # Episode terminated naturally - no bootstrap needed (value = 0)
+            if terminated:
+                bootstrap_value = 0.0
                 print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
-        
-            # Mark episode boundary with bootstrap value.
-            ppo.memory.mark_episode_end(bootstrap_value)
+                break
+      
+        # Mark episode boundary with bootstrap value.
+        ppo.memory.mark_episode_end(bootstrap_value)
 
         steps_elapsed += episode_steps
         episode_rewards.append(episode_reward)
@@ -320,7 +329,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--lr_schedule", type=str, default="linear", help="Learning rate schedule") 
+    parser.add_argument("--anneal_lr", type=bool, default=True, help="Anneal learning rate (default: True)")
+    
+    parser.add_argument("--model_size", type=str, default="medium", help="Model size")
+    parser.add_argument("--activation", type=str, default="tanh", help="Activation function")
+    parser.add_argument("--concat", type=bool, default=True, help="Concatenate attention heads")
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
+    parser.add_argument("--global_dim", type=int, default=1, help="Global dimension (additional feature to the graph-level features)")
     
     # WandB:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")

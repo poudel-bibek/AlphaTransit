@@ -245,7 +245,8 @@ class GATV2ActorCritic(nn.Module):
     def act(self, graph_batch: Batch, 
             steps_left: Optional[torch.Tensor] = None, 
             deterministic: bool = False, 
-            valid_indices: Optional[torch.Tensor] = None
+            valid_indices: Optional[torch.Tensor] = None, 
+            truncated: bool = False
             ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Select next node to add to route.
@@ -257,7 +258,7 @@ class GATV2ActorCritic(nn.Module):
         """
         
         # Handle truncation
-        if valid_indices.shape[1] == 0:
+        if truncated:
             features = self.readout_layer(graph_batch, steps_left)
             values = self.critic_net(features).squeeze(-1)
             dummy_action = torch.tensor([-1], device=graph_batch.x.device)
@@ -274,7 +275,6 @@ class GATV2ActorCritic(nn.Module):
             print(f"\n\tAction (Stochastic): {actions}\n")
         
         log_probs = dist.log_prob(actions)
-        
         return actions, log_probs, values
     
     def evaluate(self, graph_batch: Batch, actions: torch.Tensor, steps_left: Optional[torch.Tensor] = None, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

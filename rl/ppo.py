@@ -26,7 +26,7 @@ class PPO:
         
         # Learning rate settings
         self.lr = kwargs.get('lr')
-        self.lr_schedule = kwargs.get('lr_schedule')
+        self.anneal_lr = kwargs.get('anneal_lr')
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
@@ -81,8 +81,8 @@ class PPO:
                 value_loss1 = (values - returns) ** 2
                 value_loss2 = (values_clipped - returns) ** 2
 
-                # Value loss is scaled by 0.5
-                value_loss = 0.5 * torch.max(value_loss1, value_loss2).mean()
+                # Value loss is scaled by value loss coeff
+                value_loss = torch.max(value_loss1, value_loss2).mean()
                 
                 # Entropy loss (for exploration)
                 entropy_loss = -entropy.mean()
@@ -203,12 +203,10 @@ class PPO:
 
     def update_learning_rate(self, current_timestep: int) -> None:
         """
-        Update learning rate according to schedule.
-        Supports linear and constant schedules.
+        Update learning rate according to a linear schedule.
         """
-        if self.lr_schedule == 'linear':
-            progress = current_timestep / self.total_timesteps
-            new_lr = self.lr * (1 - progress)
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = new_lr
-        # Constant schedule does nothing
+        progress = current_timestep / self.total_timesteps
+        new_lr = self.lr * (1 - progress)
+
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = new_lr
