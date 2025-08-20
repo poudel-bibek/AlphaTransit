@@ -1,16 +1,18 @@
 import os
-from rl.env_utils import pretty_print_state
+import wandb
 import torch
 import random
 import argparse
 import numpy as np
 import pandas as pd
+from rl.ppo import PPO
+from typing import Any, Dict
+from datetime import datetime
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
-from rl.ppo import PPO
+from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
-from typing import Any, Dict
-import wandb
+from rl.env_utils import plot_network_and_demand
 
 def state_to_pyg(state: Dict[str, Any]) -> Data:
     """
@@ -105,6 +107,16 @@ def train(config: Dict[str, Any]) -> None:
     for key, space in env.observation_space.items():
         print(f"\t  {key}: {space}")
     print(f"\tAction space: {env.action_space}")
+    
+    now = datetime.now()
+    training_save_dir = os.path.join(config["save_dir"], f"{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}")
+    img_dir = os.path.join(training_save_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
+
+    # Build temp world for initial visualization only (not persistent)
+    temp_world = env.build_world(config.get("network"))
+    output_path = os.path.join(img_dir, f"00_{config.get('network')}_demand_network.png")
+    plot_network_and_demand(temp_world, output_path) # Visualize only after building world
 
     print(f"\nNetwork details:")
     print(f"\tNumber of nodes: {env.n_nodes}")
@@ -136,7 +148,7 @@ def train(config: Dict[str, Any]) -> None:
         print(f"  {k}: {v:,}")
 
     ppo = PPO(model, **config)
-    policy_dir = os.path.join(env.training_save_dir, "policies")
+    policy_dir = os.path.join(training_save_dir, "policies")
     os.makedirs(policy_dir, exist_ok=True)
 
     episode = 0
@@ -215,9 +227,9 @@ def train(config: Dict[str, Any]) -> None:
                 bootstrap_value = 0.0
                 print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
                 break
-            
+
         # only render at the end of the episode.
-        env.render(f"ep_{episode}.png")
+        env.render(training_save_dir, f"ep_{episode}.png")
 
         # Mark episode boundary with bootstrap value.
         ppo.memory.mark_episode_end(bootstrap_value)
@@ -238,7 +250,7 @@ def train(config: Dict[str, Any]) -> None:
             torch.save(model.state_dict(), policy_path)
 
             if update_count % config["eval_every"] == 0:
-                eval(config, policy_path, str(steps_elapsed))
+                eval(config, policy_path, str(steps_elapsed), training_save_dir)
 
     # Final update if there's remaining data in memory (Its not that meaningful)
     # if len(ppo.memory) > 0:
@@ -248,7 +260,7 @@ def train(config: Dict[str, Any]) -> None:
     avg_reward = np.mean(episode_rewards)
     wandb.log({"avg_episode_reward": avg_reward}, step=steps_elapsed)
     
-def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str) -> Dict[str, float]: 
+def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir: str) -> Dict[str, float]: 
     """
     Evaluate a trained policy
     - Load a saved policy
@@ -301,7 +313,7 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str) -> Dict[s
         wandb.log({f"eval_episode_reward": episode_reward}, step=steps_elapsed)
 
     # Plots
-    env.render(f"eval_ep_{steps_elapsed}.png")
+    env.render(save_dir, f"eval_ep_{steps_elapsed}.png")
     
     env.world.analyzer.network_fancy(
         animation_speed_inverse=10,
@@ -402,7 +414,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
     parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
 
-    parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy")
+    parser.add_argument("--save_dir", type=str, default="./training_data", help="Directory to save training data")
+    parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy that you want to evaluate")
     return parser
 
 
@@ -425,9 +438,10 @@ def main() -> None:
         wandb.finish()
     else:
         # If performing eval only
+        os.makedirs(config["save_dir"], exist_ok=True)
         config["wandb_off"] = True
         policy_path = config["saved_policy_path"]
-        eval(config, policy_path, "final")
+        eval(config, policy_path, "final", config["save_dir"])
 
 if __name__ == "__main__":
     main()

@@ -5,10 +5,10 @@ import pandas as pd
 import gymnasium as gym
 from uxsim import World
 from pathlib import Path
-from datetime import datetime
+
 from collections import defaultdict
 from uxsim.BusHandler import BusHandler
-from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path
+from rl.env_utils import plot_network_demand_and_path
 from typing import Any, Dict, Optional, Tuple
 
 class TransitEnv(gym.Env):
@@ -31,9 +31,7 @@ class TransitEnv(gym.Env):
         self.delta_n = self.config.get("delta_n")
 
         self.network_dir = Path(__file__).resolve().parents[1] / "networks" / self.config.get("network")
-        now = datetime.now()
-        self.training_save_dir = f"./training_data/{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
-
+    
         # Important params: 
         self.SERVICE_FREQUENCY = self.config.get("service_frequency")
         self.STOP_SPACING = self.config.get("stop_spacing")
@@ -138,7 +136,7 @@ class TransitEnv(gym.Env):
             degree = len(self.adj.get(node_name, [])) # If not found in adj, return empty list
             self.node_degrees_norm[node_idx] = (degree - self.min_degree) / (self.max_degree - self.min_degree)
 
-
+        
     @property
     def observation_space(self) -> gym.Space:
         """
@@ -444,21 +442,8 @@ class TransitEnv(gym.Env):
         """
         TODO: Can I just sample the action space and get a random initial state?
         """
-
         self.current_path = self._initialize_current_path(use_random=self.random_path_init)
-        
-        img_dir = os.path.join(self.training_save_dir, "images")
-        os.makedirs(img_dir, exist_ok=True)
-
-        # Optional: Build temp world for initial visualization only (not persistent)
-        temp_world = self.build_world(self.config.get("network"))
-        output_path = os.path.join(img_dir, f"00_{self.config.get('network')}_demand_network.png")
-
-        plot_network_and_demand(temp_world, output_path) # Visualize only after building world
-
-        # initial state
-        state = self._get_state()
-
+        state = self._get_state() # initial state
         return state, {}
     
     def build_world(self, network: str) -> World:
@@ -765,12 +750,11 @@ class TransitEnv(gym.Env):
         valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
         return valid_indices
 
-    def render(self, render_name: str) -> None:
+    def render(self, save_dir: str, render_name: str) -> None:
         """
         - Visualize network + path.
         - Episode simulation gif.
         """
-        img_dir = os.path.join(self.training_save_dir, "images")
-        output_loc = os.path.join(img_dir, render_name)
+        output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
         plot_network_demand_and_path(self.world, self.current_path, output_loc)
 
