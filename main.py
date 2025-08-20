@@ -250,7 +250,7 @@ def train(config: Dict[str, Any]) -> None:
             torch.save(model.state_dict(), policy_path)
 
             if update_count % config["eval_every"] == 0:
-                eval(config, policy_path, str(steps_elapsed), training_save_dir)
+                eval(config, policy_path, steps_elapsed, training_save_dir)
 
     # Final update if there's remaining data in memory (Its not that meaningful)
     # if len(ppo.memory) > 0:
@@ -313,7 +313,7 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         wandb.log({f"eval_episode_reward": episode_reward}, step=steps_elapsed)
 
     # Plots
-    env.render(save_dir, f"eval_ep_{steps_elapsed}.png")
+    env.render(save_dir, f"eval_ep_{str(steps_elapsed)}.png")
     
     env.world.analyzer.network_fancy(
         animation_speed_inverse=10,
@@ -322,7 +322,7 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         trace_length=5,
         network_font_size=14,
         antialiasing=False,
-        file_name=f"eval_anim_{steps_elapsed}",
+        file_name=f"eval_anim_{str(steps_elapsed)}",
         save_as_mp4=False
     )
         
