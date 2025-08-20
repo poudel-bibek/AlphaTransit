@@ -232,6 +232,8 @@ def train(config: Dict[str, Any]) -> None:
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
         
         # Update PPO when we have enough samples in memory
+        # Episodes are not divisible i.e., waits for the full episode to complete before updating.
+        # This is harmless and is actually good for GAE calculations.
         if len(ppo.memory) >= config["update_frequency"]:
             perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
     
@@ -286,7 +288,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=16, help="Update PPO when memory has N samples")
+    parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--total_timesteps", type=int, default=500000, help="Total training timesteps")
     parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
 
@@ -302,7 +304,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=10, help="Number of PPO epochs")
-    parser.add_argument("--batch_size", type=int, default=64, help="Mini-batch size")
+    parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")

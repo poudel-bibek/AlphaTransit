@@ -112,7 +112,7 @@ class TransitEnv(gym.Env):
                 edge_index_list.append([i, j]) # Add the i, j indices of the edge
 
                 length = row['length']
-                self.link_lengths[(x, y)] = length
+                self.link_lengths[(x, y)] = length # We need to add un-normalized route lengths.
 
                 # Now edge attributes: Normalize to [0,1] and add
                 length_norm = (length - self.min_length) / (self.max_length - self.min_length) 
@@ -592,18 +592,28 @@ class TransitEnv(gym.Env):
         
         # Count passengers currently on buses
         onboard_count = 0
-        current_onboard_travel_time = 0.0  # Time spent by current passengers
-        
+        current_onboard_movement_time = 0.0  # Time spent by current passengers (traveling)
+        current_onboard_wait_time = 0.0 # Time spent by current passengers (waiting)
+
         for vehicle in self.world.VEHICLES.values():
             if hasattr(vehicle, 'mode') and vehicle.mode == 'bus':
                 if hasattr(vehicle, 'passengers'):
                     onboard_count += len(vehicle.passengers)
-                    # Add partial travel time for current passengers
+                    
                     for passenger in vehicle.passengers:
+
+                        # Add partial travel time for current passengers
                         if hasattr(passenger, 'board_time') and passenger.board_time is not None:
-                            current_onboard_travel_time += (self.world.TIME - passenger.board_time)
+                            current_onboard_movement_time += (self.world.TIME - passenger.board_time)
+                        
+                        # Add waiting time for current passengers (Since wait_time is only calculated for completed passengers upon alighting).
+                        # Has to be added differently.
+                        if hasattr(passenger, 'wait_start_time') and passenger.wait_start_time is not None and \
+                            hasattr(passenger, 'board_time') and passenger.board_time is not None:
+                            wait_time = passenger.board_time - passenger.wait_start_time
+                            current_onboard_wait_time += wait_time
         
-        completed_count = len(handler.passenger_stats)
+        completed_count = len(handler.passenger_stats) # This works because the stats are only added when passengers alight the bus.
         
         # 2. Calculate time metrics from completed passengers
         completed_wait_time = sum(p['wait_time'] for p in handler.passenger_stats)
@@ -616,9 +626,9 @@ class TransitEnv(gym.Env):
             'total_passengers_onboarded': onboard_count,
             'total_passengers_waiting_at_stops': waiting_count,
             'total_passengers_completed_trip': completed_count,
-            'total_wait_time': completed_wait_time,
-            'total_movement_time': completed_movement_time + current_onboard_travel_time,
-            'total_travel_time': completed_total_time + current_onboard_travel_time,
+            'total_wait_time': completed_wait_time  + current_onboard_wait_time,
+            'total_movement_time': completed_movement_time + current_onboard_movement_time,
+            'total_travel_time': completed_total_time + current_onboard_movement_time + current_onboard_wait_time,
             'time_s': int(self.world.TIME)
         })
         
@@ -651,12 +661,14 @@ class TransitEnv(gym.Env):
         - c is a constant. 
 
         ---------
-        An improper reward formulation could lead to reward hacking: 
-        - Example: 
-            - Maximize reward by selecting nodes with low demand so the average travel time is low.
-        - How to prevent: 
-            - Add an utilization component
+        Total travel time includes:
+        - Passenger Wait Time: The time each passenger spends waiting at their origin stop before boarding a bus.
+        - Passenger In-Vehicle Time: The time each passenger spends traveling on the bus.
+        - Partial In-Vehicle Time for Ongoing Trips: For passengers still on buses when simulation ends, their accumulated in-vehicle time so far
+        - Aggregated Door-to-Door Time for Completed Trips: The full total_travel_time for each completed passenger (sum of wait time and in-vehicle time)
 
+        Does not include: 
+        - Waiting time for passengers still at stops or pending.        
         ---------
         On normalizing the reward: 
         - Applying the Welford Normalization to the returns, not the absolute reward values.
@@ -666,9 +678,24 @@ class TransitEnv(gym.Env):
             - Without normalization: Clear improvement! (-500 > -1000)
             - With normalization: Both might map to ~0 (relative to running mean)
             - The agent can't tell it's improving!
+        ---------
+        Pitfalls: 
+        1. If the rewards are too small like 0.0001, then gradients are too small to be effective.
+           This can happen because: 
+            - Route lengths are un-normalized (can be large)
+            - Total travel time can be large
+            - Since bus capacity is relatively low (~40) it can only serve a small number of passengers.
+
+        2. An improper reward formulation could lead to reward hacking: 
+           Example: 
+            - Maximize reward by selecting nodes with low demand so the average travel time is low.
+           How to prevent: 
+            - Add an utilization component
         """
-        c = 0.1
-        # Calculate route length
+        alpha1 = 0.1
+        alpha2 = 10000 # Scale the reward component 1 to make it more meaningful.
+
+        # Calculate route length (un-normalized)
         route_length = 0.0
         for i in range(len(self.current_path) - 1):
             route_length += self.link_lengths[(str(self.current_path[i]), str(self.current_path[i+1]))]
@@ -676,7 +703,7 @@ class TransitEnv(gym.Env):
         passengers_served = sim_result['total_passengers_completed_trip']
         total_travel_time = sim_result['total_travel_time'] # Includes waiting time as well. 
         
-        denominator = total_travel_time + c * route_length
+        denominator = total_travel_time + alpha1 * route_length
         
         if denominator == 0:
             # maybe due to total_travel_time being zero i.e., did not form a route yet.
@@ -685,7 +712,7 @@ class TransitEnv(gym.Env):
         else:
             reward_component_1 = passengers_served / denominator
         
-        total_reward = reward_component_1
+        total_reward = alpha2 * reward_component_1
 
         print(f"Total reward: {total_reward}: \n\tComponent 1: {reward_component_1}")
         return total_reward
