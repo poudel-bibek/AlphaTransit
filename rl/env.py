@@ -659,13 +659,14 @@ class TransitEnv(gym.Env):
             - encourages shorter routes (physical length)
             - encourages serving high number of passengers (i.e., routes need to connect to high-demand O-D pairs)
         - c is a constant. 
-
+        
         ---------
         Total travel time includes:
         - Passenger Wait Time: The time each passenger spends waiting at their origin stop before boarding a bus.
         - Passenger In-Vehicle Time: The time each passenger spends traveling on the bus.
         - Partial In-Vehicle Time for Ongoing Trips: For passengers still on buses when simulation ends, their accumulated in-vehicle time so far
         - Aggregated Door-to-Door Time for Completed Trips: The full total_travel_time for each completed passenger (sum of wait time and in-vehicle time)
+        - Measured in seconds so when bus is full its around 100,000s for sioux falls (27.77 hours)
 
         Does not include: 
         - Waiting time for passengers still at stops or pending.        
@@ -744,7 +745,7 @@ class TransitEnv(gym.Env):
         # 5. Check termination
         terminated = len(self.current_path) >= self.MAX_PATH_LENGTH
 
-        return self._get_state(), reward, terminated, {}
+        return self._get_state(), reward, terminated, {'sim_result': sim_result}
     
     def _get_valid_indices(self) -> list:
         """

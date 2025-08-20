@@ -15,7 +15,6 @@ import wandb
 def state_to_pyg(state: Dict[str, Any]) -> Data:
     """
     """
-    
     x = torch.tensor(state["node_features"], dtype=torch.float32)
     edge_index = torch.tensor(state["edge_index"], dtype=torch.long)
     edge_attr = torch.tensor(state["edge_features"], dtype=torch.float32)
@@ -125,32 +124,26 @@ def train(config: Dict[str, Any]) -> None:
     print(f"\tMax demand: {env.max_demand}, Min demand: {env.min_demand}")
 
     # Set policy hyper-param defaults
-    policy_kwargs = {
-        "num_layers": config.get("num_layers", 3),
-        "gat_channels": config.get("gat_channels", [node_feature_dim, 36, 16, 1]),
-        "num_heads": config.get("num_heads", [8, 4, 1]),
-        "num_edge_features": config.get("num_edge_features", 2),
-
-        "dropout": config.get("dropout"),
-        "global_dim": config.get("global_dim"),
-        "activation": config.get("activation"),
-        "model_size": config.get("model_size"),
-        "concat": config.get("concat"),
-    }
+    policy_kwargs = get_policy_kwargs(config, node_feature_dim)
 
     # Only node features are supplied at GATv2 init, edge features are injected at each attention layer.
     model = GATV2ActorCritic(num_actions, **policy_kwargs)
     model.to(config["device"])
     param_counts = model.param_count()
+
     print(f"\nPolicy parameters on device = {config['device']}:")
     for k, v in param_counts.items():
         print(f"  {k}: {v:,}")
+
     ppo = PPO(model, **config)
-    
-    steps_elapsed = 0
-    episode_rewards = []
-    
+    policy_dir = os.path.join(env.training_save_dir, "policies")
+    os.makedirs(policy_dir, exist_ok=True)
+
     episode = 0
+    steps_elapsed = 0
+    update_count = 0
+    episode_rewards = []
+
     while steps_elapsed < config["total_timesteps"]:
         episode += 1
         print(f"\n=== Episode {episode} ===")
@@ -236,19 +229,89 @@ def train(config: Dict[str, Any]) -> None:
         # This is harmless and is actually good for GAE calculations.
         if len(ppo.memory) >= config["update_frequency"]:
             perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
-    
-    # Final update if there's remaining data in memory
-    if len(ppo.memory) > 0:
-        perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
+            update_count += 1
+
+            # Save policy after every update.
+            policy_path = os.path.join(policy_dir, f"policy_{update_count}.pth")
+            torch.save(model.state_dict(), policy_path)
+
+            if update_count % config["eval_every"] == 0:
+                eval(config, policy_path, str(steps_elapsed))
+
+    # Final update if there's remaining data in memory (Its not that meaningful)
+    # if len(ppo.memory) > 0:
+    #     perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
+    #     update_count += 1
 
     avg_reward = np.mean(episode_rewards)
     wandb.log({"avg_episode_reward": avg_reward}, step=steps_elapsed)
     
-def eval(config: Dict[str, Any]) -> Dict[str, float]: 
+def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str) -> Dict[str, float]: 
     """
     Evaluate a trained policy
+    - Load a saved policy
+    - Run the policy on the network (take deterministic actions) and get the path
+    - Get relevant metrics and log
+    - Plot path and call world.analyzer.network_fancy
+
+    Notes: 
+    - During eval episode, agent constructs a route path step by step
+    - The results are only meaningful at the end of the episode.
     """
-    pass
+    print("Evaluating policy: ", policy_path)
+    
+    env = TransitEnv(config)
+    node_feature_dim = env.N_NODE_FEATURES
+    num_actions = env.action_space.n
+
+    policy_kwargs = get_policy_kwargs(config, node_feature_dim)
+
+    model = GATV2ActorCritic(num_actions, **policy_kwargs)
+    model.load_state_dict(torch.load(policy_path))
+    model.to(config["device"])
+    model.eval() # eval mode
+
+    state, _ = env.reset()
+    terminated = False
+    episode_reward = 0.0
+    
+    while not terminated:
+        data = state_to_pyg(state)
+        batch = Batch.from_data_list([data]).to(config["device"])
+        steps_left = batch.steps_left.to(config["device"])
+        valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
+        
+        if valid_indices.shape[1] == 0:
+            print("No valid actions during evaluation, breaking early.")
+            break
+        
+        with torch.no_grad():
+            action_tensor, _, _ = model.act(batch, steps_left, deterministic=True, valid_indices=valid_indices)
+
+        action = action_tensor.cpu().item()
+        next_state, reward, terminated, info = env.step(action)
+        episode_reward += reward
+        state = next_state
+
+    # TODO: log more metrics based on sim_result
+    sim_result = info['sim_result']
+    if not config.get("wandb_off", False):
+        wandb.log({f"eval_episode_reward": episode_reward}, step=steps_elapsed)
+
+    # Plots
+    env.render(f"eval_ep_{steps_elapsed}.png")
+    
+    env.world.analyzer.network_fancy(
+        animation_speed_inverse=10,
+        sample_ratio=1.0,
+        interval=5,
+        trace_length=5,
+        network_font_size=14,
+        antialiasing=False,
+        file_name=f"eval_anim_{steps_elapsed}",
+        save_as_mp4=False
+    )
+        
 
 def get_config() -> Dict[str, Any]:
     """
@@ -271,6 +334,18 @@ def set_global_seeds(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str, Any]:
+    return {
+        "num_layers": config.get("num_layers", 3),
+        "gat_channels": config.get("gat_channels", [node_feature_dim, 36, 16, 1]),
+        "num_heads": config.get("num_heads", [8, 4, 1]),
+        "num_edge_features": config.get("num_edge_features", 2),
+        "dropout": config.get("dropout"),
+        "global_dim": config.get("global_dim"),
+        "activation": config.get("activation"),
+        "model_size": config.get("model_size"),
+        "concat": config.get("concat"),
+    }
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """
@@ -293,8 +368,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
 
     # Learning environment specific: 
-    parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency")
-    parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing")
+    parser.add_argument("--service_frequency", type=int, default=1, help="Service frequency. 1 means one bus per hour")
+    parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
     parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
     parser.add_argument("--random_path_init", action="store_true", help="Initialize path randomly (omit flag for False)")
@@ -324,6 +399,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
     parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
+
+    parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy")
     return parser
 
 
@@ -345,7 +422,10 @@ def main() -> None:
         train(config)
         wandb.finish()
     else:
-        eval(config)
+        # If performing eval only
+        config["wandb_off"] = True
+        policy_path = config["saved_policy_path"]
+        eval(config, policy_path, "final")
 
 if __name__ == "__main__":
     main()
