@@ -10,19 +10,18 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     Collate samples into mini-batch.
     Pads valid_indices with -1; model ignores -1 during masking.
     """
+    
     # Handle variable-length valid_indices
     valid_indices_list = [item['valid_indices'] for item in batch]
-    
     if valid_indices_list and valid_indices_list[0]:  # Check if we have valid indices
+
         max_valid_len = max(len(indices) for indices in valid_indices_list)
-        
         padded_valid_indices = []
-        
         for indices in valid_indices_list:
+
             pad_len = max_valid_len - len(indices)
             # Pad with -1 (invalid index that won't match any actual action)
             padded = indices + [-1] * pad_len
-            
             padded_valid_indices.append(padded)
         
         valid_indices_tensor = torch.tensor(padded_valid_indices, dtype=torch.long)
