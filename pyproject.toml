@@ -35,7 +35,9 @@ dependencies = [
     # Use >= pins so env-resolved GPU wheels remain valid
     "torch>=2.7.0",
     "torch-geometric>=2.6.0",
-    "gymnasium>=0.29.0"
+    "gymnasium>=0.29.0",
+    # ML experiment tracking
+    "wandb>=0.16.0"
 ]
 dynamic = ["version"] # Version is read from uxsim/__init__.py
 
@@ -47,9 +49,9 @@ advanced = [
     "shapely>=2.1.0"
 ]
 
-# Optional dependencies for hyperparameter sweeps (e.g., using Weights & Biases).
+# Optional dependencies for hyperparameter sweeps
 sweeps = [
-    "wandb>=0.16.0",
+    # wandb is now a required dependency
 ]
 
 [project.urls]
