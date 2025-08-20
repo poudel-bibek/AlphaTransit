@@ -11,7 +11,7 @@ def build_sweep_config() -> Dict[str, Any]:
     return {
         "method": "random",
         
-        "metric": {"name": "avg_reward", 
+        "metric": {"name": "avg_episode_reward", 
                     "goal": "maximize"},
 
         "parameters": {
@@ -19,7 +19,7 @@ def build_sweep_config() -> Dict[str, Any]:
             "clip_frac": {"values": [0.1, 0.2, 0.3]},
             "gae_lambda": {"values": [0.9, 0.95, 0.98]},
             "batch_size": {"values": [32, 64, 128]},
-            "seed": {"values": [0, 1, 2, 3]},
+            # "seed": {"values": [0, 1, 2, 3]},
         },
     }
 

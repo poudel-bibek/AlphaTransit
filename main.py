@@ -210,13 +210,15 @@ def train(config: Dict[str, Any]) -> None:
                     
             state = next_state
             episode_steps += 1
-            env.render(f"ep_{episode}_step_{episode_steps}.png")
             
             if terminated:
                 bootstrap_value = 0.0
                 print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
                 break
-      
+            
+        # only render at the end of the episode.
+        env.render(f"ep_{episode}.png")
+
         # Mark episode boundary with bootstrap value.
         ppo.memory.mark_episode_end(bootstrap_value)
 
