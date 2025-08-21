@@ -278,6 +278,8 @@ class GATV2ActorCritic(nn.Module):
                     - However, for a given graph, the node order is fixed.
                 - Parameter count is higher because the MLP at input is larger.
                     - No big deal.
+                - Probably the most prominent con of this approach is that this is not scalable to large networks.
+                    - When the number of nodes is large, the parameter count for actor MLP head is too high.
         """
         # 1. Global mean pooling
         # graph_features = global_mean_pool(node_features, batch)

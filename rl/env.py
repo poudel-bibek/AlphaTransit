@@ -486,22 +486,17 @@ class TransitEnv(gym.Env):
         world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_path)
         return world
         
-    def _apply_action(self, action: str) -> None:
+    def _apply_action(self, ) -> None:
         """
-        Invoked internally by step prior to state transition.
-        - Based on the action (new node selected), increase the route path by one hop.
+        Invoked internally by step 
         - Add stops based on STOP_SPACING.
-
-        Add necessary vehicles to the world.
-        - Add buses based on the current path and SERVICE_FREQUENCY.
+        - Add necessary vehicles to the world.
+            - Add buses based on the current path and SERVICE_FREQUENCY.
         # TODO: This only works on a single path.
 
         """
 
-        # 1. Create bus route based on current path
-        self.current_path = [str(node) for node in self.current_path] + [action]
-        
-        # 2. Determine bus stops based on STOP_SPACING
+        # 1. Determine bus stops based on STOP_SPACING
         # For simplicity, make all nodes in path as stops (can be refined later)
         bus_stops = self.current_path[::self.STOP_SPACING]
 
@@ -677,9 +672,11 @@ class TransitEnv(gym.Env):
             - Maximize reward by selecting nodes with low demand so the average travel time is low.
            How to prevent: 
             - Add an utilization component
+        ---------
+        - Since this reward is for each node extended, instead of the passengers served, we can possibly look at only new passengers served.
         """
         alpha1 = 0.1
-        alpha2 = 10000 # Scale the reward component 1 to make it more meaningful.
+        alpha2 = 100000 # Scale the reward component 1 to make it more meaningful.
 
         # Calculate route length (un-normalized)
         route_length = 0.0
@@ -703,31 +700,34 @@ class TransitEnv(gym.Env):
         print(f"Total reward: {total_reward}: \n\tComponent 1: {reward_component_1}")
         return total_reward
 
-    def step(self, action: str) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+    def step(self, action: str) -> Tuple[Any, float, bool, Dict[str, Any]]:
         """
-        Return (obs, reward, terminated, truncated, info).
+        Return (obs, reward, terminated, info).
         Run the simulation on the current route and get metrics.
 
         Episode termination conditions: 
             - Max path length reached. Max path length is also the number of steps in the episode.   
         """
 
-        # 1. Build_world needs to happen every step.
+        # 1. extend the path first
+        action_node = self.idx_to_node[action]
+        self.current_path = [str(node) for node in self.current_path] + [action_node]
+        print(f"Current path: {self.current_path}")
+
+        # 2. Build_world needs to happen every step.
         # i.e., add the network and the classified demand (bus vs car).
         self.world = self.build_world(self.config.get("network"))
         
-        # 2. Add action to current_path, spawn necessary buses, and set their routes.
-        action = self.idx_to_node[action]
-        self._apply_action(action)
-        print(f"Current path: {self.current_path}")
+        # 3. spawn necessary buses, and set their routes.
+        self._apply_action()
         
-        # 3. Run the full simulation upto horizon end.
+        # 4. Run the full simulation upto horizon end.
         sim_result = self._step_until(self.horizon)
         
-        # 4. Compute reward
+        # 5. Compute reward
         reward = self.compute_reward(sim_result)
         
-        # 5. Check termination
+        # 6. Check termination
         terminated = len(self.current_path) >= self.MAX_PATH_LENGTH
 
         return self._get_state(), reward, terminated, {'sim_result': sim_result}
