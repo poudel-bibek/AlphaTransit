@@ -315,14 +315,14 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
     # Plots
     env.render(save_dir, f"eval_{str(steps_elapsed)}.png")
     env.world.analyzer.network_fancy(
-        animation_speed_inverse=10,
-        sample_ratio=1.0,
-        interval=5,
-        trace_length=5,
-        network_font_size=14,
-        antialiasing=True,
-        file_name=os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}.gif"),
-        save_as_mp4=False
+        animation_speed_inverse = 10,
+        sample_ratio = 1.0,
+        interval = 5,
+        trace_length = 5,
+        network_font_size = 14,
+        antialiasing = False,
+        file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}.gif"),
+        save_as_mp4 = False
     )
         
 
@@ -377,7 +377,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
-    parser.add_argument("--total_timesteps", type=int, default=10000, help="Total training timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=50000, help="Total training timesteps")
     parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
 
     # Learning environment specific: 

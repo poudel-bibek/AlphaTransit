@@ -1342,7 +1342,7 @@ class Analyzer:
         miny -= buffer
 
         pics = []
-        for t in tqdm(range(int(s.W.TMAX*0), int(s.W.TMAX*1), s.W.DELTAT*speed_coef)):
+        for t in tqdm(range(int(s.W.TMAX*0), int(s.W.TMAX*1), int(s.W.DELTAT*speed_coef))):
             img = Image.new("RGBA", (int(maxx-minx), int(maxy-miny)), (255, 255, 255, 255))
             draw = ImageDraw.Draw(img)
                 

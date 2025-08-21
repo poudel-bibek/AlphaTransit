@@ -116,8 +116,6 @@ class GATV2ActorCritic(nn.Module):
 
         self.gat_layers = nn.ModuleList(gat_layers)  # Use ModuleList to properly register modules
 
-        
-
         # Actor 
         actor_layers = []
         if self.concat:
@@ -200,22 +198,6 @@ class GATV2ActorCritic(nn.Module):
                 x = self.activation(x)
 
         return x, batch
-
-    def actor(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Actor head forward pass.
-        """
-        features = self.actor_readout(graph_batch, steps_left)
-        return self.actor_net(features)
-    
-    def critic(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Critic head forward pass.
-        """
-        features = self.critic_readout(graph_batch, steps_left)
-        # print(f"[DEBUG] Critic features shape: {features.shape}")
-        
-        return self.critic_net(features).squeeze(-1)
 
     def _compute_dist_and_value(self, 
                                 graph_batch: Batch, 
@@ -346,7 +328,9 @@ class GATV2ActorCritic(nn.Module):
         
         # Handle truncation
         if truncated:
-            values = self.critic(graph_batch, steps_left)
+            node_features, batch = self.gat_forward(graph_batch)
+            critic_features = self.critic_readout(node_features, batch, steps_left)
+            values = self.critic_net(critic_features).squeeze(-1)
             dummy_action = torch.tensor([-1], device=graph_batch.x.device)
             dummy_log_prob = torch.tensor([0.0], device=graph_batch.x.device)
             return dummy_action, dummy_log_prob, values
