@@ -9,7 +9,7 @@ def build_sweep_config() -> Dict[str, Any]:
     """
 
     return {
-        "method": "random",
+        "method": "bayes",
         
         "metric": {"name": "avg_episode_reward", 
                     "goal": "maximize"},
@@ -18,7 +18,12 @@ def build_sweep_config() -> Dict[str, Any]:
             "lr": {"distribution": "uniform", "min": 1e-5, "max": 1e-3},
             "clip_frac": {"values": [0.1, 0.2, 0.3]},
             "gae_lambda": {"values": [0.9, 0.95, 0.98]},
-            "batch_size": {"values": [32, 64, 128]},
+            "batch_size": {"values": [8, 16, 32]},
+            "discount_factor": {"values": [0.9, 0.95, 0.99]},
+            "K_epochs": {"values": [2, 4, 8]},
+            "update_frequency": {"values": [64, 128, 256]},
+            "entropy_coef": {"values": [0.001, 0.01, 0.1]},
+            "value_loss_coef": {"values": [0.25, 0.5, 1]},
             # "seed": {"values": [0, 1, 2, 3]},
         },
     }

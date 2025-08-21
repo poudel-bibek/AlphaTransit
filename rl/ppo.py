@@ -23,6 +23,7 @@ class PPO:
         self.max_grad_norm = kwargs.get('max_grad_norm')
         self.gae_lambda = kwargs.get('gae_lambda')
         self.gamma = kwargs.get('gamma')
+        self.vf_clip_param = kwargs.get('vf_clip_param')
         
         # Learning rate settings
         self.lr = kwargs.get('lr')
@@ -78,14 +79,12 @@ class PPO:
                 surrogate_loss = torch.max(surrogate_loss1, surrogate_loss2).mean()
                 
                 # Value loss (clipped)
-                values_clipped = batch_data['values'].to(self.device) + torch.clamp(
-                    values - batch_data['values'].to(self.device), -self.clip_frac, self.clip_frac
-                )
-                value_loss1 = (values - returns) ** 2
-                value_loss2 = (values_clipped - returns) ** 2
+                values_clipped = batch_data['values'].to(self.device) + torch.clamp(values - batch_data['values'].to(self.device), -self.vf_clip_param, self.vf_clip_param)
+                value_loss_unclipped = (values - returns) ** 2
+                value_loss_clipped = (values_clipped - returns) ** 2
 
-                # Value loss is scaled by value loss coeff
-                value_loss = torch.max(value_loss1, value_loss2).mean()
+                # Value loss is scaled by value loss coeff as well as 0.5 separately
+                value_loss = 0.5 * torch.max(value_loss_unclipped, value_loss_clipped).mean()
                 
                 # Entropy loss (for exploration)
                 entropy_loss = -entropy.mean()
