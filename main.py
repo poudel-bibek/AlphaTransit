@@ -313,16 +313,15 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         wandb.log({f"eval_episode_reward": episode_reward}, step=steps_elapsed)
 
     # Plots
-    env.render(save_dir, f"eval_ep_{str(steps_elapsed)}.png")
-    
+    env.render(save_dir, f"eval_{str(steps_elapsed)}.png")
     env.world.analyzer.network_fancy(
         animation_speed_inverse=10,
         sample_ratio=1.0,
         interval=5,
         trace_length=5,
         network_font_size=14,
-        antialiasing=False,
-        file_name=f"eval_anim_{str(steps_elapsed)}",
+        antialiasing=True,
+        file_name=os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}.gif"),
         save_as_mp4=False
     )
         
@@ -351,8 +350,8 @@ def set_global_seeds(seed: int) -> None:
 def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str, Any]:
     return {
         "num_layers": config.get("num_layers", 3),
-        "gat_channels": config.get("gat_channels", [node_feature_dim, 36, 16, 1]),
-        "num_heads": config.get("num_heads", [8, 4, 1]),
+        "gat_channels": config.get("gat_channels", [node_feature_dim, 16, 16, 16]),
+        "num_heads": config.get("num_heads", [8, 4, 2]),
         "num_edge_features": config.get("num_edge_features", 2),
         "dropout": config.get("dropout"),
         "global_dim": config.get("global_dim"),
@@ -378,7 +377,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
-    parser.add_argument("--total_timesteps", type=int, default=500000, help="Total training timesteps")
+    parser.add_argument("--total_timesteps", type=int, default=10000, help="Total training timesteps")
     parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
 
     # Learning environment specific: 

@@ -66,9 +66,11 @@ class PPO:
                 # Get current policy outputs
                 log_probs, entropy, values = self.model.evaluate(obs, actions, steps_left=obs.steps_left, valid_indices=valid_indices)
                 
-                # Normalize advantages
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero
-                
+                # Normalize advantages (per batch; similar to cleanRL)
+                # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero
+                # Due to variable length of episodes, sometimes batch size is 1, so using correction=0 to use N in std calculation instead of N-1.
+                advantages = (advantages - advantages.mean()) / (advantages.std(correction=0) + 1e-8) 
+
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
                 surrogate_loss1 = -advantages * ratio
@@ -140,7 +142,7 @@ class PPO:
             all_dones = torch.tensor(self.memory.dones, dtype=torch.float32)
             all_advantages = torch.zeros_like(all_rewards)
 
-            # Process each episode separately to respect boundaries
+            # Process each episode separately to respect boundaries (GAE resets for each episode)
             episode_start = 0
             for ep_idx, episode_end in enumerate(self.memory.episode_boundaries):
                 # Get episode slice

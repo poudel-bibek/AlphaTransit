@@ -63,13 +63,17 @@ class GATV2ActorCritic(nn.Module):
         elif self.activation == "relu":
             self.activation = nn.ReLU()
         
-        model_size = kwargs.get("model_size")
-        if model_size == "small":
-            actor_sizes = [128, 64]
-            critic_sizes = [128, 64]
-        elif model_size == "medium":
-            actor_sizes = [256, 128, 64]
-            critic_sizes = [256, 128, 64]
+        # Only include the hidden dimensions.
+        # model_size = kwargs.get("model_size")
+        # if model_size == "small":
+        #     actor_sizes = [128, 64]
+        #     critic_sizes = [128, 64]
+        # elif model_size == "medium":
+        #     actor_sizes = [256, 128, 64]
+        #     critic_sizes = [256, 128, 64]
+
+        actor_sizes = [128, 64]
+        critic_sizes = [128, 64]
 
         self.concat = kwargs.get("concat")
 
@@ -112,14 +116,15 @@ class GATV2ActorCritic(nn.Module):
 
         self.gat_layers = nn.ModuleList(gat_layers)  # Use ModuleList to properly register modules
 
-        if self.concat:
-            mlp_input = self.gat_channels[-1]*self.num_heads[-1] + self.global_dim
-        else:
-            mlp_input = self.gat_channels[-1] + self.global_dim
+        
 
         # Actor 
         actor_layers = []
-        actor_input = mlp_input
+        if self.concat:
+            actor_input = self.gat_channels[-1]*self.num_heads[-1]*self.num_actions + self.global_dim
+        else:
+            actor_input = self.gat_channels[-1]*self.num_actions + self.global_dim
+
         for j in range(len(actor_sizes)):
             actor_layers.append(self.layer_init(nn.Linear(actor_input, actor_sizes[j])))
             # Add layer norm, batch norm, dropout, etc.
@@ -133,7 +138,11 @@ class GATV2ActorCritic(nn.Module):
 
         # Critic 
         critic_layers = []
-        critic_input = mlp_input
+        if self.concat:
+            critic_input = self.gat_channels[-1] * self.num_heads[-1] + self.global_dim
+        else:
+            critic_input = self.gat_channels[-1] + self.global_dim
+            
         for k in range(len(critic_sizes)):
             critic_layers.append(self.layer_init(nn.Linear(critic_input, critic_sizes[k])))
             # Add layer norm, batch norm, dropout, etc.
@@ -171,6 +180,43 @@ class GATV2ActorCritic(nn.Module):
         # print("[DEBUG] Masked logits:\n", masked)
         return masked
 
+    def gat_forward(self, graph_batch: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through GAT layers
+        batch: Batch assignment for nodes (for pooling)
+        """
+        x = graph_batch.x  # Node features
+        edge_index = graph_batch.edge_index
+        edge_attr = graph_batch.edge_attr
+        batch = graph_batch.batch
+        
+        # print(f"[DEBUG] Node features before GAT layers: {x.shape}")
+        # Pass through GAT layers
+        for i, conv in enumerate(self.gat_layers):
+            x = conv(x, edge_index, edge_attr=edge_attr)  # Inject edge features at each GATv2 layer
+            # print(f"[DEBUG] After GAT layer {i}, node features:\n{x.shape}")
+            # Apply activation except for last layer
+            if i < len(self.gat_layers) - 1:
+                x = self.activation(x)
+
+        return x, batch
+
+    def actor(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Actor head forward pass.
+        """
+        features = self.actor_readout(graph_batch, steps_left)
+        return self.actor_net(features)
+    
+    def critic(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Critic head forward pass.
+        """
+        features = self.critic_readout(graph_batch, steps_left)
+        # print(f"[DEBUG] Critic features shape: {features.shape}")
+        
+        return self.critic_net(features).squeeze(-1)
+
     def _compute_dist_and_value(self, 
                                 graph_batch: Batch, 
                                 steps_left: Optional[torch.Tensor], 
@@ -179,9 +225,16 @@ class GATV2ActorCritic(nn.Module):
         """
         Returns a dummy action (-1) if episode is truncated. Still need to return a value in this case.
         """
-        features = self.readout_layer(graph_batch, steps_left)
-        logits = self.actor_net(features)
-        values = self.critic_net(features).squeeze(-1)
+        # Compute GAT features once
+        node_features, batch = self.gat_forward(graph_batch)
+        
+        # Use readout functions with shared node features
+        actor_features = self.actor_readout(node_features, batch, steps_left)
+        logits = self.actor_net(actor_features)
+        
+        critic_features = self.critic_readout(node_features, batch, steps_left)
+        values = self.critic_net(critic_features).squeeze(-1)
+        
         masked_logits = self._mask_logits(logits, valid_indices)
         dist = Categorical(logits=masked_logits)
         # print("[DEBUG] Distribution probs:\n", dist.probs)
@@ -213,45 +266,67 @@ class GATV2ActorCritic(nn.Module):
         
         return conv
 
-    def forward(self, graph_batch: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
+    def actor_readout(self, node_features: torch.Tensor, batch: torch.Tensor, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass through GAT layers to produce node embeddings.
-        
-        Args:
-            graph_batch: PyG Batch containing node features, edge_index, edge_attr
-        
-        Returns:
-            node_embeddings: Final node representations [num_nodes, final_dim]
-            batch: Batch assignment for nodes (for pooling)
-        """
-        x = graph_batch.x  # Node features
-        edge_index = graph_batch.edge_index
-        edge_attr = graph_batch.edge_attr
-        batch = graph_batch.batch
-        
-        # Pass through GAT layers
-        for i, conv in enumerate(self.gat_layers):
-            x = conv(x, edge_index, edge_attr=edge_attr) # Inject edge features at each GATv2 layer
+        Readout: Aggregate node embeddings into graph-level features i.e., a way to get a fixed sized vector for the graph.
+        However, in this case we don't have a variable sized input (current path is embedded as node features) 
+
+        Approaches: 
+            1. Global mean pooling: 
+            - Average the node features across all nodes in the graph.
+            - Example: node 1 features: [0.1, 0.2, 0.3], node 2: [0.4, 0.5, 0.6], node 3: [0.7, 0.8, 0.9]
+            - After pooling: Global node features = [0.4, 0.5, 0.6]
+            - Disadvantage: Severe loss of information.
+
+            2. Alternative: Global sort pooling:
+            - Sort the nodes according to their mean activation then take the top k nodes.
             
-            # Apply activation except for last layer
-            if i < len(self.gat_layers) - 1:
-                x = self.activation(x)
+            3. Alternative: No pooling in Actor + Global mean pooling in Critic (Currently used).
+            - Just concatenate all node features from the last GATv2 layer.
+            - Justification: 
+                - Fundamentally, the task for the policy actor is `next node selection`.
+                - Global mean pooling reduces information too much, and forces the MLP to reconstruct node-specific probabilities from an average.
+                - This is likely suboptimal for node-selection task.
+                - If we remove pooling, actor logits would be computed directly from each node's embedding. 
+                - This avoids the averaging loss, allowing better differentiation between nodes/actions.
+                - At the same time, perhaps the critic benefits from pooling, as value estimation is inherently graph-level.
+                - steps_left is a global feature (not broadcasted to each node); maybe more important to the critic.
+            - Cons: 
+                - Changing node order changes the concatenated vector (Same graph, different node order = different results). 
+                    - However, for a given graph, the node order is fixed.
+                - Parameter count is higher because the MLP at input is larger.
+                    - No big deal.
+        """
+        # 1. Global mean pooling
+        # graph_features = global_mean_pool(node_features, batch)
+        # graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1) # Concatenate global features (steps_left)
         
-        return x, batch
+        # 3. No pooling.
+        # Flatten all node features per graph
+        batch_size = len(torch.unique(batch))  # Number of graphs in batch
+        emb_dim = node_features.shape[1]
+        num_nodes = node_features.shape[0] // batch_size  # Assumes fixed num_nodes per graph
+        # Reshape to [batch_size, num_nodes * emb_dim]
+        graph_features = node_features.view(batch_size, num_nodes * emb_dim)
+        # print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
+        # Concatenate global features (steps_left)
+        graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
+        # print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
 
-    def readout_layer(self, graph_batch: Batch, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Aggregate node embeddings into graph-level features.
-        Flexible pooling - can easily swap to max, sum, or attention pooling.
-        """
-        node_features, batch = self.forward(graph_batch)
+        return graph_features
 
-        # Can easily change to global_max_pool, global_add_pool, etc.
+    def critic_readout(self, node_features: torch.Tensor, batch: torch.Tensor, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Critic readout: Global mean pooling for graph-level value estimation.
+        """
+        # 1. Global mean pooling 
         graph_features = global_mean_pool(node_features, batch)
+        # print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
         
         # Concatenate global features (steps_left)
         graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
-        
+        # print(f"[DEBUG] Critic graph features shape after concatenation: {graph_features.shape}")
+
         return graph_features
     
     def act(self, graph_batch: Batch, 
@@ -271,8 +346,7 @@ class GATV2ActorCritic(nn.Module):
         
         # Handle truncation
         if truncated:
-            features = self.readout_layer(graph_batch, steps_left)
-            values = self.critic_net(features).squeeze(-1)
+            values = self.critic(graph_batch, steps_left)
             dummy_action = torch.tensor([-1], device=graph_batch.x.device)
             dummy_log_prob = torch.tensor([0.0], device=graph_batch.x.device)
             return dummy_action, dummy_log_prob, values
