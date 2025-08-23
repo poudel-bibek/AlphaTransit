@@ -387,7 +387,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
-    parser.add_argument("--horizon", type=int, default=4800, help="Simulation horizon")
+    parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon")
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step")
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
