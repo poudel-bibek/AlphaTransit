@@ -1343,7 +1343,33 @@ class Vehicle:
         for dest in dests:
             s.add_dest(dest)
     
-    def set_bus_route(s, path=None, stops=None, is_circular=True, capacity=50, stop_duration=30, service_frequency=6):
+    def _configure_single_bus(s, path, stops, is_circular, capacity, stop_duration, service_frequency):
+        """
+        Helper function 
+        """
+        s.route_path = [s.W.get_node(node) for node in path]
+        s.current_path_index = 0
+        s.is_circular_route = is_circular
+        s.route_direction = 1  # Start going forward for non-circular routes
+        
+        # Route 2. STOPS: Set designated stops (must be subset of path)
+        if stops is None:
+            s.route_stops = s.route_path[:]
+        else:
+            s.route_stops = [s.W.get_node(stop) for stop in stops]
+            # Validate that all stops are in the path
+            for stop in s.route_stops:
+                if stop not in s.route_path:
+                    raise ValueError(f"Stop {stop.name} is not on the specified route path.")
+        
+        s.stop_duration = stop_duration
+        s.stop_start_time = None
+        s.is_currently_stopped = False
+        s.service_frequency = service_frequency
+        s.capacity = capacity
+        s.passengers = []
+        
+    def set_bus_route(s, path=None, stops=None, is_circular=True, capacity=50, stop_duration=30, service_frequency=6, sim_horizon=3600):
         """
         Component added for TNDP using RL
         Set the complete bus route: PATH + STOPS + SERVICE FREQUENCY.
@@ -1362,7 +1388,8 @@ class Vehicle:
             Duration to stop at each stop in seconds, default is 30.
         service_frequency : int, optional
             How many times per hour the bus serves this route, default is 6.
-            
+        sim_horizon : int, optional
+            The simulation horizon in seconds, default is 3600.
         Returns
         -------
         list
@@ -1375,32 +1402,8 @@ class Vehicle:
         if path is None:
             raise ValueError("Bus route path must be specified.")
         
-        # Helper function to configure a single bus
-        def _configure_single_bus(bus, path, stops, is_circular, capacity, stop_duration, service_frequency):
-            bus.route_path = [bus.W.get_node(node) for node in path]
-            bus.current_path_index = 0
-            bus.is_circular_route = is_circular
-            bus.route_direction = 1  # Start going forward for non-circular routes
-            
-            # Route 2. STOPS: Set designated stops (must be subset of path)
-            if stops is None:
-                bus.route_stops = bus.route_path[:]
-            else:
-                bus.route_stops = [bus.W.get_node(stop) for stop in stops]
-                # Validate that all stops are in the path
-                for stop in bus.route_stops:
-                    if stop not in bus.route_path:
-                        raise ValueError(f"Stop {stop.name} is not on the specified route path.")
-            
-            bus.stop_duration = stop_duration
-            bus.stop_start_time = None
-            bus.is_currently_stopped = False
-            bus.service_frequency = service_frequency
-            bus.capacity = capacity
-            bus.passengers = []
-        
         # Configure the original bus (this one)
-        _configure_single_bus(s, path, stops, is_circular, capacity, stop_duration, service_frequency)
+        s._configure_single_bus(path, stops, is_circular, capacity, stop_duration, service_frequency)
         
         # Initialize route position - buses ALWAYS start at their origin which MUST be on the route
         if s.orig not in s.route_path:
@@ -1418,44 +1421,58 @@ class Vehicle:
             else:
                 raise ValueError(f"Bus {s.name} starts at end of non-circular route with nowhere to go.")
         
-        # Create additional buses for service frequency > 1
+        # Create additional buses for service frequency > 1, horizon-aware
         created_buses = [s]  # Include the original bus
         
         if service_frequency > 1:
-            departure_interval = 3600.0 / service_frequency  # seconds between departures
+            # Calculate headway (time between buses) based on service_frequency
+            # service_frequency is buses per hour, so:
+            # - If service_frequency = 1: headway = 3600s (one bus for the whole hour)
+            # - If service_frequency = 2: headway = 1800s (buses at 0s and 1800s)  
+            # - If service_frequency = 6: headway = 600s (buses every 10 minutes)
+            headway_seconds = 3600 / service_frequency
             
-            for i in range(1, service_frequency):  # Skip first bus (already exists)
-                # Calculate departure time for this bus
-                new_departure_time = s.departure_time + (i * departure_interval)
+            # Calculate how many buses we need to spawn during the simulation horizon
+            # For a 1-hour simulation with service_frequency=6, this gives us 6 buses
+            # For a 2-hour simulation with service_frequency=6, this gives us 12 buses
+            num_buses_to_spawn = int(sim_horizon / headway_seconds)
+            print(f"Creating {num_buses_to_spawn} buses for service_frequency={service_frequency}, sim_horizon={sim_horizon}s")
+            
+            # Create additional buses (skip the first one since we already have it)
+            for i in range(1, num_buses_to_spawn):
+                # Spawn buses at regular intervals throughout the simulation. Calculate departure time for this bus
+                new_departure_time = s.departure_time + (i * headway_seconds)
                 
-                # Create new bus with same origin/dest but different departure time
-                new_bus = s.W.addVehicle(
-                    s.orig.name, 
-                    s.dest.name, 
-                    new_departure_time,
-                    mode="bus", 
-                    name=f"{s.name}_freq_{i+1}",
-                    departure_time_is_time_step=0  # 0 = departure time in seconds
-                )
-                
-                # Configure new bus with same route parameters
-                _configure_single_bus(new_bus, path, stops, is_circular, capacity, stop_duration, service_frequency)
-                
-                # Initialize route position - same as original bus
-                if new_bus.orig not in new_bus.route_path:
-                    raise ValueError(f"Bus {new_bus.name} origin '{new_bus.orig.name}' is not on its route path. Buses must start on their defined route.")
-                
-                new_bus.current_path_index = new_bus.route_path.index(new_bus.orig)
-                next_node = new_bus.get_next_path_node()
-                if next_node:
-                    new_bus.dest = next_node
-                else:
-                    if new_bus.is_circular_route:
-                        new_bus.dest = new_bus.route_path[0]
+                # Only create if departure time is within simulation horizon
+                if new_departure_time < sim_horizon:
+                    # Create new bus with same origin/dest but different departure time
+                    new_bus = s.W.addVehicle(
+                        orig = s.orig.name, 
+                        dest = s.dest.name, 
+                        departure_time = new_departure_time,
+                        mode = "bus", 
+                        name = f"{s.name}_freq_{i}",
+                        departure_time_is_time_step=0  # 0 = departure time in seconds
+                    )
+                    
+                    # Configure new bus with same route parameters
+                    new_bus._configure_single_bus(path, stops, is_circular, capacity, stop_duration, service_frequency)
+                    
+                    # Initialize route position - same as original bus
+                    if new_bus.orig not in new_bus.route_path:
+                        raise ValueError(f"Bus {new_bus.name} origin '{new_bus.orig.name}' is not on its route path. Buses must start on their defined route.")
+                    
+                    new_bus.current_path_index = new_bus.route_path.index(new_bus.orig)
+                    next_node = new_bus.get_next_path_node()
+                    if next_node:
+                        new_bus.dest = next_node
                     else:
-                        raise ValueError(f"Bus {new_bus.name} starts at end of non-circular route with nowhere to go.")
-                
-                created_buses.append(new_bus)
+                        if new_bus.is_circular_route:
+                            new_bus.dest = new_bus.route_path[0]
+                        else:
+                            raise ValueError(f"Bus {new_bus.name} starts at end of non-circular route with nowhere to go.")
+                    
+                    created_buses.append(new_bus)
         
         return created_buses
 

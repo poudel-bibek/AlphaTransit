@@ -1212,7 +1212,7 @@ class Analyzer:
             os.remove(f)
 
     @catch_exceptions_and_warn()
-    def network_fancy(s, animation_speed_inverse=10, figsize=6, sample_ratio=0.3, interval=5, network_font_size=0, trace_length=3, speed_coef=2, file_name=None, antialiasing=True, save_as_mp4=False):
+    def network_fancy(s, animation_speed_inverse=10, figsize=6, sample_ratio=0.3, interval=5, network_font_size=0, trace_length=3, speed_coef=2, file_name=None, antialiasing=True, save_as_mp4=False, bus_only=False):
         """
         Generates a visually appealing animation of vehicles' trajectories across the entire transportation network over time.
 
@@ -1238,6 +1238,8 @@ class Analyzer:
             If set to True, antialiasing is applied to the animation. Default is True.
         save_as_mp4 : bool, optional
             If set to True, saves the animation as an MP4 video in addition to GIF. Default is False.
+        bus_only : bool, optional
+            If set to True, only shows buses in the animation, filtering out all other vehicles. Default is False.
 
         Notes
         -----
@@ -1264,6 +1266,9 @@ class Analyzer:
         dcoef = (maxx-minx)/20
 
         for veh in s.W.VEHICLES.values():
+            # If bus_only is True, only show buses
+            if bus_only and not (hasattr(veh, 'mode') and veh.mode == 'bus'):
+                continue
             if s.W.rng.random() > sample_ratio:
                 continue
             ts = []

@@ -302,7 +302,7 @@ class TransitEnv(gym.Env):
             print(f"Initializing route at node: {choice}")
             return [choice]
 
-    def _allocate_demand_by_service(self, world: World, demand_csv: str, current_path: list = None) -> None:
+    def _allocate_demand_by_service(self, world: World, demand_csv: str, current_path: list = None, method: str = "volume") -> None:
         """
         Assigns mode-specific demands based on the current bus route:
         - for OD pairs served by the route (both O and D on route)
@@ -322,9 +322,15 @@ class TransitEnv(gym.Env):
             - But the observation space is fixed. 
             - Solution: Do not input the partial route demand as part of the state.
                 - Other solutions possible.
-        The demand csv expects: 
+
+        The flow-based demand csv expects: 
             - Mandatory: orig, dest, start_t, end_t, mode (its optional in sim; mandatory in the RL env to split with alpha) 
-            - Either one: Volume or per-second flow rate (q) vehicles/s
+            - per-second flow rate (q) vehicles/s
+        The volume-based demand csv expects: 
+            - Mandatory: orig, dest, volume
+            - The volume will be spread over the time window (start_t, end_t) by adddemand.
+            - Advantage of using volume is that it can be spread across the entire sim horizon.
+            - The sim expects volume to be specified in total vehicle spread over time. But in the data, it is specified in per/hour (transformation done below).
         """
         # IMPORTANT: ensure node identifiers are strings to match World node names.
         demand_df = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
@@ -335,40 +341,70 @@ class TransitEnv(gym.Env):
         total_demand = 0 
         bus_demand = 0 
         car_demand = 0 
-        for _, row in demand_df.iterrows():
+
+        if method == "volume":
+            for _, row in demand_df.iterrows():
+                orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
+                total_volume = volume_per_hour * (self.horizon / 3600) # multiply by "how many hours" in horizon
+
+                if volume_per_hour <= 0 or orig == dest: 
+                    continue
+                
+                is_served = orig in current_path_str and dest in current_path_str
+                bus_volume = total_volume * self.alpha if is_served else 0
+                car_volume = total_volume - bus_volume
+                
+                total_demand += total_volume
+                bus_demand += bus_volume
+                car_demand += car_volume
+                
+                # Spread car volume over horizon
+                world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
+                                volume=car_volume, mode="vehicle")
+                
+                # Spread bus volume if served
+                if bus_volume > 0:
+                    world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
+                                    volume=bus_volume, mode="bus_passenger")
+
+        # Not used right now for the sake of data standardization.
+        # elif method == "flow":
+        #     for _, row in demand_df.iterrows():
             
-            orig, dest = str(row["orig"]), str(row["dest"])
-            start_t, end_t, flow_rate = row["start_t"], row["end_t"], row["q"]
-            if self._is_od_served(orig, dest, current_path_str):
-                bus_demand += flow_rate * self.alpha
-                car_demand += flow_rate * (1 - self.alpha)
-                total_demand += flow_rate
+        #         orig, dest = str(row["orig"]), str(row["dest"])
+        #         start_t, end_t, flow_rate = row["start_t"], row["end_t"], row["q"]
+        #         if self._is_od_served(orig, dest, current_path_str):
+        #             bus_demand += flow_rate * self.alpha
+        #             car_demand += flow_rate * (1 - self.alpha)
+        #             total_demand += flow_rate
 
-                # Add demand to the world:
-                world.adddemand(orig=orig, 
-                                dest=dest, 
-                                t_start=start_t, 
-                                t_end=end_t, 
-                                flow=flow_rate * (1 - self.alpha), 
-                                mode="vehicle")
+        #             # Add demand to the world:
+        #             world.adddemand(orig=orig, 
+        #                             dest=dest, 
+        #                             t_start=start_t, 
+        #                             t_end=end_t, 
+        #                             flow=flow_rate * (1 - self.alpha), 
+        #                             mode="vehicle")
 
-                world.adddemand(orig=orig, 
-                                dest=dest, 
-                                t_start=start_t, 
-                                t_end=end_t, 
-                                flow=flow_rate * self.alpha, 
-                                mode="bus_passenger")
-            else: 
-                car_demand += flow_rate
-                total_demand += flow_rate
+        #             world.adddemand(orig=orig, 
+        #                             dest=dest, 
+        #                             t_start=start_t, 
+        #                             t_end=end_t, 
+        #                             flow=flow_rate * self.alpha, 
+        #                             mode="bus_passenger")
+        #         else: 
+        #             car_demand += flow_rate
+        #             total_demand += flow_rate
 
-                # Add demand to the world:
-                world.adddemand(orig=orig, 
-                                dest=dest, 
-                                t_start=start_t, 
-                                t_end=end_t, 
-                                flow=flow_rate, 
-                                mode="vehicle")
+        #             # Add demand to the world:
+        #             world.adddemand(orig=orig, 
+        #                             dest=dest, 
+        #                             t_start=start_t, 
+        #                             t_end=end_t, 
+        #                             flow=flow_rate, 
+        #                             mode="vehicle")
+        else:
+            raise ValueError(f"Invalid method: {method}")
 
         print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
 
@@ -500,49 +536,36 @@ class TransitEnv(gym.Env):
         # For simplicity, make all nodes in path as stops (can be refined later)
         bus_stops = self.current_path[::self.STOP_SPACING]
 
-        # Calculate headway (time between buses) based on SERVICE_FREQUENCY
-        # SERVICE_FREQUENCY is buses per hour, so:
-        # - If SERVICE_FREQUENCY = 1: headway = 3600s (one bus for the whole hour)
-        # - If SERVICE_FREQUENCY = 2: headway = 1800s (buses at 0s and 1800s)  
-        # - If SERVICE_FREQUENCY = 6: headway = 600s (buses every 10 minutes)
-        headway_seconds = 3600 / self.SERVICE_FREQUENCY
+        # 2. Right now, only setup to work with single bus route. 
+        # Create a single bus and let set_bus_route handle the SERVICE_FREQUENCY
+        # TODO: Add more buses if more than 1 route
+        bus_name = "bus_route_0"
+        departure_time = 0  # First bus starts at time 0
         
-        # Calculate how many buses we need to spawn during the simulation
-        # For a 1-hour simulation with SERVICE_FREQUENCY=6, this gives us 6 buses
-        # For a 2-hour simulation with SERVICE_FREQUENCY=6, this gives us 12 buses
-        num_buses_to_spawn = int(self.horizon / headway_seconds)
-        print(f"Spawning {num_buses_to_spawn} buses")
-        
-        # Spawn buses at regular intervals throughout the simulation
-        for bus_index in range(num_buses_to_spawn):
-            # Calculate when this bus should start
-            departure_time = bus_index * headway_seconds
-            
-            bus_name = f"bus_route_{bus_index}"
-            # Only spawn if within simulation horizon
-            if departure_time < self.horizon:
-                # Create bus with staggered departure time
-                bus = self.world.addVehicle(
-                    orig=self.current_path[0], 
-                    dest=self.current_path[1],  # Next node in path
-                    departure_time=int(departure_time),
-                    name=bus_name, # unique name for each bus
-                    mode="bus"
-                )
+        bus = self.world.addVehicle(
+            orig=self.current_path[0], 
+            dest=self.current_path[1],  # Next node in path
+            departure_time=int(departure_time),
+            name=bus_name, # unique name for each bus
+            mode="bus"
+        )
 
-                # Set the bus route:
-                bus.set_bus_route(
-                    path=self.current_path,
-                    stops=bus_stops,
-                    is_circular=False, # Do not make routes circular 
-                    capacity=self.BUS_CAPACITY,
-                    stop_duration=self.STOP_DURATION,
-                    service_frequency=self.SERVICE_FREQUENCY, # Still pass this for record-keeping
-                )
-        
+        # 3. Set the bus route - this will create SERVICE_FREQUENCY number of buses:
+        buses = bus.set_bus_route(
+            path=self.current_path,
+            stops=bus_stops,
+            is_circular=False, # Do not make routes circular 
+            capacity=self.BUS_CAPACITY,
+            stop_duration=self.STOP_DURATION,
+            service_frequency=self.SERVICE_FREQUENCY, # This creates multiple buses for the frequency
+            sim_horizon=self.horizon # Pass simulation horizon for proper bus spacing
+        )
+
+        print(f"Original bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
+                
         # Print bus summary AFTER all buses are created
-        buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
-        print(f"\nBuses in simulation: {len(buses)} - {[b.name for b in buses]}")
+        all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
+        print(f"\nTotal buses in simulation: {len(all_buses)} - {[b.name for b in all_buses]}")
 
     def _step_until(self, until_t: int, print_metrics: bool = True) -> Dict[str, int]:
         """

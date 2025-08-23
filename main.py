@@ -301,7 +301,7 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         
         with torch.no_grad():
             action_tensor, _, _ = model.act(batch, steps_left, deterministic=True, valid_indices=valid_indices)
-
+ 
         action = action_tensor.cpu().item()
         next_state, reward, terminated, info = env.step(action)
         episode_reward += reward
@@ -327,6 +327,18 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         antialiasing = False,
         file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}.gif"),
         save_as_mp4 = False
+    )
+
+    env.world.analyzer.network_fancy(
+        animation_speed_inverse = 10,
+        sample_ratio = 1.0,
+        interval = 5,
+        trace_length = 5,
+        network_font_size = 14,
+        antialiasing = False,
+        file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}_bus_only.gif"),
+        save_as_mp4 = False,
+        bus_only = True
     )
         
 
@@ -375,17 +387,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
-    parser.add_argument("--horizon", type=int, default=3600, help="Simulation horizon")
+    parser.add_argument("--horizon", type=int, default=4800, help="Simulation horizon")
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step")
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
-    parser.add_argument("--total_timesteps", type=int, default=50000, help="Total training timesteps")
-    parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
+    parser.add_argument("--total_timesteps", type=int, default=50000, help="Total training timesteps") # This is not directly related to the simulation horizon.
+    parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
 
     # Learning environment specific: 
-    parser.add_argument("--service_frequency", type=int, default=10, help="Service frequency. 1 means one bus per hour")
+    parser.add_argument("--service_frequency", type=int, default=6, help="Service frequency. 1 means one bus per hour")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
     parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
@@ -420,6 +432,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--save_dir", type=str, default="./training_data", help="Directory to save training data")
     parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy that you want to evaluate")
+    # parser.add_argument("--demand_method", choices=["volume", "flow"], default="volume", help="Demand allocation method")
     return parser
 
 
