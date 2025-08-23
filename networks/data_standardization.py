@@ -15,7 +15,7 @@ DATA SOURCES:
       - Classic traffic assignment benchmark. 
       - Artificial coordinates.
       - Nodes: 
-         - Download the lat, long version of nodes data from the repo. 
+         - Download the lat, long version of nodes data from the repo (this file may be present as tntp format in the repo). 
          - Researchers (e.g., Chakirov and Fourie, 2014) matched each abstract node to a major real-world intersection in Sioux Falls using city maps, GIS data.
          - i.e. Node coordinates were generated artificially to reproduce the diagram shown in the paper.
          - The coordinates are in longitude, latitude format.
@@ -85,9 +85,7 @@ import pandas as pd
 from pathlib import Path
 
 class Helpers: 
-   def __init__(self, network_name: str):
-      # self.network_name = network_name
-      # self.network_dir = Path(f"./{network_name}")
+   def __init__(self):
       pass
 
    def convert_lat_long_to_meters(self, nodes_csv: str, nodes_map: dict) -> None:
@@ -104,12 +102,15 @@ class Helpers:
       # Find which columns contain longitude and latitude using nodes_map
       lon_col = None
       lat_col = None
-      
+      name_col = None
+
       for col, coord_type in nodes_map.items():
           if coord_type == 'lon':
               lon_col = col
           elif coord_type == 'lat':
               lat_col = col
+          elif coord_type == 'name':
+              name_col = col
       
       if lon_col is None or lat_col is None:
           raise ValueError(f"nodes_map must contain both 'lon' and 'lat' mappings. Got: {nodes_map}")
@@ -128,6 +129,12 @@ class Helpers:
       df["x"] = (lon - ref_lon) * m_per_deg_lon
       df["y"] = (lat - ref_lat) * m_per_deg_lat
       
+      if name_col:
+         df[name_col] = df[name_col].astype(str)  # Convert before renaming
+      
+      df = df.rename(columns={name_col: 'name'})
+      df = df[['name', 'x', 'y']]
+
       output_file = nodes_csv.replace('.csv', '_standard.csv')
       df.to_csv(output_file, index=False)
       print(f"Converted coordinates saved to: {output_file}")
@@ -190,8 +197,10 @@ class Helpers:
       print(f"Found {len(links)} links") 
 
       # Load georeferenced nodes in meters
-      df_nodes = pd.read_csv(nodes_standard_csv)
+      df_nodes = pd.read_csv(nodes_standard_csv, dtype={'name': str})
       node_pos = {str(row['name']): (row['x'], row['y']) for _, row in df_nodes.iterrows()}
+
+      # print(f"Loaded {len(node_pos)} nodes: {sorted(node_pos.keys())}")
 
       # Compute for each link
       data = []
@@ -209,7 +218,7 @@ class Helpers:
           data.append({'name': name, 'start': start, 'end': end, 'length': length, 'free_flow_speed': free_flow_speed})
 
       df_links = pd.DataFrame(data)
-      output_file = links_tntp.replace('.tntp', '_standard.csv')
+      output_file = links_tntp.replace('_net.tntp', '_links_standard.csv')
       df_links.to_csv(output_file, index=False)
       print(f"Converted links saved to: {output_file}")
 
@@ -217,7 +226,7 @@ class Helpers:
       """
       For Nodes: Assuming columns: node_name, longitude, latitude
       """
-      nodes_map = {'X': 'lon', 'Y': 'lat'}
+      nodes_map = {'Node': 'name', 'X': 'lon', 'Y': 'lat'}
       self.convert_lat_long_to_meters(nodes_csv, nodes_map)
 
       demand_map = {'O': 'orig', 'D': 'dest', 'Ton': 'volume'}

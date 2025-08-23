@@ -49,9 +49,10 @@ class TransitEnv(gym.Env):
         self.N_EDGE_FEATURES = 2
 
         # Lookup dicts for efficient queries:
-        nodes_csv = self.network_dir / f"{self.config.get('network')}_nodes.csv"
-        links_csv = self.network_dir / f"{self.config.get('network')}_links.csv"
-        demand_csv = self.network_dir / f"{self.config.get('network')}_demand.csv"
+        # Only work on standardized data.
+        nodes_csv = self.network_dir / f"{self.config.get('network')}_nodes_standard.csv"
+        links_csv = self.network_dir / f"{self.config.get('network')}_links_standard.csv"
+        demand_csv = self.network_dir / f"{self.config.get('network')}_demand_standard.csv"
 
         df_nodes = pd.read_csv(nodes_csv, dtype={"name": str})
         df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
@@ -77,7 +78,7 @@ class TransitEnv(gym.Env):
             if row["orig"] in self.node_to_idx and row["dest"] in self.node_to_idx:
                 i = self.node_to_idx[row["orig"]]
                 j = self.node_to_idx[row["dest"]]
-                self.od_matrix[i, j] += row["q"]
+                self.od_matrix[i, j] += row["volume"]
 
         # Demand vectors:
         self.demand_out = self.od_matrix.sum(axis=1) # Trips starting from node i
@@ -96,8 +97,8 @@ class TransitEnv(gym.Env):
         self.max_y = df_nodes["y"].max()
         self.min_length = df_links["length"].min()
         self.max_length = df_links["length"].max()
-        self.min_free_flow_speed = df_links["u"].min() # u = free_flow_speed
-        self.max_free_flow_speed = df_links["u"].max()
+        self.min_free_flow_speed = df_links["free_flow_speed"].min() # u = free_flow_speed
+        self.max_free_flow_speed = df_links["free_flow_speed"].max()
         
         # Edge index and features:
         edge_index_list = []
@@ -114,7 +115,7 @@ class TransitEnv(gym.Env):
 
                 # Now edge attributes: Normalize to [0,1] and add
                 length_norm = (length - self.min_length) / (self.max_length - self.min_length) 
-                speed_norm = (row['u'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) 
+                speed_norm = (row['free_flow_speed'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) 
                 edge_attr_list.append([length_norm, speed_norm]) # Add the normalized edge attributes
 
         self.edge_index = np.array(edge_index_list).T.astype(np.int64) # Transpose, shape (2, E)
@@ -286,7 +287,7 @@ class TransitEnv(gym.Env):
         Current one: Initialize at the highest demand node i.e., node from which highest demand emanates.
         Other option: random i.e., pick a random node.
         """
-        demand_csv = self.network_dir / f"{self.config.get('network')}_demand.csv"
+        demand_csv = self.network_dir / f"{self.config.get('network')}_demand_standard.csv"
         # Read as strings so node names remain consistent with the World (nodes are named as strings)
         demand_df = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
 
@@ -297,7 +298,7 @@ class TransitEnv(gym.Env):
             
         else: 
             demand_df = demand_df.groupby("orig").sum(numeric_only=True).reset_index()
-            highest_demand_node = demand_df.loc[demand_df["q"].idxmax()]
+            highest_demand_node = demand_df.loc[demand_df["volume"].idxmax()]
             choice = highest_demand_node["orig"]
             print(f"Initializing route at node: {choice}")
             return [choice]
@@ -487,18 +488,20 @@ class TransitEnv(gym.Env):
         generate nodes from csv: 
         - expects: name, x, y
         generate links from csv: 
-        - expects: link_name, start, end, length, free_flow_speed (u), jam_density (kappa), merge_priority
+        - expects: link_name, start, end, length, free_flow_speed 
         """
         if not network:
             raise ValueError("Network name must be provided in config['network']")
 
-        nodes_csv = self.network_dir / f"{network}_nodes.csv"
-        links_csv = self.network_dir / f"{network}_links.csv"
-        demand_csv = self.network_dir / f"{network}_demand.csv"
+        nodes_csv = self.network_dir / f"{network}_nodes_standard.csv"
+        links_csv = self.network_dir / f"{network}_links_standard.csv"
+        demand_csv = self.network_dir / f"{network}_demand_standard.csv"
 
         for path in (nodes_csv, links_csv, demand_csv):
             if not path.exists():
                 raise FileNotFoundError(f"Missing required file: {path}")
+        
+        df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
 
         world = World(
             name=network,
@@ -513,7 +516,16 @@ class TransitEnv(gym.Env):
 
         # Populate network from CSVs
         world.generate_Nodes_from_csv(str(nodes_csv))
-        world.generate_Links_from_csv(str(links_csv))
+         
+        # Making use of links data other than free_flow_speed
+        for _, row in df_links.iterrows():
+            world.addLink(
+                name=row['name'],
+                start_node=row['start'],
+                end_node=row['end'],
+                length=row['length'],
+                free_flow_speed=row['free_flow_speed']
+            )
 
         # Required for adding bus passenger demand via world.adddemand(..., mode="bus_passenger")
         world.set_bus_handler(BusHandler)
