@@ -139,11 +139,11 @@ class Helpers:
       df.to_csv(output_file, index=False)
       print(f"Converted coordinates saved to: {output_file}")
 
-   def convert_ton_to_hourly(self, demand_csv: str, demand_map: dict, factor: float = 0.12) -> None:
+   def convert_ton_to_hourly(self, demand_csv: str, demand_map: dict, factor: float = 0.06) -> None:
       """
       For Demand: Convert daily vehicle trips to vehicles per hour using a peak hour factor.
-      In urban planning, the peak hour often carries about 8-12% of the day's total traffic due to rush hours.
-      Using Default factor=0.12, it assumes it's 12% of daily demand, common for urban networks.
+      In urban planning, the peak hour often carries about 6-12% of the day's total traffic due to rush hours.
+      Using Default factor=0.06, it assumes it's 6% of daily demand, common for urban networks.
       """
       df = pd.read_csv(demand_csv)
       
@@ -222,7 +222,7 @@ class Helpers:
       df_links.to_csv(output_file, index=False)
       print(f"Converted links saved to: {output_file}")
 
-   def convert_sioux_falls(self, nodes_csv: str, demand_csv: str, links_tntp: str, factor: float = 0.1):
+   def convert_sioux_falls(self, nodes_csv: str, demand_csv: str, links_tntp: str):
       """
       For Nodes: Assuming columns: node_name, longitude, latitude
       """
@@ -230,7 +230,7 @@ class Helpers:
       self.convert_lat_long_to_meters(nodes_csv, nodes_map)
 
       demand_map = {'O': 'orig', 'D': 'dest', 'Ton': 'volume'}
-      self.convert_ton_to_hourly(demand_csv, demand_map, factor)
+      self.convert_ton_to_hourly(demand_csv, demand_map, factor=0.06)
 
       nodes_standard_csv = nodes_csv.replace('.csv', '_standard.csv')
       self.convert_links_csv_tntp(links_tntp, nodes_standard_csv)

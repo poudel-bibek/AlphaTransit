@@ -2241,6 +2241,7 @@ class World:
             Additional (meta) attributes defined by users.
         """
 
+        # The volume is uniformly spread over the time window.
         if volume > 0:
             flow = volume/(t_end-t_start)
 

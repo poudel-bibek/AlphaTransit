@@ -13,6 +13,7 @@ from rl.models import GATV2ActorCritic
 from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
 from rl.env_utils import plot_network_and_demand
+from rl.heuristic_baselines import GreedyDemandCoverage
 
 def state_to_pyg(state: Dict[str, Any]) -> Data:
     """
@@ -309,12 +310,14 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
 
     # TODO: log more metrics based on sim_result
     sim_result = info['sim_result']
-    if not config.get("wandb_off", False):
-        wandb.log({f"eval_episode_reward": episode_reward}, step=steps_elapsed)
-        wandb.log({f"total_passengers_completed_trip": sim_result['total_passengers_completed_trip']}, step=steps_elapsed)
-        wandb.log({f"total_passengers_wanting_to_onboard": sim_result['total_passengers_wanting_to_onboard']}, step=steps_elapsed)
-        wandb.log({f"total_wait_time": sim_result['total_wait_time']}, step=steps_elapsed)
-        wandb.log({f"total_travel_time": sim_result['total_travel_time']}, step=steps_elapsed)
+    if not config.get("wandb_off"):
+        wandb.log({
+            f"eval_episode_reward": episode_reward,
+            f"total_passengers_completed_trip": sim_result['total_passengers_completed_trip'],
+            f"total_passengers_wanting_to_onboard": sim_result['total_passengers_wanting_to_onboard'],
+            f"total_wait_time": sim_result['total_wait_time'],
+            f"total_travel_time": sim_result['total_travel_time']
+        }, step=steps_elapsed)
 
     # Plots
     env.render(save_dir, f"eval_{str(steps_elapsed)}.png")
@@ -349,7 +352,7 @@ def get_config() -> Dict[str, Any]:
     Does NOT set seeds or device here to allow overrides from sweep.
     """
     parser = build_arg_parser()
-    args = parser.parse_args([])
+    args = parser.parse_args()
     return vars(args)
 
 def set_global_seeds(seed: int) -> None:
@@ -384,7 +387,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
     # Simulation setup: 
     parser.add_argument("--network", choices=["sioux_falls", "laval", "rivera", "mumford3"], default="sioux_falls", help="Network selection")
-    parser.add_argument("--mode", choices=["train", "eval"], default="train", help="Run mode")
+    parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon")
@@ -395,7 +398,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--total_timesteps", type=int, default=50000, help="Total training timesteps") # This is not directly related to the simulation horizon.
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
-
+    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy, greedy_demand_cover")
+    
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=6, help="Service frequency. 1 means one bus per hour")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
@@ -428,7 +432,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # WandB:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
-    parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
+    parser.add_argument("--wandb_off", type=bool, default=False, help="Disable WandB logging")
 
     parser.add_argument("--save_dir", type=str, default="./training_data", help="Directory to save training data")
     parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy that you want to evaluate")
@@ -449,16 +453,33 @@ def main() -> None:
     config["device"] = device
 
     if config["mode"] == "train":
-        if not config.get("wandb_off", False):
+        if not config.get("wandb_off"):
             wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
         train(config)
         wandb.finish()
-    else:
+
+    elif config["mode"] == "eval":
         # If performing eval only
         os.makedirs(config["save_dir"], exist_ok=True)
         config["wandb_off"] = True
         policy_path = config["saved_policy_path"]
         eval(config, policy_path, "final", config["save_dir"])
+
+    else: 
+        config["wandb_off"] = True
+        # means mode is baseline
+        env = TransitEnv(config)
+        state, _ = env.reset() # Does path initialization at reset. Want it to be same between RL and baseline.
+        print(f"Initial path: {env.current_path}")
+
+        if config["baseline_type"] == "greedy_demand_cover":
+            baseline = GreedyDemandCoverage(env)
+            path = baseline.construct_path(state)
+            result = baseline.simulate_path(path)
+            print(f"Path: {path}\nSim result: {result}")
+
+        else:
+            raise ValueError(f"Invalid baseline type: {config['baseline_type']}")
 
 if __name__ == "__main__":
     main()

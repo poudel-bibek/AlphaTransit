@@ -347,7 +347,7 @@ class TransitEnv(gym.Env):
             for _, row in demand_df.iterrows():
                 orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
                 total_volume = volume_per_hour * (self.horizon / 3600) # multiply by "how many hours" in horizon
-
+                # print(f"Orig: {orig}, Dest: {dest}, Volume: {volume_per_hour}, Total Volume: {total_volume}")
                 if volume_per_hour <= 0 or orig == dest: 
                     continue
                 
@@ -501,8 +501,6 @@ class TransitEnv(gym.Env):
             if not path.exists():
                 raise FileNotFoundError(f"Missing required file: {path}")
         
-        df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
-
         world = World(
             name=network,
             deltan=int(self.delta_n),
@@ -513,10 +511,10 @@ class TransitEnv(gym.Env):
             show_mode=0,
             random_seed=self.config.get("seed"),
         )
-
         # Populate network from CSVs
         world.generate_Nodes_from_csv(str(nodes_csv))
-         
+
+        df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
         # Making use of links data other than free_flow_speed
         for _, row in df_links.iterrows():
             world.addLink(
