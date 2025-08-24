@@ -199,12 +199,12 @@ class GreedyDemandCoverage:
         # Run simulation and get metrics
         sim_result = self.env._step_until(self.env.horizon, print_metrics=True)
 
-        # Calculate reward using env's method
-        # reward = self.env.compute_reward(sim_result)
-
         # Generate visualizations using standalone functions
         create_path_visualization(self.env, self.config, path, self.img_dir)
         create_fancy_animations(self.env, self.config, self.baseline_save_dir)
+        
+        # Calculate reward using env's method
+        # reward = self.env.compute_reward(sim_result)
         
         return {
             'sim_result': sim_result

@@ -1417,11 +1417,11 @@ class Analyzer:
                 
                 # Unidirectional line (thin)
                 draw.line([(legend_x_start, legend_y1), (legend_x_end, legend_y1)], fill=(200,200,200), width=2*scale)
-                draw.text((legend_x_end + 10, legend_y1), "Unidirectional", font=font, fill="black", anchor="lm")
+                # draw.text((legend_x_end + 10, legend_y1), "Unidirectional", font=font, fill="black", anchor="lm")
                 
                 # Bidirectional line (thick)
                 draw.line([(legend_x_start, legend_y2), (legend_x_end, legend_y2)], fill=(200,200,200), width=4*scale)
-                draw.text((legend_x_end + 10, legend_y2), "Bidirectional", font=font, fill="black", anchor="lm")
+                # draw.text((legend_x_end + 10, legend_y2), "Bidirectional", font=font, fill="black", anchor="lm")
 
             if antialiasing:
                 img = img.resize((int((maxx-minx)/scale), int((maxy-miny)/scale)), resample=Resampling.LANCZOS)
