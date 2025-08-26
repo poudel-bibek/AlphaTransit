@@ -64,3 +64,6 @@ training_data/*wandb/
 ./wandb/*
 /wandb/*
 
+./out
+./out/*
+
