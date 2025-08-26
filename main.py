@@ -309,16 +309,22 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         episode_reward += reward
         state = next_state
 
-    # TODO: log more metrics based on sim_result
     sim_result = info['sim_result']
     if not config.get("wandb_off"):
+        # Log the 10 
         wandb.log({
-            f"eval_episode_reward": episode_reward,
-            f"total_passengers_completed_trip": sim_result['total_passengers_completed_trip'],
-            f"total_passengers_wanting_to_onboard": sim_result['total_passengers_wanting_to_onboard'],
-            f"total_wait_time": sim_result['total_wait_time'],
-            f"total_travel_time": sim_result['total_travel_time']
+            "eval/avg_episode_reward": episode_reward, # Set to maximize in the sweep
+            "eval/route_length": sim_result['route_length'],
+            "eval/service_rate": sim_result['service_rate'],
+            "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
+            "eval/completed_trips": sim_result['completed_trip_passengers_count'],
+            "eval/route_efficiency": sim_result['route_efficiency'],
+            "eval/avg_wait_time": sim_result['avg_wait_time'],
+            "eval/bus_utilization": sim_result['bus_utilization'],
+            "eval/onboard_rate": sim_result['onboard_rate'],
+            "eval/average_bus_speed": sim_result['average_bus_speed'],
         }, step=steps_elapsed)
+
 
     # Plots
     env.render(save_dir, f"eval_{str(steps_elapsed)}.png")
