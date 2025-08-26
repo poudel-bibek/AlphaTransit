@@ -900,7 +900,7 @@ class TransitEnv(gym.Env):
         """
         Passenger Travel Efficiency Focused 
     
-        reward = β₀ × service_rate - β₁ × (avg_wait_time_per_passenger / max_wait_time) + β₂ × route_efficiency
+        reward = β₀ × service_rate - β₁ × (avg_wait_time / max_wait_time) + β₂ × route_efficiency + β₃ × bus_utilization
         
         where, components:
         - service_rate: % of passengers who completed their trips (0-100)
@@ -911,11 +911,14 @@ class TransitEnv(gym.Env):
             - max_wait_time: Normalization constant for wait time penalty (1800s = 30min)
         - route_efficiency: Passengers served per km of route (passengers/km)
             - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
+        - bus_utilization: Average bus capacity utilization (0-100%)
+            - Forces agent to choose routes with actual demand, preventing gaming via low-demand routes
         
         - Units are normalized: 
             - service_rate: [0,100] → [0,1] (divide by 100)
             - avg_wait_time: [0,1800s] → [0,1] (normalize by max_wait_time = 30min)
-            - route_efficiency: [0,max_route_efficiency pax/km] → [0,1] (normalize by max_route_efficiency, capped at 1.0)
+            - route_efficiency: [0,max_route_efficiency pax/km] → [0,1] (normalize by max_route_efficiency, capped at 1.0)  
+            - bus_utilization: [0,100%] → [0,1] (divide by 100)
             - All components now balanced on [0,1] scale for proper β coefficient weighting
         
         ---------
@@ -947,9 +950,10 @@ class TransitEnv(gym.Env):
         # Units normalized. 
         
         # Reward coefficients (β parameters) - all work on [0,1] normalized inputs
-        beta0 = 100.0    # Service rate importance (primary objective)
-        beta1 = 30.0     # Wait time penalty strength (secondary)  
-        beta2 = 20.0     # Route efficiency bonus (tertiary)
+        beta0 = 50.0     # Service rate importance (primary)
+        beta1 = 30.0     # Wait time penalty strength 
+        beta2 = 20.0     # Route efficiency bonus 
+        beta3 = 25.0     # Bus utilization bonus (prevent reward hacking)
         
         # Normalization constants - TODO: These should be data-driven for the specific network
         max_wait_time = 1800.0  # 30 minutes - based on transit service standards (should analyze actual wait time distribution)
@@ -960,24 +964,28 @@ class TransitEnv(gym.Env):
         service_rate = sim_result['service_rate']  # In percentage [0-100]
         avg_wait_time = sim_result['avg_wait_time']  # In seconds
         route_efficiency = sim_result['route_efficiency']  # Passengers per km
+        bus_utilization = sim_result['bus_utilization']  # In percentage [0-100]
         
         # Normalize all components to [0-1] scale for balanced reward components
         service_rate_norm = service_rate / 100.0  
         wait_time_norm = avg_wait_time / max_wait_time  
-        route_efficiency_norm = min(route_efficiency / max_route_efficiency, 1.0)  
+        route_efficiency_norm = min(route_efficiency / max_route_efficiency, 1.0)
+        bus_utilization_norm = bus_utilization / 100.0  # [0-100%] → [0-1]  
         
         # Calculate reward components (all β coefficients now work on [0-1] normalized inputs)
         service_component = beta0 * service_rate_norm
         wait_time_penalty = beta1 * wait_time_norm  
         efficiency_component = beta2 * route_efficiency_norm
+        utilization_component = beta3 * bus_utilization_norm  # Prevents low-demand route hacking
         
         # Total reward calculation
-        total_reward = service_component - wait_time_penalty + efficiency_component
+        total_reward = service_component - wait_time_penalty + efficiency_component + utilization_component
         
         print(f"Total reward: {total_reward:.2f}")
         print(f"\tService rate component: {service_component:.2f} (β₀={beta0} × {service_rate:.1f}%)")
         print(f"\tWait time penalty: -{wait_time_penalty:.2f} (β₁={beta1} × {avg_wait_time:.0f}s/{max_wait_time:.0f}s)")
         print(f"\tRoute efficiency component: {efficiency_component:.2f} (β₂={beta2} × {route_efficiency:.2f} pax/km)")
+        print(f"\tBus utilization component: {utilization_component:.2f} (β₃={beta3} × {bus_utilization:.1f}%)")
         
         return total_reward    
 
