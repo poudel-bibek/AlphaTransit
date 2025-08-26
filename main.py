@@ -18,10 +18,11 @@ from rl.heuristic_baselines import GreedyDemandCoverage
 def state_to_pyg(state: Dict[str, Any]) -> Data:
     """
     """
-    x = torch.tensor(state["node_features"], dtype=torch.float32)
-    edge_index = torch.tensor(state["edge_index"], dtype=torch.long)
-    edge_attr = torch.tensor(state["edge_features"], dtype=torch.float32)
-    steps_left = torch.tensor(state["steps_left"], dtype=torch.float32)
+    # Use from_numpy for better performance when possible
+    x = torch.from_numpy(state["node_features"]).float()
+    edge_index = torch.from_numpy(state["edge_index"]).long() 
+    edge_attr = torch.from_numpy(state["edge_features"]).float()
+    steps_left = torch.from_numpy(state["steps_left"]).float()
     
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
     data.steps_left = steps_left
@@ -162,7 +163,7 @@ def train(config: Dict[str, Any]) -> None:
         print(f"\n=== Episode {episode} ===")
         
         state, _ = env.reset()
-        pretty_print_state(env, state)
+        # pretty_print_state(env, state)
         episode_reward, episode_steps = 0, 0
         terminated = False
         bootstrap_value = None  # Initialize outside loop

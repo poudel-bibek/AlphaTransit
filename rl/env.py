@@ -56,7 +56,7 @@ class TransitEnv(gym.Env):
 
         df_nodes = pd.read_csv(nodes_csv, dtype={"name": str})
         df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
-        df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
+        df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str}) # Read as strings so node names remain consistent with the World (nodes are named as strings)
 
         # Sort node names numerically, even though they are strings
         self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: int(x))
@@ -64,13 +64,20 @@ class TransitEnv(gym.Env):
         self.n_edges = int(len(df_links))
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
+        
+        # Cache demand DataFrame to avoid reading CSV every step
+        self.demand_df_cached = df_demand
 
         # Compute adjacency matrix (assuming directed graph):
-        self.adj = defaultdict(set)
+        # Use dict with sets for faster lookups during training
+        adj_temp = defaultdict(set)
         for _, row in df_links.iterrows():
             # Force to strings to match node identifiers
             x, y = str(row["start"]), str(row["end"])
-            self.adj[x].add(y)
+            adj_temp[x].add(y)
+        
+        # Convert to dict for better performance
+        self.adj = {node: neighbors for node, neighbors in adj_temp.items()}
         
         # Demand matrix: 
         self.od_matrix = np.zeros((self.n_nodes, self.n_nodes))
@@ -112,6 +119,7 @@ class TransitEnv(gym.Env):
 
                 length = row['length']
                 self.link_lengths[(x, y)] = length # We need to add un-normalized route lengths.
+                self.link_lengths[(y, x)] = length # Store in both directions for easy lookup
 
                 # Now edge attributes: Normalize to [0,1] and add
                 length_norm = (length - self.min_length) / (self.max_length - self.min_length) 
@@ -287,9 +295,7 @@ class TransitEnv(gym.Env):
         Current one: Initialize at the highest demand node i.e., node from which highest demand emanates.
         Other option: random i.e., pick a random node.
         """
-        demand_csv = self.network_dir / f"{self.config.get('network')}_demand_standard.csv"
-        # Read as strings so node names remain consistent with the World (nodes are named as strings)
-        demand_df = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
+        demand_df = self.demand_df_cached # Use cached DataFrame 
 
         if use_random:
             choice = random.choice(list(demand_df["orig"].unique()))
@@ -297,8 +303,8 @@ class TransitEnv(gym.Env):
             return [choice]
             
         else: 
-            demand_df = demand_df.groupby("orig").sum(numeric_only=True).reset_index()
-            highest_demand_node = demand_df.loc[demand_df["volume"].idxmax()]
+            demand_df_grouped = demand_df.groupby("orig").sum(numeric_only=True).reset_index()
+            highest_demand_node = demand_df_grouped.loc[demand_df_grouped["volume"].idxmax()]
             choice = highest_demand_node["orig"]
             print(f"Initializing route at node: {choice}")
             return [choice]
@@ -333,9 +339,9 @@ class TransitEnv(gym.Env):
             - Advantage of using volume is that it can be spread across the entire sim horizon.
             - The sim expects volume to be specified in total vehicle spread over time. But in the data, it is specified in per/hour (transformation done below).
         """
-        # IMPORTANT: ensure node identifiers are strings to match World node names.
-        demand_df = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
-        print(f"Loading {len(demand_df)} demand records...")
+        # Use cached DataFrame instead of reading CSV every step
+        demand_df = self.demand_df_cached
+        print(f"Loading {len(demand_df)} demand records...")  
         
         # current_path will have at least one node (where it starts) i.e., it wont have O-D pair then.
         current_path_str = [str(node) for node in current_path] # ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] 
@@ -456,7 +462,7 @@ class TransitEnv(gym.Env):
         
         frontier = self.current_path[-1]
         path_set = set(self.current_path)  # O(1) lookup
-        valid_neighbors = self.adj[frontier] - path_set  # Set difference
+        valid_neighbors = self.adj.get(frontier, set()) - path_set  # Set difference with safe lookup
         valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
         node_features[valid_indices, 8] = 1.0  # is_valid_next
 
@@ -502,7 +508,7 @@ class TransitEnv(gym.Env):
                 raise FileNotFoundError(f"Missing required file: {path}")
         
         world = World(
-            name=network,
+            name="",  # Empty name to prevent automatic output folder creation
             deltan=int(self.delta_n),
             reaction_time=float(self.delta_t),
             tmax=self.horizon,
@@ -577,91 +583,304 @@ class TransitEnv(gym.Env):
         all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
         print(f"\nTotal buses in simulation: {len(all_buses)} - {[b.name for b in all_buses]}")
 
+    def _get_final_metrics(self, handler: BusHandler, current_path_str: list) -> int:
+        """
+        Get metrics after the sim has been run.
+        - Average bus speed (m/s, calculated per bus and averaged)
+            - This includes time the bus waits at the stops. 
+        - Average bus utilization (%, calculated per bus and averaged)
+        - A list containing travel time for each passenger (both passengers who completed the trips and ongoing trips)
+        - A list containing waiting time for each passenger (passengers who completed the trips, are in ongoing trips, and still waiting at the end of the sim)
+        - Count of passengers waiting at the end of the sim
+        - Total waiting time for passengers who are still waiting at stops at the end of the sim
+        - Count of passengers who completed their trip
+        - Count of passengers who on-boarded the bus
+        
+        - Passengers are not pre-allocated to a bus ahead of time. They are loaded on the bus when it physically arrives at the stop.
+        """
+
+        # 1. Average bus speed: 
+        # Per-bus (Total distance traveled/ total operating time),operating time depends on the time bus was spawned.
+        bus_speeds = []
+        all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
+        for bus in all_buses:
+            total_distance = bus.distance_traveled
+            total_operating_time = self.world.TIME - bus.departure_time_in_second
+            print(f"\nBus: {bus.name}, total_distance: {total_distance}, total_operating_time: {total_operating_time} = {self.world.TIME} - {bus.departure_time_in_second}")
+            
+            # Only include buses that have actually started operating and moved
+            if total_operating_time > 0 and total_distance > 0:
+                speed = total_distance / total_operating_time
+                bus_speeds.append(speed)
+            else:
+                # Skip buses that haven't started yet (negative operating time) or haven't moved
+                print(f"  -> Skipping bus {bus.name}: {'not started yet' if total_operating_time <= 0 else 'no distance traveled'}")
+
+        avg_bus_speed_mps = np.mean(bus_speeds) if bus_speeds else 0.0
+        
+        # 2. Average bus utilization
+        bus_utilizations = {}
+        utilization_sum = 0.0
+        buses_with_data = 0  # Count only buses with journey data
+        
+        for bus_name, journey in handler.bus_route_journeys.items():
+            if not journey:
+                continue
+            
+            buses_with_data += 1  # Count this bus as having data
+            bus_utilizations[bus_name] = []
+            for i , stop_info in enumerate(journey):
+
+                # bus capacity 
+                bus_capacity = stop_info['bus_capacity']
+                # capacity after passengers boarded/ alighted
+                capacity_after = stop_info['capacity_after']
+
+                utilization = capacity_after / bus_capacity
+                bus_utilizations[bus_name].append((f"stop_{i}", utilization))
+            
+            average_utilization_this_bus = np.mean([utilization for _, utilization in bus_utilizations[bus_name]])
+            utilization_sum += average_utilization_this_bus
+
+        avg_bus_utilization_pct = (utilization_sum / buses_with_data * 100) if buses_with_data > 0 else 0.0  # Use buses_with_data instead of len(all_buses)
+        
+        for bus_name, utilization_list in bus_utilizations.items():
+            print(f"\nUtilization for bus: {bus_name}")
+            print(f"Utilization: {utilization_list}")
+
+        # 3. Travel time distribution (wait time + in-vehicle time)
+        # 4. Waiting time distribution (wait_time is only calculated for completed passengers upon alighting)
+        wait_time_dstr = []
+        movement_time_dstr = []
+        travel_time_dstr = [] # wait time + in-vehicle time
+        
+        total_wait_time = 0.0
+        # Handle COMPLETED trips (from passenger_stats, not buses)
+        for p_stats in handler.passenger_stats:
+            wait_time = p_stats['wait_time']
+            total_wait_time += wait_time
+            wait_time_dstr.append(wait_time) 
+            movement_time_dstr.append(p_stats['in_vehicle_time'])
+            travel_time_dstr.append(p_stats['total_travel_time'])
+            
+        # Handle PARTIAL/ONGOING trips. This loop only looks at passengers who are currently a part of any bus.
+        # When a passenger alights at their destination (completing the trip), they are explicitly removed from the bus's passengers list
+        on_going_count_sim_end = 0
+        for bus in all_buses:
+            for passenger in bus.passengers:
+                # Passengers with partial trips
+                # if passenger.is_on_bus: # Safety check, though it should always be True here
+                wait_time = passenger.board_time - passenger.wait_start_time
+                total_wait_time += wait_time
+
+                movement_time = self.world.TIME - passenger.board_time
+                wait_time_dstr.append(wait_time)
+                movement_time_dstr.append(movement_time)
+                travel_time_dstr.append(wait_time + movement_time)
+                on_going_count_sim_end += 1
+                
+
+        # Handle STILL-WAITING (not onboarded). Separately add passengers who are still waiting for the bus to arrive 
+        # They only have wait time and have no in-vehicle time; no point in adding travel time)
+        total_waiting_time_sim_end = 0.0
+        for waiting_list in handler.waiting_passengers.values():
+            for passenger in waiting_list:
+                if passenger.wait_start_time is not None:
+                    wait_time = self.world.TIME - passenger.wait_start_time
+                    wait_time_dstr.append(wait_time)
+                    total_waiting_time_sim_end += wait_time
+
+        # 5. From above, also waiting passengers at the end of the sim
+        waiting_count_sim_end = sum(len(passengers) for passengers in handler.waiting_passengers.values()) # At the end of the sim, how many passengers are still waiting at stops.
+
+        # 6. Completed trips
+        completed_count = len(handler.passenger_stats) # This works because the stats are only added when passengers alight the bus.
+        
+        # 7. Onboarded passengers
+        total_onboarded_count = completed_count + on_going_count_sim_end
+
+        return {'avg_bus_speed_mps': avg_bus_speed_mps, 
+                'avg_bus_utilization_pct': avg_bus_utilization_pct, 
+                'travel_time_dstr': travel_time_dstr,
+                'waiting_time_dstr': wait_time_dstr,
+                'movement_time_dstr': movement_time_dstr, # movement time
+                'waiting_count_sim_end': waiting_count_sim_end, 
+                'total_waiting_time_sim_end': total_waiting_time_sim_end,
+                'completed_count': completed_count,
+                'total_onboarded_count': total_onboarded_count,
+                'total_wait_time': total_wait_time}
+
+    def _get_initial_metrics(self, handler: BusHandler, current_path_str: list) -> Dict[str, float]:
+        """
+        Compute metrics (which can be computed before the sim starts):
+        - Route length (meters). Since we use heuristic baselines like shortest path, this should be part of the metrics .
+        - Wanting to onboard count (count of passengers whose O-D pairs are served by current route)
+        average bus speed, and average bus utilization throughout the journey.
+        """
+
+        # 1. Route length 
+        route_length = 0.0
+        if len(self.current_path) < 2:
+            raise ValueError("Current path must have at least 2 nodes")
+        
+        for i in range(len(self.current_path) - 1):
+            route_length += self.link_lengths[(str(self.current_path[i]), str(self.current_path[i+1]))]
+        
+        # 2. Wanting to onboard 
+        wanting_to_onboard = 0
+        # Counting all potential passengers whose O-D is served by the route.
+        for passenger in handler.pending_passengers:
+            if self._is_od_served(passenger.origin_stop.name, passenger.dest_stop.name, current_path_str):
+                wanting_to_onboard += 1
+
+        return {'route_length': route_length, 'wanting_to_onboard': wanting_to_onboard}
+
     def _step_until(self, until_t: int, print_metrics: bool = True) -> Dict[str, int]:
         """
         Run the simulation until the given time.
-        Total travel time consists of passengers currently in bus still traveling as well as the ones who completed.
+
+        Notes: 
+        - Pending passengers → passengers that have been created by demand but not yet boarded a bus (start time has not arrived)
+        - Waiting passengers → passengers that have been created by demand but not yet boarded a bus (waiting for a bus to arrive)
+        - Onboarded passengers → passengers that have been boarded a bus and are currently traveling on it
+        - Completed passengers → passengers that have reached their destination and have completed their trip
+
+        - All time metrics are converted to minutes.
+        - Data to be collected to plot Distributions: 
+            - Waiting time 
+                - distribution can be used to determine the quality of waiting time (how equitable is the distribution)
+                - passengers who completed trips + currently traveling + still waiting at sim end.
+            - Travel time 
+                - passengers who completed trips + currently traveling in buses
+        - Metrics should relate to performance of the route.
         """
 
-        self.world.exec_simulation(until_t=until_t)
-        # self.world.analyzer.get_metrics()
+        handler = self.world.bus_handler
+        current_path_str = [str(node) for node in self.current_path]
 
-        # Only gather passenger specific metrics here:
+        # Some metrics need to be collected at the begining of the sim? Like wanting to onboard.
+        # Collect initial wanting count before simulation moves passengers
+        initial_metrics = self._get_initial_metrics(handler, current_path_str)
+
+        self.world.exec_simulation(until_t=until_t)
+
+        final_metrics = self._get_final_metrics(handler, current_path_str)
+
         metrics = {
-            'total_passengers_wanting_to_onboard': 0,
-            'total_passengers_onboarded': 0, 
-            'total_passengers_waiting_at_stops': 0,
-            'total_passengers_completed_trip': 0,
-            'total_wait_time': 0.0,
-            'total_movement_time': 0.0, 
-            'total_travel_time': 0.0,
+            # Waiting metrics.
+            'total_wait_time': (1/60) * final_metrics['total_wait_time'], # How much time did the passengers who completed the trips, or who are currently traveling, spent waiting for the bus to arrive.
+            'wait_time_sim_end': (1/60) * final_metrics['total_waiting_time_sim_end'], # At the end of the simulation, how much time did the passengers who are still waiting at stops, spent waiting for the bus to arrive.
+            'sim_end_waiting_passengers_count': final_metrics['waiting_count_sim_end'], # At the end of the simulation, how many passengers are still waiting at stops.
+
+            # Travel metrics.
+            'wanting_to_onboard_passengers_count': initial_metrics['wanting_to_onboard'], # Measures how much the route is aligned with high demand O-D pairs. Passengers want to on-board only if the route is serving their O-D pair.
+            'total_onboarded_count': final_metrics['total_onboarded_count'], # How many passengers boarded the bus (including those who completed the trip).
+            'completed_trip_passengers_count': final_metrics['completed_count'], # How many passengers completed the trip.
+            'movement_time': (1/60) * sum(final_metrics['movement_time_dstr']), # For trip completion how much time was spent in-vehicle for passengers who completed the trip + still in the bus at the end of sim.
+            'total_travel_time': (1/60) * sum(final_metrics['travel_time_dstr']), # Movement time + waiting time for passengers who completed the trip + still in the bus at the end of sim .
+
+            # Data collected.
+            'waiting_time_dstr': final_metrics['waiting_time_dstr'], # Waiting time for passengers who completed the trip + currently traveling + still waiting at sim end.
+            'movement_time_dstr': final_metrics['movement_time_dstr'], # In vehicle time for passengers who completed the trip + currently traveling.
+            'travel_time_dstr': final_metrics['travel_time_dstr'], # Travel time for passengers who completed the trip + currently traveling.
+
+            # Route metrics.
+            'route_length': initial_metrics['route_length'], # Route length in meters.
+            'bus_utilization': final_metrics['avg_bus_utilization_pct'], # Bus utilization.
+            'average_bus_speed': final_metrics['avg_bus_speed_mps'], # Average bus speed.
+            'service_rate': 100 * (final_metrics['completed_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0, # What % of demand was fulfilled.
         }
 
-        handler = self.world.bus_handler
-            
-        # 1. Count passengers by current state
         pending_count = len(handler.pending_passengers)
-        waiting_count = sum(len(passengers) for passengers in handler.waiting_passengers.values())
-        
-        # Count passengers currently on buses
-        onboard_count = 0
-        current_onboard_movement_time = 0.0  # Time spent by current passengers (traveling)
-        current_onboard_wait_time = 0.0 # Time spent by current passengers (waiting)
+        end_of_sim_onboarded = final_metrics['total_onboarded_count'] - final_metrics['completed_count'] # Still on board.
+        total_validation = pending_count + final_metrics['waiting_count_sim_end'] + end_of_sim_onboarded + final_metrics['completed_count']
+        # Validation (wanting to onboard at the start of the sim) must be = (pending + waiting + onboarded + completed) at the end of the sim.
+        print("Validation:")
+        print(f"\tWanting to onboard at the start of the sim: {initial_metrics['wanting_to_onboard']}")
+        print(f"\tPending at end of sim: {pending_count}")
+        print(f"\tWaiting at end of sim: {final_metrics['waiting_count_sim_end']}")
+        print(f"\tOnboarded at end of sim: {end_of_sim_onboarded}")
+        print(f"\tCompleted at end of sim: {final_metrics['completed_count']}")
+        print(f"\tTotal (pending + waiting + onboarded + completed): {total_validation}")
 
-        for vehicle in self.world.VEHICLES.values():
-            if hasattr(vehicle, 'mode') and vehicle.mode == 'bus':
-                if hasattr(vehicle, 'passengers'):
-                    onboard_count += len(vehicle.passengers)
-                    
-                    for passenger in vehicle.passengers:
-
-                        # Add partial travel time for current passengers
-                        if hasattr(passenger, 'board_time') and passenger.board_time is not None:
-                            current_onboard_movement_time += (self.world.TIME - passenger.board_time)
-                        
-                        # Add waiting time for current passengers (Since wait_time is only calculated for completed passengers upon alighting).
-                        # Has to be added differently.
-                        if hasattr(passenger, 'wait_start_time') and passenger.wait_start_time is not None and \
-                            hasattr(passenger, 'board_time') and passenger.board_time is not None:
-                            wait_time = passenger.board_time - passenger.wait_start_time
-                            current_onboard_wait_time += wait_time
-        
-        completed_count = len(handler.passenger_stats) # This works because the stats are only added when passengers alight the bus.
-        
-        # 2. Calculate time metrics from completed passengers
-        completed_wait_time = sum(p['wait_time'] for p in handler.passenger_stats)
-        completed_movement_time = sum(p['in_vehicle_time'] for p in handler.passenger_stats) 
-        completed_total_time = sum(p['total_travel_time'] for p in handler.passenger_stats)
-        
-        # 3. Fill metrics
-        metrics.update({
-            'total_passengers_wanting_to_onboard': pending_count + waiting_count,
-            'total_passengers_onboarded': onboard_count,
-            'total_passengers_waiting_at_stops': waiting_count,
-            'total_passengers_completed_trip': completed_count,
-            'total_wait_time': completed_wait_time  + current_onboard_wait_time,
-            'total_movement_time': completed_movement_time + current_onboard_movement_time,
-            'total_travel_time': completed_total_time + current_onboard_movement_time + current_onboard_wait_time,
-            'time_s': int(self.world.TIME)
-        })
-        
         if print_metrics:
-            print("\n" + "="*50)
+            print("\n" + "="*70)
             print("SIMULATION METRICS")
-            print("="*50)
-            print(f"Simulation Time:          {metrics['time_s']:,}s")
-            print(f"Passengers Wanting Bus:   {metrics['total_passengers_wanting_to_onboard']:,}")
-            print(f"Passengers Onboarded:     {metrics['total_passengers_onboarded']:,}")
-            print(f"Passengers Waiting:       {metrics['total_passengers_waiting_at_stops']:,}")
-            print(f"Passengers Completed:     {metrics['total_passengers_completed_trip']:,}")
-            print(f"Total Wait Time:          {metrics['total_wait_time']:,.1f}s")
-            print(f"Total Movement Time:      {metrics['total_movement_time']:,.1f}s")
-            print(f"Total Travel Time:        {metrics['total_travel_time']:,.1f}s")
-            print("="*50)
+            print("="*70)
+            
+            # Route Information
+            print("\nROUTE INFORMATION:")
+            print(f"   Route Path:               {' → '.join(current_path_str)}")
+            print(f"   Route Length:             {metrics['route_length']/1000:.2f} km")
+            print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.1f} km/h)")
+            print(f"   Bus Utilization:          {metrics['bus_utilization']:.1f}%")
+            
+            # Passenger Counts
+            print("\nPASSENGER COUNTS:")
+            print(f"   Wanting to Onboard:       {metrics['wanting_to_onboard_passengers_count']:,} passengers")
+            print(f"   Total Onboarded:          {metrics['total_onboarded_count']:,} passengers")
+            print(f"   Completed Trips:          {metrics['completed_trip_passengers_count']:,} passengers")
+            print(f"   Still Waiting at End:     {metrics['sim_end_waiting_passengers_count']:,} passengers")
+            print(f"   Service Rate:             {metrics['service_rate']:.1f}% (completed/wanting)")
+            
+            # Time Metrics - Aggregated
+            print("\nAGGREGATE TIME METRICS:")
+            print(f"   Simulation Duration:      {until_t:,} seconds")
+            total_wait_time = metrics['total_wait_time'] + metrics['wait_time_sim_end']
+            print(f"   Total Wait Time:          {total_wait_time:.1f} minutes")
+            print(f"   │  ├─ Completed/Traveling: {metrics['total_wait_time']:.1f} minutes")
+            print(f"   │  └─ Still Waiting:       {metrics['wait_time_sim_end']:.1f} minutes")
+            print(f"   Total Movement Time:      {metrics['movement_time']:.1f} minutes (in-vehicle only)")
+            print(f"   Total Travel Time:        {metrics['total_travel_time']:.1f} minutes (wait + movement)")
+            
+            # Time Metrics - Per Passenger Averages
+            avg_wait = (metrics['total_wait_time'] + metrics['wait_time_sim_end']) / len(metrics['waiting_time_dstr']) if len(metrics['waiting_time_dstr']) > 0 else 0
+            avg_movement = metrics['movement_time'] / len(metrics['movement_time_dstr']) if len(metrics['movement_time_dstr']) > 0 else 0
+            avg_travel = sum(metrics['travel_time_dstr']) / len(metrics['travel_time_dstr']) / 60 if len(metrics['travel_time_dstr']) > 0 else 0
+            
+            print("\nPER-PASSENGER AVERAGES:")
+            print(f"   Average Wait Time:        {avg_wait:.1f} minutes")
+            print(f"   Average Movement Time:    {avg_movement:.1f} minutes")
+            print(f"   Average Travel Time:      {avg_travel:.1f} minutes")
+            
+            # Performance Summary
+            print("\nPERFORMANCE SUMMARY:")
+            served_pct = (metrics['completed_trip_passengers_count'] / metrics['wanting_to_onboard_passengers_count'] * 100) if metrics['wanting_to_onboard_passengers_count'] > 0 else 0
+            onboard_pct = (metrics['total_onboarded_count'] / metrics['wanting_to_onboard_passengers_count'] * 100) if metrics['wanting_to_onboard_passengers_count'] > 0 else 0
+            
+            print(f"   Passengers Served:        {served_pct:.1f}% ({metrics['completed_trip_passengers_count']} / {metrics['wanting_to_onboard_passengers_count']})")
+            print(f"   Boarding Success:         {onboard_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard_passengers_count']})")
+            print(f"   Route Efficiency:         {metrics['completed_trip_passengers_count']/metrics['route_length']*1000:.2f} passengers/km")
+            
+            print("="*70)
 
-        # self.world.bus_handler.print_bus_activity_history()
         return metrics
+    
+    def _plot_metrics(self, metrics: Dict[str, int]) -> None:
+        """
+        # TODO: Complete this.
+        Plot: 
+        - Distribution of waiting time
+        - Distribution of travel time
 
+        """
+
+        # Distribution Statistics moved from print_metrics:
+        print("\n DISTRIBUTION STATISTICS:")
+        if len(metrics['waiting_time_dstr']) > 0:
+            wait_times = np.array(metrics['waiting_time_dstr'])
+            print(f"   Wait Times (n={len(wait_times)}):  min={wait_times.min():.1f}s, max={wait_times.max():.1f}s, mean={wait_times.mean():.1f}s, std={wait_times.std():.1f}s")
+        
+        if len(metrics['movement_time_dstr']) > 0:
+            movement_times = np.array(metrics['movement_time_dstr'])
+            print(f"   Movement Times (n={len(movement_times)}): min={movement_times.min():.1f}s, max={movement_times.max():.1f}s, mean={movement_times.mean():.1f}s, std={movement_times.std():.1f}s")
+        
+        if len(metrics['travel_time_dstr']) > 0:
+            travel_times = np.array(metrics['travel_time_dstr'])
+            print(f"   Travel Times (n={len(travel_times)}):   min={travel_times.min():.1f}s, max={travel_times.max():.1f}s, mean={travel_times.mean():.1f}s, std={travel_times.std():.1f}s")
+        
+        pass
+    
     def compute_reward(self, sim_result: Dict[str, int]) -> float:
         """
         Components: 
@@ -716,7 +935,7 @@ class TransitEnv(gym.Env):
         for i in range(len(self.current_path) - 1):
             route_length += self.link_lengths[(str(self.current_path[i]), str(self.current_path[i+1]))]
         
-        passengers_served = sim_result['total_passengers_completed_trip']
+        passengers_served = sim_result['completed_trip_passengers_count']
         total_travel_time = sim_result['total_travel_time'] # Includes waiting time as well. 
         
         denominator = total_travel_time + alpha1 * route_length
@@ -773,8 +992,8 @@ class TransitEnv(gym.Env):
         frontier = self.current_path[-1]
         path_set = set(self.current_path)  # O(1) lookup
 
-        # 1. Get all neighbors of frontier
-        valid_neighbors = self.adj[frontier] 
+        # 1. Get all neighbors of frontier (with safe lookup)
+        valid_neighbors = self.adj.get(frontier, set()) 
         
         # 2. Remove nodes that are already in the path
         valid_neighbors = valid_neighbors - path_set  

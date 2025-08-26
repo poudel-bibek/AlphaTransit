@@ -1,5 +1,6 @@
 """
 Heuristic Baselines: 
+- Neighbourhood search algorithms
 - Baselines mostly setup in a way that "to construct the path" we dont need to simulate. 
 - However, to get the performance results on the path, we need to simulate.
 - Repurposing the RL env setup for the baselines as well.
@@ -12,7 +13,11 @@ Heuristic Baselines:
    - Build route by greedily selecting the nodes that maximize the immediate demand coverage.
    - 
 
-2. # TODO
+2. Greedy Shortest Path: 
+    - 
+    - 
+
+3. # TODO
 
 ---------------
 
@@ -205,8 +210,36 @@ class GreedyDemandCoverage:
         
         # Calculate reward using env's method
         # reward = self.env.compute_reward(sim_result)
-        
+
         return {
             'sim_result': sim_result
         }
         
+
+class GreedyShortestPath:
+    def __init__(self, env):
+        self.env = env
+        self.config = env.config
+        self.world = env.build_world(env.config.get("network"))
+        
+        # Create baseline save directory structure
+        self.baseline_save_dir, self.img_dir = create_baseline_save_directory(self.config)
+
+    def construct_path(self, state):
+        """
+        Algorithm: 
+        Step 1: Initialization (same initialization as RL), happens in main at reset.
+        Step 2: At each step, from valid neighboring nodes
+            - Calculate the shortest path between the current path and the valid neighboring nodes.
+            - Select the node with the shortest path.
+        Step 3: Repeat step 2 until reaching the max path length.
+
+        Note:
+        - This may not result in overall shortest path but is a greedy selection of shortest path.
+        """
+        pass
+
+    def simulate_path(self, path):
+        """
+        """
+        pass

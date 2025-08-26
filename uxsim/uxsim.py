@@ -906,7 +906,7 @@ class Vehicle:
             s.departure_time = departure_time
         else:
             s.departure_time = int(departure_time/s.W.DELTAT)
-        s.departure_time_in_second = departure_time*s.W.DELTAT  #TODO: temporal workaround
+        s.departure_time_in_second = s.departure_time*s.W.DELTAT  #TODO: temporal workaround
         s.arrival_time = -1
         s.link_arrival_time = -1
         s.travel_time = -1
@@ -1441,7 +1441,8 @@ class Vehicle:
             # Create additional buses (skip the first one since we already have it)
             for i in range(1, num_buses_to_spawn):
                 # Spawn buses at regular intervals throughout the simulation. Calculate departure time for this bus
-                new_departure_time = s.departure_time + (i * headway_seconds)
+                # new_departure_time = s.departure_time + (i * headway_seconds) # This was causing error
+                new_departure_time = s.departure_time_in_second + (i * headway_seconds)
                 
                 # Only create if departure time is within simulation horizon
                 if new_departure_time < sim_horizon:
