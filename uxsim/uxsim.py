@@ -1443,7 +1443,7 @@ class Vehicle:
                 # Spawn buses at regular intervals throughout the simulation. Calculate departure time for this bus
                 # new_departure_time = s.departure_time + (i * headway_seconds) # This was causing error
                 new_departure_time = s.departure_time_in_second + (i * headway_seconds)
-                
+                # print(f"[DEBUG] Bus: {s.name} - departure time: {new_departure_time}")
                 # Only create if departure time is within simulation horizon
                 if new_departure_time < sim_horizon:
                     # Create new bus with same origin/dest but different departure time

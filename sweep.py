@@ -28,10 +28,12 @@ def build_sweep_config() -> Dict[str, Any]:
 
             # Reward coefficients (continuous distributions)
             # Sweep betas in smaller sweep with RL coefficients kept constant.
-            "beta0": {"distribution": "uniform", "min": 20, "max": 60},  # Service emphasis
-            "beta1": {"distribution": "uniform", "min": 10, "max": 40},  # Wait penalty
-            "beta2": {"distribution": "uniform", "min": 10, "max": 30},  # Efficiency
-            "beta3": {"distribution": "uniform", "min": 10, "max": 40},  # Utilization
+            # If betas are sweep parameters, sweep will naturally favor combinations that produce the highest numerical reward values
+            # So when sweeping for beta, maximize performance metrics instead of numerical reward 
+            # "beta0": {"distribution": "uniform", "min": 20, "max": 60},  # Service emphasis
+            # "beta1": {"distribution": "uniform", "min": 10, "max": 40},  # Wait penalty
+            # "beta2": {"distribution": "uniform", "min": 10, "max": 30},  # Efficiency
+            # "beta3": {"distribution": "uniform", "min": 10, "max": 40},  # Utilization
         },
     }
 
