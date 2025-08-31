@@ -15,7 +15,7 @@ def build_sweep_config() -> Dict[str, Any]:
                    "goal": "maximize"},
 
         "parameters": {
-            "lr": {"values": [1e-5, 1e-4, 1e-3]}, 
+            "lr": {"values": [0.0001, 0.001]}, 
             "batch_size": {"values": [16, 32]},   
             "entropy_coef": {"values": [0.01, 0.1]}, 
             "update_frequency": {"values": [64, 128, 256]},
@@ -25,6 +25,13 @@ def build_sweep_config() -> Dict[str, Any]:
             # "gamma": {"values": [0.9, 0.95, 0.99]},
             # "K_epochs": {"values": [2, 4, 8]},
             # "value_loss_coef": {"values": [0.25, 0.5, 1]},
+
+            # Reward coefficients (continuous distributions)
+            # Sweep betas in smaller sweep with RL coefficients kept constant.
+            "beta0": {"distribution": "uniform", "min": 20, "max": 60},  # Service emphasis
+            "beta1": {"distribution": "uniform", "min": 10, "max": 40},  # Wait penalty
+            "beta2": {"distribution": "uniform", "min": 10, "max": 30},  # Efficiency
+            "beta3": {"distribution": "uniform", "min": 10, "max": 40},  # Utilization
         },
     }
 

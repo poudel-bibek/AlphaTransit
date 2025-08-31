@@ -946,14 +946,17 @@ class TransitEnv(gym.Env):
         ---------
         - Since this reward is for each node extended, instead of the passengers served, we can possibly look at only new passengers served?
         
+        - If all positive norms are 1 (perfect service, efficiency, utilization) and wait_time_norm=0 (no waiting), reward = 50 + 20 + 25 = 95.
+        - If wait_time_norm=1 (max penalty) and others are 1, reward = 95 - 30 = 65.
+        - If all norms are 0 (worst case, no service/utilization/efficiency, no wait penalty), reward = 0.
         """
         # Units normalized. 
         
         # Reward coefficients (β parameters) - all work on [0,1] normalized inputs
-        beta0 = 50.0     # Service rate importance (primary)
-        beta1 = 30.0     # Wait time penalty strength 
-        beta2 = 20.0     # Route efficiency bonus 
-        beta3 = 25.0     # Bus utilization bonus (prevent reward hacking)
+        beta0 = self.config.get("beta0", 50.0)     # Service rate  
+        beta1 = self.config.get("beta1", 30.0)     # Wait time penalty  
+        beta2 = self.config.get("beta2", 20.0)     # Route efficiency  
+        beta3 = self.config.get("beta3", 25.0)     # Bus utilization (prevent reward hacking)
         
         # Normalization constants - TODO: These should be data-driven for the specific network
         max_wait_time = 1800.0  # 30 minutes - based on transit service standards (should analyze actual wait time distribution)

@@ -15,21 +15,53 @@ from torch_geometric.data import Data, Batch
 from rl.env_utils import plot_network_and_demand
 from rl.heuristic_baselines import GreedyDemandCoverage
 
-def state_to_pyg(state: Dict[str, Any]) -> Data:
+class CachedPyGConverter:
     """
+    Cache static PyG components to avoid recreating tensors every step.
     """
-    # Use from_numpy for better performance when possible
-    x = torch.from_numpy(state["node_features"]).float()
-    edge_index = torch.from_numpy(state["edge_index"]).long() 
-    edge_attr = torch.from_numpy(state["edge_features"]).float()
-    steps_left = torch.from_numpy(state["steps_left"]).float()
+    def __init__(self, device: torch.device):
+        """
+        The edge index and edge attributes are do not change over the course of an episode.
+        To make the sim faster, we cache these tensors.
+        """
+        self.device = device
+        self._cached_edge_index = None
+        self._cached_edge_attr = None
+        
+    def convert(self, state: Dict[str, Any]) -> Data:
+        """
+        Convert state to PyG format, caching static components.
+        """
+        # Cache static components on first call
+        if self._cached_edge_index is None:
+            self._cached_edge_index = torch.from_numpy(state["edge_index"]).long().to(self.device)
+            self._cached_edge_attr = torch.from_numpy(state["edge_features"]).float().to(self.device)
+        
+        # Only create tensors for dynamic components  
+        x = torch.from_numpy(state["node_features"]).float().to(self.device)
+        steps_left = torch.from_numpy(state["steps_left"]).float().to(self.device)
+        
+        data = Data(x=x, edge_index=self._cached_edge_index, edge_attr=self._cached_edge_attr)
+        data.steps_left = steps_left
+        return data
+
+# def state_to_pyg(state: Dict[str, Any]) -> Data:
+#     """
+#     """
+#     # Use from_numpy for better performance when possible
+#     x = torch.from_numpy(state["node_features"]).float()
+#     edge_index = torch.from_numpy(state["edge_index"]).long() 
+#     edge_attr = torch.from_numpy(state["edge_features"]).float()
+#     steps_left = torch.from_numpy(state["steps_left"]).float()
     
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-    data.steps_left = steps_left
-    return data
+#     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+#     data.steps_left = steps_left
+#     return data
 
 def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
     """
+    mean_reward: average per-step rewards stored in the current memory buffer. 
+    Is not a true measure of the policy's performance.
     """
     print("\n==================\n")
     print("Memory contents:")
@@ -64,7 +96,7 @@ def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
         "value_loss": stats['value_loss'],
         "entropy_loss": stats['entropy_loss'],
         "clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
-        "mean_reward": stats['mean_reward'], # Average reward over the batch.
+        "mean_buffer_reward": stats['mean_buffer_reward'], 
         "approx_kl": stats['approx_kl'],
         "mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
     }, step=steps_elapsed)
@@ -152,29 +184,31 @@ def train(config: Dict[str, Any]) -> None:
     ppo = PPO(model, **config)
     policy_dir = os.path.join(training_save_dir, "policies")
     os.makedirs(policy_dir, exist_ok=True)
+    
+    # PyG converter
+    pyg_converter = CachedPyGConverter(config["device"])
 
     episode = 0
     steps_elapsed = 0
     update_count = 0
-    episode_rewards = []
-
+    
     while steps_elapsed < config["total_timesteps"]:
         episode += 1
         print(f"\n=== Episode {episode} ===")
         
         state, _ = env.reset()
         # pretty_print_state(env, state)
-        episode_reward, episode_steps = 0, 0
+        episode_steps = 0
         terminated = False
         bootstrap_value = None  # Initialize outside loop
 
         while True:
-            data = state_to_pyg(state)
+            data = pyg_converter.convert(state)
             print("\nEpisode data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
 
-            batch = Batch.from_data_list([data]).to(config["device"])
-            steps_left = batch.steps_left.to(config["device"])
+            batch = Batch.from_data_list([data])  # Data already on device
+            steps_left = batch.steps_left
             valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
             print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
             
@@ -183,14 +217,12 @@ def train(config: Dict[str, Any]) -> None:
                 # TODO: Penalty set to an arbitrary high value (hard-coded).
                 # Make it configurable based on how bad of the truncation was.
                 truncation_penalty = -100.0
-
+                reward = truncation_penalty
                 _, _, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices, truncated=True)
                 bootstrap_value = value_tensor.cpu().item()
 
                 if len(ppo.memory) > 0:
                     ppo.memory.rewards[-1] += truncation_penalty  # Add penalty to the reward of the action that led here
-                episode_reward += truncation_penalty
-
                 print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
                 break
 
@@ -202,7 +234,6 @@ def train(config: Dict[str, Any]) -> None:
             
             action = action_tensor.cpu().item() 
             next_state, reward, terminated, _ = env.step(action)
-            episode_reward += reward
             
             # Store transition
             store_data = Data(
@@ -235,9 +266,8 @@ def train(config: Dict[str, Any]) -> None:
 
         # Mark episode boundary with bootstrap value.
         ppo.memory.mark_episode_end(bootstrap_value)
-
         steps_elapsed += episode_steps
-        episode_rewards.append(episode_reward) # This reward is not logged
+        episode_reward = reward # This is the final reward for the episode.
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
         
         # Update PPO when we have enough samples in memory
@@ -259,8 +289,7 @@ def train(config: Dict[str, Any]) -> None:
     #     perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
     #     update_count += 1
 
-    avg_reward = np.mean(episode_rewards)
-    wandb.log({"avg_episode_reward": avg_reward}, step=steps_elapsed)
+    wandb.log({"episode_reward": episode_reward}, step=steps_elapsed)
     
 def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir: str) -> Dict[str, float]: 
     """
@@ -273,6 +302,8 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
     Notes: 
     - During eval episode, agent constructs a route path step by step
     - The results are only meaningful at the end of the episode.
+    -----
+    episode_final_reward: this should be a true measure of the policy's performance.
     """
     print("Evaluating policy: ", policy_path)
     
@@ -286,15 +317,16 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
     model.load_state_dict(torch.load(policy_path))
     model.to(config["device"])
     model.eval() # eval mode
+    
+    pyg_converter = CachedPyGConverter(config["device"])
 
     state, _ = env.reset()
     terminated = False
-    episode_reward = 0.0
     
     while not terminated:
-        data = state_to_pyg(state)
-        batch = Batch.from_data_list([data]).to(config["device"])
-        steps_left = batch.steps_left.to(config["device"])
+        data = pyg_converter.convert(state)
+        batch = Batch.from_data_list([data])  # Data already on device
+        steps_left = batch.steps_left
         valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
         
         if valid_indices.shape[1] == 0:
@@ -306,14 +338,14 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
  
         action = action_tensor.cpu().item()
         next_state, reward, terminated, info = env.step(action)
-        episode_reward += reward
         state = next_state
-
+    episode_reward = reward
     sim_result = info['sim_result']
     if not config.get("wandb_off"):
         # Log the 10 
         wandb.log({
-            "eval/avg_episode_reward": episode_reward, # Set to maximize in the sweep
+            # Final reward (after a full path has been constructed)
+            "eval/episode_reward": episode_reward, # Set to maximize in the sweep.
             "eval/route_length": sim_result['route_length'],
             "eval/service_rate": sim_result['service_rate'],
             "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
@@ -397,13 +429,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
-    parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon")
-    parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step")
-    parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
+    parser.add_argument("--horizon", type=int, default=15000, help="Simulation horizon")
+    parser.add_argument("--delta_t", type=float, default=2, help="Simulation time step") # Increasing delta_t makes simulation faster.
+    parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
-    parser.add_argument("--total_timesteps", type=int, default=50000, help="Total training timesteps") # This is not directly related to the simulation horizon.
+    parser.add_argument("--total_timesteps", type=int, default=15000, help="Total training timesteps") # This is not directly related to the simulation horizon.
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy, greedy_demand_cover")
     

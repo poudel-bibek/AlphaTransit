@@ -87,12 +87,12 @@ class PPO:
                 value_loss = 0.5 * torch.max(value_loss_unclipped, value_loss_clipped).mean()
                 
                 # Entropy loss (for exploration)
-                entropy_loss = -entropy.mean()
+                entropy_loss = entropy.mean()
                 approx_kls.append((old_log_probs - log_probs).mean().item())
                 clip_ratios.append(ratio.mean().item())
 
                 # Total loss
-                loss = surrogate_loss + self.value_loss_coef * value_loss + self.entropy_coef * entropy_loss
+                loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_loss # Entropy term negated
                 
                 # Backprop
                 self.optimizer.zero_grad()
@@ -106,7 +106,7 @@ class PPO:
                 entropy_losses.append(entropy_loss.item())
                 clipping_frequencies.append(((ratio - 1).abs() > self.clip_frac).float().mean().item())
         
-        mean_reward = np.mean(self.memory.rewards)
+        mean_buffer_reward = np.mean(self.memory.rewards)
         # Clear memory after update
         self.memory.clear()
         
@@ -116,7 +116,7 @@ class PPO:
             'value_loss': np.mean(value_losses),
             'entropy_loss': np.mean(entropy_losses),
             'clipping_frequency': np.mean(clipping_frequencies),
-            'mean_reward': mean_reward,
+            'mean_buffer_reward': mean_buffer_reward,
             'approx_kl': np.mean(approx_kls),
             'mean_clip_ratio': np.mean(clip_ratios)
         }
