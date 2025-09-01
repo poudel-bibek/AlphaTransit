@@ -60,7 +60,7 @@ class CachedPyGConverter:
 
 def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
     """
-    mean_reward: average per-step rewards stored in the current memory buffer. 
+    mean_buffer_reward: average per-step rewards stored in the current memory buffer. 
     Is not a true measure of the policy's performance.
     """
     print("\n==================\n")
@@ -87,7 +87,7 @@ def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
     print(f"Value Loss: {stats['value_loss']:.4f}")
     print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
     print(f"Clipping Frequency: {stats['clipping_frequency']:.4f}")
-    print(f"Mean Reward: {stats['mean_reward']:.4f}")
+    print(f"Mean Buffer Reward: {stats['mean_buffer_reward']:.4f}")
     print(f"Approx KL: {stats['approx_kl']:.4f}")
     print(f"Mean Clip Ratio: {stats['mean_clip_ratio']:.4f}")
     print("==================\n")
