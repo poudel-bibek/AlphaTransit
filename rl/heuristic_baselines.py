@@ -243,3 +243,25 @@ class GreedyShortestPath:
         """
         """
         pass
+
+class GreedyRewardMaximization:
+    def __init__(self, env):
+        """
+        A baseline for myopic short-term reward maximization.
+        """
+        self.env = env
+        self.config = env.config
+        self.world = env.build_world(env.config.get("network"))
+        
+        # Create baseline save directory structure
+        self.baseline_save_dir, self.img_dir = create_baseline_save_directory(self.config)
+        
+    def construct_path(self, state):
+        """
+        """
+        pass
+
+    def simulate_path(self, path):
+        """
+        """
+        pass

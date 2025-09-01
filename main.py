@@ -269,6 +269,7 @@ def train(config: Dict[str, Any]) -> None:
         steps_elapsed += episode_steps
         episode_reward = reward # This is the final reward for the episode.
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
+        wandb.log({"episode_reward": episode_reward}, step=steps_elapsed)
         
         # Update PPO when we have enough samples in memory
         # Episodes are not divisible i.e., waits for the full episode to complete before updating.
@@ -288,8 +289,6 @@ def train(config: Dict[str, Any]) -> None:
     # if len(ppo.memory) > 0:
     #     perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
     #     update_count += 1
-
-    wandb.log({"episode_reward": episode_reward}, step=steps_elapsed)
     
 def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir: str) -> Dict[str, float]: 
     """
