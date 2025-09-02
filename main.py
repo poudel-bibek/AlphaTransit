@@ -13,7 +13,7 @@ from rl.models import GATV2ActorCritic
 from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
 from rl.env_utils import plot_network_and_demand
-from rl.heuristic_baselines import GreedyDemandCoverage
+from rl.heuristic_baselines import RandomBaseline, GreedyDemandCoverage, GreedyShortestPath, GreedyRewardMaximization
 
 class CachedPyGConverter:
     """
@@ -436,8 +436,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--total_timesteps", type=int, default=15000, help="Total training timesteps") # This is not directly related to the simulation horizon.
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
-    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy, greedy_demand_cover")
-    
+    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy_reward_max, greedy_demand_cover, greedy_shortest_path")
+    parser.add_argument("--num_baseline_runs", type=int, default=5, help="Number of runs (over which we average the results) for the baseline")
+
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=6, help="Service frequency. 1 means one bus per hour")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
@@ -483,8 +484,10 @@ def main() -> None:
     """
     config = get_config()
 
-    # Set seeds as the very first thing after parsing CLI
-    set_global_seeds(config["seed"])
+    # Baselines have their own seed setting mechanism.
+    if config["mode"] == "train" or config["mode"] == "eval":
+        # Set seeds as the very first thing after parsing CLI
+        set_global_seeds(config["seed"])
     
     # Set compute device based on --gpu flag
     device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
@@ -507,17 +510,20 @@ def main() -> None:
         config["wandb_off"] = True
         # means mode is baseline
         env = TransitEnv(config)
-        state, _ = env.reset() # Does path initialization at reset. Want it to be same between RL and baseline.
-        print(f"Initial path: {env.current_path}")
-
-        if config["baseline_type"] == "greedy_demand_cover":
-            baseline = GreedyDemandCoverage(env)
-            path = baseline.construct_path(state)
-            result = baseline.simulate_path(path)
-            print(f"Path: {path}\nSim result: {result}")
-
-        else:
-            raise ValueError(f"Invalid baseline type: {config['baseline_type']}")
+        
+        baseline_classes = {
+            "random": RandomBaseline,
+            "greedy_demand_cover": GreedyDemandCoverage,
+            "greedy_shortest_path": GreedyShortestPath,
+            "greedy_reward_max": GreedyRewardMaximization,
+        }
+        
+        if config["baseline_type"] not in baseline_classes:
+            raise ValueError(f"Invalid baseline type: {config['baseline_type']}. Available: {list(baseline_classes.keys())}")
+        
+        BaselineClass = baseline_classes[config["baseline_type"]]
+        baseline = BaselineClass(env, config, num_runs=config["num_baseline_runs"], base_seed=config["seed"])
+        baseline.run()
 
 if __name__ == "__main__":
     main()

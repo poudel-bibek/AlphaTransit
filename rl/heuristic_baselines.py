@@ -5,19 +5,17 @@ Heuristic Baselines:
 - However, to get the performance results on the path, we need to simulate.
 - Repurposing the RL env setup for the baselines as well.
 
-0. Random baseline (NOT USED RIGHT NOW): 
+0. Random baseline: 
     - Random selection of next node.
-    - Lower bound on performance.
 
 1. Greedy Demand Coverage: 
    - Build route by greedily selecting the nodes that maximize the immediate demand coverage.
-   - 
 
 2. Greedy Shortest Path: 
-    - 
-    - 
+    - Greedily select the node that is closest to the current path.
 
-3. # TODO
+3. Greedy Reward Maximization: 
+    - Greedily select the node that maximizes the immediate reward.
 
 ---------------
 
@@ -34,24 +32,35 @@ Additional notes (ignore)
 
 import os
 import numpy as np
+import random
+import torch
 from datetime import datetime
 from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path
 
 
-def create_baseline_save_directory(config):
+def set_global_seeds(seed: int) -> None:
     """
-    Create a save directory for baseline results.
+    Set seeds for Python, NumPy, and PyTorch.
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def create_main_save_dir(config):
+    """
+    Create main save directory for baseline results.
     """
     now = datetime.now()
-    baseline_save_dir = os.path.join(
+    main_save_dir = os.path.join(
         config.get("save_dir", "./baseline_data"), 
         f"{config.get('baseline_type', 'unknown')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
-    img_dir = os.path.join(baseline_save_dir, "images")
-    os.makedirs(img_dir, exist_ok=True)
-    
-    print(f"Baseline results will be saved to: {baseline_save_dir}")
-    return baseline_save_dir, img_dir
+    os.makedirs(main_save_dir, exist_ok=True)
+    print(f"Baseline results will be saved to: {main_save_dir}")
+    return main_save_dir
 
 def create_initial_network_plot(env, config, img_dir):
     """
@@ -108,30 +117,175 @@ def create_fancy_animations(env, config, baseline_save_dir):
         print(f"Warning: Could not create fancy animations: {e}")
         print("This might be due to insufficient simulation data or missing dependencies.")
 
+def simulate_baseline_path(env, config, path, img_dir, baseline_save_dir):
+    """
+    Shared across all baselines.
+    Simulate the path to get the performance results.
+    Includes visualization and animation generation similar to RL training.
+    """
+    # Create initial network visualization before simulation
+    create_initial_network_plot(env, config, img_dir)
+
+    # Update env's path
+    env.current_path = path
+    
+    # Build world with correct demand allocation
+    env.world = env.build_world(config.get("network"))
+    
+    # Apply buses using env's method
+    env._apply_action()
+    
+    # Run simulation and get metrics
+    sim_result = env._step_until(env.horizon, print_metrics=True)
+
+    # Generate visualizations using standalone functions
+    create_path_visualization(env, config, path, img_dir)
+    create_fancy_animations(env, config, baseline_save_dir)
+    
+    return {
+        'sim_result': sim_result
+    }
+
+def average_sim_results(results_list):
+    """
+    Compute average of simulation results across multiple runs.
+    Handles numerical values generically; skips non-numerical (e.g., lists).
+    """
+    if not results_list:
+        return {}
+
+    # Collect all keys from first result
+    keys = results_list[0]['sim_result'].keys()
+    averaged = {}
+
+    for key in keys:
+        values = []
+        for res in results_list:
+            val = res['sim_result'].get(key)
+            if isinstance(val, (int, float)):
+                values.append(val)
+        
+        if values:
+            averaged[key] = np.mean(values)
+    
+    return averaged
+
+def print_results(results_list, averaged):
+    """
+    """
+    print("\n=== Individual Run Results ===")
+    for i, res in enumerate(results_list, 1):
+        print(f"Run {i}:")
+        for key, val in res['sim_result'].items():
+            if isinstance(val, (int, float)):
+                if isinstance(val, float):
+                    print(f"  {key}: {val:.2f}")
+                else:
+                    print(f"  {key}: {val}")
+        print("---")
+
+    print("\n=== Averaged Results ===")
+    for key in averaged:
+        values = []
+        for res in results_list:
+            val = res['sim_result'].get(key)
+            if isinstance(val, (int, float)):
+                values.append(val)
+        
+        if values:
+            str_values = []
+            for v in values:
+                if isinstance(v, float):
+                    str_values.append(f"{v:.2f}")
+                else:
+                    str_values.append(f"{v}")
+            
+            calc_str = " + ".join(str_values)
+            avg_val = averaged[key]
+            avg_str = f"{avg_val:.2f}" if isinstance(avg_val, float) else f"{avg_val}"
+            print(f"  {key}: ({calc_str}) / {len(values)} = {avg_str}")
+
+def execute_runs(baseline, num_runs, base_seed):
+    """
+    Execute multiple runs for a baseline.
+    """
+    results = []
+    for run in range(num_runs):
+        current_seed = base_seed + run
+        set_global_seeds(current_seed)
+        print(f"\n=== Run {run+1} (Seed: {current_seed}) ===")
+        
+        # Create seed-specific directory
+        seed_dir = os.path.join(baseline.main_save_dir, f"seed_{current_seed}")
+        img_dir = os.path.join(seed_dir, "images")
+        os.makedirs(img_dir, exist_ok=True)
+        
+        # Reset env
+        state, _ = baseline.env.reset()
+        
+        path = baseline.construct_path(state)
+        print(f"Path: {path}")
+        
+        result = simulate_baseline_path(baseline.env, baseline.config, path, img_dir, seed_dir)
+        results.append(result)
+    
+    averaged = average_sim_results(results)
+    print_results(results, averaged)
+    return results, averaged
 
 class RandomBaseline:
     """
-    TODO: Implement later (if required)
+    Random Neighbor Baseline.
     """
-    def __init__(self, env):
-        self.nodes = env.nodes
+    def __init__(self, env, config, num_runs, base_seed):
+        self.env = env
+        self.config = config
+        self.world = env.build_world(config.get("network"))
+        self.num_runs = num_runs
+        self.base_seed = base_seed
+        self.main_save_dir = create_main_save_dir(config)
+
+    def run(self):
+        return execute_runs(self, self.num_runs, self.base_seed)
 
     def construct_path(self, state):
-        return self.nodes.sample()
+        """
+        Algorithm:
+        Step 1: Initialization (same initialization as RL), happens in main at reset.
+        Step 2: At each step, select a random neighbor from the valid neighbors.
+        Step 3: Repeat step 2 until reaching the max path length.
+        """
+        current_path = list(self.env.current_path)  # Make a copy
+        while len(current_path) < self.env.MAX_PATH_LENGTH:
 
-    def simulate_path(self, path):
-        """
-        """
-        pass
+            # Get current frontier
+            frontier = current_path[-1]
+            
+            # Get valid neighbors (adjacent and not already in path)
+            path_set = set(current_path)
+            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
+            if not valid_neighbors:
+                print(f"No valid neighbors found for frontier: {frontier}")
+                break
+
+            # Select random neighbor
+            next_node = random.choice(valid_neighbors)
+            
+            current_path.append(next_node)
+            print(f"\nRoute so far: {current_path}\n")
+        return current_path
 
 class GreedyDemandCoverage:
-    def __init__(self, env):
+    def __init__(self, env, config, num_runs, base_seed):
         self.env = env
-        self.config = env.config
-        self.world = env.build_world(env.config.get("network"))
-        
-        # Create baseline save directory structure
-        self.baseline_save_dir, self.img_dir = create_baseline_save_directory(self.config)
+        self.config = config
+        self.world = env.build_world(config.get("network"))
+        self.num_runs = num_runs
+        self.base_seed = base_seed
+        self.main_save_dir = create_main_save_dir(config)
+
+    def run(self):
+        return execute_runs(self, self.num_runs, self.base_seed)
 
     def construct_path(self, state):
         """
@@ -176,54 +330,21 @@ class GreedyDemandCoverage:
                     best_score = score
                     best_node = neighbor
             
-            if best_node is None:
-                break
-                
             current_path.append(best_node)
+            print(f"\nRoute so far: {current_path}\n")
         return current_path
 
-
-    def simulate_path(self, path):
-        """
-        Simulate the path to get the performance results.
-        Includes visualization and animation generation similar to RL training.
-        """
-        
-        # Create initial network visualization before simulation
-        create_initial_network_plot(self.env, self.config, self.img_dir)
-
-        # Update env's path
-        self.env.current_path = path
-        
-        # Build world with correct demand allocation
-        self.env.world = self.env.build_world(self.env.config.get("network"))
-        
-        # Apply buses using env's method
-        self.env._apply_action()
-        
-        # Run simulation and get metrics
-        sim_result = self.env._step_until(self.env.horizon, print_metrics=True)
-
-        # Generate visualizations using standalone functions
-        create_path_visualization(self.env, self.config, path, self.img_dir)
-        create_fancy_animations(self.env, self.config, self.baseline_save_dir)
-        
-        # Calculate reward using env's method
-        # reward = self.env.compute_reward(sim_result)
-
-        return {
-            'sim_result': sim_result
-        }
-        
-
 class GreedyShortestPath:
-    def __init__(self, env):
+    def __init__(self, env, config, num_runs, base_seed):
         self.env = env
-        self.config = env.config
-        self.world = env.build_world(env.config.get("network"))
-        
-        # Create baseline save directory structure
-        self.baseline_save_dir, self.img_dir = create_baseline_save_directory(self.config)
+        self.config = config
+        self.world = env.build_world(config.get("network"))
+        self.num_runs = num_runs
+        self.base_seed = base_seed
+        self.main_save_dir = create_main_save_dir(config)
+
+    def run(self):
+        return execute_runs(self, self.num_runs, self.base_seed)
 
     def construct_path(self, state):
         """
@@ -237,31 +358,93 @@ class GreedyShortestPath:
         Note:
         - This may not result in overall shortest path but is a greedy selection of shortest path.
         """
-        pass
+        current_path = list(self.env.current_path)  # Make a copy
+        while len(current_path) < self.env.MAX_PATH_LENGTH:
 
-    def simulate_path(self, path):
-        """
-        """
-        pass
+            # Get current frontier
+            frontier = current_path[-1]
+            
+            # Get valid neighbors (adjacent and not already in path)
+            path_set = set(current_path)
+            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
+            if not valid_neighbors:
+                print(f"No valid neighbors found for frontier: {frontier}")
+                break
+
+            # For each valid neighbor, compute the edge length as score
+            best_score = np.inf
+            best_node = None
+
+            for neighbor in valid_neighbors:
+                # Get the edge length between frontier and neighbor
+                edge_length = self.env.link_lengths.get((frontier, neighbor), np.inf)
+                
+                if edge_length < best_score:
+                    best_score = edge_length
+                    best_node = neighbor
+                
+            current_path.append(best_node)
+            print(f"\nRoute so far: {current_path}\n")
+        return current_path
 
 class GreedyRewardMaximization:
-    def __init__(self, env):
+    def __init__(self, env, config, num_runs, base_seed):
         """
         A baseline for myopic short-term reward maximization.
         """
         self.env = env
-        self.config = env.config
-        self.world = env.build_world(env.config.get("network"))
+        self.config = config
+        self.world = env.build_world(config.get("network"))
+        self.num_runs = num_runs
+        self.base_seed = base_seed
+        self.main_save_dir = create_main_save_dir(config)
         
-        # Create baseline save directory structure
-        self.baseline_save_dir, self.img_dir = create_baseline_save_directory(self.config)
-        
+    def run(self):
+        return execute_runs(self, self.num_runs, self.base_seed)
+
     def construct_path(self, state):
         """
+        Algorithm: 
+        Step 1: Initialization (same initialization as RL), happens in main at reset.
+        Step 2: At each step, from valid neighboring nodes
+            - Calculate the reward that would be obtained by adding that node to the path.
+                - This needs simulating each possible choice at each step.
+            - Select the node with the highest reward.
+        Step 3: Repeat step 2 until reaching the max path length.
         """
-        pass
+        current_path = list(self.env.current_path)  # Make a copy
+        original_path = self.env.current_path[:]  # Save original path
+        while len(current_path) < self.env.MAX_PATH_LENGTH:
 
-    def simulate_path(self, path):
-        """
-        """
-        pass
+            # Get current frontier
+            frontier = current_path[-1]
+            
+            # Get valid neighbors (adjacent and not already in path)
+            path_set = set(current_path)
+            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
+            if not valid_neighbors:
+                print(f"No valid neighbors found for frontier: {frontier}")
+                break
+
+            best_reward = -np.inf
+            best_node = None
+
+            for neighbor in valid_neighbors:
+                temp_path = current_path + [neighbor]
+                
+                # Temporarily set path and simulate
+                self.env.current_path = temp_path
+                self.env.world = self.env.build_world(self.env.config.get("network"))
+                self.env._apply_action()
+                sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
+                reward = self.env.compute_reward(sim_result)
+                print(f"\nReward obtained from choice of {neighbor} = {reward}\n")
+                if reward > best_reward:
+                    best_reward = reward
+                    best_node = neighbor
+            
+            # Restore original path after evaluations
+            self.env.current_path = original_path
+            current_path.append(best_node)
+            print(f"\nRoute so far: {current_path}\n")
+        return current_path
