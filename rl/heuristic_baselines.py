@@ -28,6 +28,9 @@ These baselines still need to respect constraints such as:
 ---------------
 Additional notes (ignore)
 - In case the immediate next node does not add any new demand coverage (because trips are not completed by just adding 1 node)
+- These baselines have the same results across seeds: 
+    - Greedy Shortest Path
+    - Greedy Demand Coverage
 """
 
 import os
@@ -173,19 +176,43 @@ def average_sim_results(results_list):
 def print_results(results_list, averaged):
     """
     """
+    units = {
+        'total_wait_time': 'seconds',
+        'wait_time_sim_end': 'seconds',
+        'sim_end_waiting_passengers_count': 'count',
+        'avg_wait_time': 'seconds',
+        'wanting_to_onboard': 'count',
+        'total_onboarded_count': 'count',
+        'completed_trip_passengers_count': 'count',
+        'movement_time': 'seconds',
+        'total_travel_time': 'seconds',
+        'route_length': 'meters',
+        'bus_utilization': '%',
+        'average_bus_speed': 'm/s',
+        'service_rate': '%',
+        'onboard_rate': '%',
+        'route_efficiency': 'passengers/km'
+    }
+
     print("\n=== Individual Run Results ===")
+    # Find max key length for alignment
+    max_key_len = 0
+    for res in results_list:
+        for key in res['sim_result']:
+            if isinstance(res['sim_result'][key], (int, float)):
+                max_key_len = max(max_key_len, len(key))
+    
     for i, res in enumerate(results_list, 1):
         print(f"Run {i}:")
-        for key, val in res['sim_result'].items():
+        for key, val in sorted(res['sim_result'].items()):  # Sort keys for consistent order
             if isinstance(val, (int, float)):
-                if isinstance(val, float):
-                    print(f"  {key}: {val:.2f}")
-                else:
-                    print(f"  {key}: {val}")
+                val_str = f"{val:.2f}" if isinstance(val, float) else f"{val}"
+                unit_str = f" ({units.get(key, '')})" if units.get(key) else ""
+                print(f"  {key:<{max_key_len}} : {val_str}{unit_str}")
         print("---")
 
     print("\n=== Averaged Results ===")
-    for key in averaged:
+    for key in sorted(averaged):  # Sort keys for consistent order
         values = []
         for res in results_list:
             val = res['sim_result'].get(key)
@@ -203,7 +230,16 @@ def print_results(results_list, averaged):
             calc_str = " + ".join(str_values)
             avg_val = averaged[key]
             avg_str = f"{avg_val:.2f}" if isinstance(avg_val, float) else f"{avg_val}"
-            print(f"  {key}: ({calc_str}) / {len(values)} = {avg_str}")
+            unit_str = f" ({units.get(key, '')})" if units.get(key) else ""
+            print(f"  {key:<{max_key_len}} : ({calc_str}) / {len(values)} = {avg_str}{unit_str}")
+    
+    # Print LaTeX row
+    print("\n")
+    completed = int(averaged.get('completed_trip_passengers_count', 0))
+    service = averaged.get('service_rate', 0.0)
+    wait = averaged.get('avg_wait_time', 0.0)
+    efficiency = averaged.get('route_efficiency', 0.0)
+    print(f"& ${completed}$ & ${service:.2f}$ & ${wait:.2f}$ & ${efficiency:.2f}$")
 
 def execute_runs(baseline, num_runs, base_seed):
     """

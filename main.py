@@ -216,7 +216,7 @@ def train(config: Dict[str, Any]) -> None:
 
                 # TODO: Penalty set to an arbitrary high value (hard-coded).
                 # Make it configurable based on how bad of the truncation was.
-                truncation_penalty = -100.0
+                truncation_penalty = 0.0
                 reward = truncation_penalty
                 _, _, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices, truncated=True)
                 bootstrap_value = value_tensor.cpu().item()
@@ -267,7 +267,9 @@ def train(config: Dict[str, Any]) -> None:
         # Mark episode boundary with bootstrap value.
         ppo.memory.mark_episode_end(bootstrap_value)
         steps_elapsed += episode_steps
-        episode_reward = reward # This is the final reward for the episode.
+        episode_reward = reward # This is the final reward for the episode. 
+        # This makes sense for episodes that terminate naturally (with complete routes).
+        
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
         wandb.log({"episode_reward": episode_reward}, step=steps_elapsed)
         

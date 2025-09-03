@@ -11,7 +11,7 @@ def build_sweep_config() -> Dict[str, Any]:
     return {
         "method": "bayes",
         
-                "metric": {"name": "eval/avg_episode_reward", 
+                "metric": {"name": "eval/episode_reward", 
                    "goal": "maximize"},
 
         "parameters": {
