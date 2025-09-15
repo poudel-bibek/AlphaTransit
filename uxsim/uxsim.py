@@ -1768,13 +1768,11 @@ class Vehicle:
             # Update passenger state
             passenger.is_waiting = False
             passenger.is_on_bus = True
-            passenger.board_time = s.W.TIME
-            passenger.wait_time = passenger.board_time - passenger.wait_start_time
             passenger.bus = s
             
             # Add to bus passenger list
             s.passengers.append(passenger)
-        
+
         return passengers_to_board
 
     def alight_passengers(s, current_stop):
@@ -1803,9 +1801,6 @@ class Vehicle:
                 # Passenger reaches destination - alight
                 passenger.is_on_bus = False
                 passenger.trip_completed = True
-                passenger.alight_time = s.W.TIME
-                passenger.in_vehicle_time = passenger.alight_time - passenger.board_time
-                passenger.total_travel_time = passenger.alight_time - passenger.wait_start_time
                 passenger.bus = None
                 
                 alighting_passengers.append(passenger)
@@ -1815,11 +1810,7 @@ class Vehicle:
         
         # Update bus passenger list
         s.passengers = remaining_passengers
-        
         return alighting_passengers
-
-
-
 
 class RouteChoice:
     """

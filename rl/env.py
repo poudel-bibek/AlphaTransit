@@ -898,6 +898,16 @@ class TransitEnv(gym.Env):
 
     def compute_reward(self, sim_result: Dict[str, int]) -> float:
         """
+        ---------
+        New (after multi-route pivot):
+        ---------
+        1. Penalty: 
+           1.1 Overlap between routes
+
+        Demand served. 
+            - Partial routes wont serve the full demand.
+        ---------
+
         Passenger Travel Efficiency Focused 
     
         reward = β₀ × service_rate - β₁ × (avg_wait_time / max_wait_time) + β₂ × route_efficiency + β₃ × bus_utilization
