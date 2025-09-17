@@ -23,7 +23,7 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     steps_taken = len(self.current_path) - 1
     print(f"\n=== State Summary ===")
     print(f"Current path: {self.current_path}")
-    print(f"Steps taken / max: {steps_taken} / {self.MAX_PATH_LENGTH} (steps_left_norm={steps_left:.3f})")
+    print(f"Steps taken / max: {steps_taken} / {self.MAX_ROUTE_LENGTH} (steps_left_norm={steps_left:.3f})")
 
     # Node features
     feature_names = [

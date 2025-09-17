@@ -448,8 +448,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
     parser.add_argument("--random_path_init", action="store_true", help="Initialize path randomly (omit flag for False)")
     # Constraints:
-    parser.add_argument("--max_path_length", type=int, default=10, help="Maximum path length")
-    parser.add_argument("--min_path_length", type=int, default=1, help="Minimum path length")
+    parser.add_argument("--num_routes", type=int, default=1, help="Number of routes")
+    parser.add_argument("--max_route_length", type=int, default=10, help="Maximum path length")
+    parser.add_argument("--min_route_length", type=int, default=1, help="Minimum path length")
 
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")

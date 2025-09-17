@@ -1,6 +1,7 @@
 import os
 import random
 import numpy as np
+import networkx as nx
 import pandas as pd
 import gymnasium as gym
 from uxsim import World
@@ -42,9 +43,15 @@ class TransitEnv(gym.Env):
         self.random_path_init = self.config.get("random_path_init")
         
         # Constraints:
-        self.MAX_PATH_LENGTH = self.config.get("max_path_length")
-        self.MIN_PATH_LENGTH = self.config.get("min_path_length")
-        self.world, self.current_path = None, []
+        self.NUM_ROUTES = self.config.get("num_routes")
+        self.MAX_ROUTE_LENGTH = self.config.get("max_route_length")
+        self.MIN_ROUTE_LENGTH = self.config.get("min_route_length")
+        self.world = None
+        
+        # Multi-route management:
+        self.all_routes = []           # List of completed routes [[route1], [route2], ...]
+        self.current_route = []        # Currently active route being built
+        self.current_route_index = 0   # Index of route currently being built (0 to NUM_ROUTES-1)
         self.N_NODE_FEATURES = 9
         self.N_EDGE_FEATURES = 2
 
@@ -172,7 +179,8 @@ class TransitEnv(gym.Env):
             - d_in_path: sum of all O-D flows arriving at node i from nodes within the path - divide by max demand in the network
                 - "If I add node i to the path, how much demand from existing path nodes could be reach node i?"
                 - Attractiveness of the node i.e., if I add this node 5 to the path, how many passengers from the current path nodes want to go to node 5?
-            - in_path flag: binary (1 if node is in the path, else 0)
+            - in_path_k flag: binary (1 if node is in the path, else 0)
+
             - is_valid_next: binary (1 if adjacent to current frontier and not in path, else 0)
                 - inform the policy about the validity of next nodes to select
                 - Not allowed if:
@@ -264,46 +272,50 @@ class TransitEnv(gym.Env):
     @property
     def action_space(self) -> gym.Space:
         """
-        Select the next node to add to the path (starting from a single node).
-        The agent builds a linearly expanding path i.e., at each step, chooses one more neighbor to add at the end of current path.
+        Option 1: Simultaneously advance all routes at once by 1 node.
+            - Action space would increase i.e., 3 x N 
+        Option 2: Sequentially advance each route by 1 node.
+            - Action space remains N
+            - It's easier to learn (credit assignment per route is cleaner i.e., allows the reward to immediately reflect on overlaps, transfers.)
+
+        For each route, select the next node to add to the path (starting from a single node).
+        The agent builds linearly expanding paths for each route i.e., at each step, chooses one more neighbor to add at the end of current path.
         The neighbor is a "frontier" node and is adjacent (connected by an edge) to the current end node of the route i.e., no skipping allowed.
-        Further, no loops or back-tracking (visiting of nodes already in the route) are allowed.
+        Further, no self loops or back-tracking (visiting of nodes already in the route) are allowed.
 
         Notes: 
         - The action space is naturally discrete
-        - Node IDs are arbitrary labels, we cant choose what to add based on node IDS? 
+        - Node IDs are arbitrary labels, we cant choose what to add based on node IDs 
         - For example gym.spaces.Discrete(3) means choose ids 0, 1, 2
         - This RL method needs to be generalizable to larger networks (in which the number of nodes can be very large) 
         - This does not mean that a policy trained on single network must be generalizable to another, we can train policy for each network separately but the algo in general must work in various networks.
                 
         Based on how the agent operates, the action space seems to be variable sized per step:
         - At node with 3 neighbors has 3 discrete choices, which one with 10 has 10 discrete choices.
-        - But this is not practical. 
         
         Solution 1: 
         - Set a fixed sized maximum cap (top-k): e.g., 5; select them based on heuristic such as demand emanating/ distance to current frontier.
 
-        Solution 2 (This one used, with action masking): 
+        Solution 2 (This is used, with action masking): 
         - Large action space: Discrete(N) where N is the number of nodes in the network.
         - i.e., Select a node index (0 to N-1) to add to the path.
         """
         return gym.spaces.Discrete(self.n_nodes)
     
-    def _initialize_current_path(self, use_random: bool = False) -> list:
+    def _initialize_current_route(self, use_random: bool = False) -> list:
         """
         Various strategies can be used. 
         Current one: Initialize at the highest demand node i.e., node from which highest demand emanates.
         Other option: random i.e., pick a random node.
         """
-        demand_df = self.demand_df_cached # Use cached DataFrame 
 
         if use_random:
-            choice = random.choice(list(demand_df["orig"].unique()))
+            choice = random.choice(list(self.demand_df_cached["orig"].unique()))
             print(f"Initializing route randomly at node: {choice}")
             return [choice]
             
         else: 
-            demand_df_grouped = demand_df.groupby("orig").sum(numeric_only=True).reset_index()
+            demand_df_grouped = self.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
             highest_demand_node = demand_df_grouped.loc[demand_df_grouped["volume"].idxmax()]
             choice = highest_demand_node["orig"]
             print(f"Initializing route at node: {choice}")
@@ -344,7 +356,7 @@ class TransitEnv(gym.Env):
         print(f"Loading {len(demand_df)} demand records...")  
         
         # current_path will have at least one node (where it starts) i.e., it wont have O-D pair then.
-        current_path_str = [str(node) for node in current_path] # ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] 
+        current_route_str = [str(node) for node in current_path] # ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] 
         total_demand = 0 
         bus_demand = 0 
         car_demand = 0 
@@ -357,7 +369,7 @@ class TransitEnv(gym.Env):
                 if volume_per_hour <= 0 or orig == dest: 
                     continue
                 
-                is_served = orig in current_path_str and dest in current_path_str
+                is_served = orig in current_route_str and dest in current_route_str
                 bus_volume = total_volume * self.alpha if is_served else 0
                 car_volume = total_volume - bus_volume
                 
@@ -380,7 +392,7 @@ class TransitEnv(gym.Env):
             
         #         orig, dest = str(row["orig"]), str(row["dest"])
         #         start_t, end_t, flow_rate = row["start_t"], row["end_t"], row["q"]
-        #         if self._is_od_served(orig, dest, current_path_str):
+        #         if self._is_od_served(orig, dest, current_route_str):
         #             bus_demand += flow_rate * self.alpha
         #             car_demand += flow_rate * (1 - self.alpha)
         #             total_demand += flow_rate
@@ -417,14 +429,23 @@ class TransitEnv(gym.Env):
 
         return world
 
-    def _is_od_served(self, orig: str, dest: str, current_path_str: list) -> bool:
+    def _is_od_served(self, orig: str, dest: str) -> bool:
         """
-        Check if both items in the OD pair are served by the route.
-        TODO: implement node radius within the route. Current version: nodes lies in the route.
+        Check if O-D pair can be served by the complete transit system (all routes + transfers).
+        
+        Uses BusHandler's transit_graph which includes:
+        - All completed routes + current route being built
+        - Transfer connections between overlapping routes
+        - NetworkX pathfinding for multi-route journeys
+        
+        Returns True if any path exists from origin to destination.
         """
-        if len(current_path_str) < 2: 
-            return False
-        return orig in current_path_str and dest in current_path_str
+        if hasattr(self.world, 'bus_handler') and self.world.bus_handler and hasattr(self.world.bus_handler, 'transit_graph'):
+            transit_graph = self.world.bus_handler.transit_graph
+            if transit_graph and orig in transit_graph.nodes and dest in transit_graph.nodes:
+                return nx.has_path(transit_graph, orig, dest)
+                
+        return False
 
     def _get_state(self, ) -> Dict[str, Any]:
         """
@@ -450,7 +471,7 @@ class TransitEnv(gym.Env):
         node_features[:, 4] = self.demand_in / self.max_demand # d_in
         
         # Dymanic node features (5-6, path-aware demands):
-        path_indices = np.array([self.node_to_idx[node] for node in self.current_path]) # Set of nodes in the path
+        path_indices = np.array([self.node_to_idx[node] for node in self.current_route]) # Set of nodes in the path
         demand_out_path = self.od_matrix[:, path_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
         demand_in_path = self.od_matrix[path_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
         
@@ -460,16 +481,16 @@ class TransitEnv(gym.Env):
         # Node features that are Binary flags (7-8):
         node_features[path_indices, 7] = 1.0 # in_path flag
         
-        frontier = self.current_path[-1]
-        path_set = set(self.current_path)  # O(1) lookup
-        valid_neighbors = self.adj.get(frontier, set()) - path_set  # Set difference with safe lookup
+        frontier = self.current_route[-1]
+        route_set = set(self.current_route)  # O(1) lookup
+        valid_neighbors = self.adj.get(frontier, set()) - route_set  # Set difference with safe lookup
         valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
         node_features[valid_indices, 8] = 1.0  # is_valid_next
 
         # Edge index and edge features dont dynamically change. Already set in __init__.
         # Steps left:
-        steps_taken = len(self.current_path) - 1  # -1 because we start with 1 node
-        steps_left_norm = 1.0 - (steps_taken / self.MAX_PATH_LENGTH)
+        steps_taken = len(self.current_route) - 1  # -1 because we start with 1 node
+        steps_left_norm = 1.0 - (steps_taken / self.MAX_ROUTE_LENGTH)
         
         # Return the state as a dict
         state: Dict[str, Any] = {
@@ -485,7 +506,7 @@ class TransitEnv(gym.Env):
         """
         TODO: Can I just sample the action space and get a random initial state?
         """
-        self.current_path = self._initialize_current_path(use_random=self.random_path_init)
+        self.current_route = self._initialize_current_route(use_random=self.random_path_init)
         state = self._get_state() # initial state
         return state, {}
     
@@ -535,55 +556,94 @@ class TransitEnv(gym.Env):
         world.set_bus_handler(BusHandler)
 
         # Size of the demand is required in observation space.
-        world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_path)
+        world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_route)
         return world
         
-    def _apply_action(self, ) -> None:
+    def _apply_action(self) -> Dict[str, bool]:
         """
         Invoked internally by step 
         - Add stops based on STOP_SPACING.
         - Add necessary vehicles to the world.
             - Add buses based on the current path and SERVICE_FREQUENCY.
-        # TODO: This only works on a single path.
-
-        """
-
-        # 1. Determine bus stops based on STOP_SPACING
-        # For simplicity, make all nodes in path as stops (can be refined later)
-        bus_stops = self.current_path[::self.STOP_SPACING]
-
-        # 2. Right now, only setup to work with single bus route. 
-        # Create a single bus and let set_bus_route handle the SERVICE_FREQUENCY
-        # TODO: Add more buses if more than 1 route
-        bus_name = "bus_route_0"
-        departure_time = 0  # First bus starts at time 0
+        - Check for route completion conditions and handle transitions
         
-        bus = self.world.addVehicle(
-            orig=self.current_path[0], 
-            dest=self.current_path[1],  # Next node in path
-            departure_time=int(departure_time),
-            name=bus_name, # unique name for each bus
-            mode="bus"
-        )
+        Returns a dict with route completion signals:
+        - route_completed: Route was successfully completed (met min length)
+        - route_forced_end: Route ended due to no valid moves (may be short)  
+        - ep_done: All routes have been processed
+        """
+        
+        # Check for route completion conditions BEFORE creating buses
+        route_completed = False
+        route_forced_end = False
+        ep_done = False
+        
+        # Route reached maximum length - complete it successfully
+        if len(self.current_route) >= self.MAX_ROUTE_LENGTH:
+            self.all_routes.append(self.current_route[:])  # Store completed route
+            print(f"Route {self.current_route_index} completed successfully: {self.current_route}")
+            route_completed = True
+        
+        # No valid moves left - route is incomplete/forced to end
+        elif len(self._get_valid_indices()) == 0:
+            print(f"Route {self.current_route_index} forced to end (no valid moves, incomplete: {len(self.current_route)} < {self.MAX_ROUTE_LENGTH})")
+            route_forced_end = True
+            
+        # Move to next route if any completion condition was met
+        if route_completed or route_forced_end:
+            self.current_route_index += 1
+            if self.current_route_index < self.NUM_ROUTES:
+                # Initialize next route
+                self.current_route = self._initialize_current_route(use_random=self.random_path_init)
+                print(f"Starting route {self.current_route_index}: {self.current_route}")
+            else:
+                # All routes processed
+                print("All routes processed!")
+                ep_done = True
 
-        # 3. Set the bus route - this will create SERVICE_FREQUENCY number of buses:
-        buses = bus.set_bus_route(
-            path=self.current_path,
-            stops=bus_stops,
-            is_circular=False, # Do not make routes circular 
-            capacity=self.BUS_CAPACITY,
-            stop_duration=self.STOP_DURATION,
-            service_frequency=self.SERVICE_FREQUENCY, # This creates multiple buses for the frequency
-            sim_horizon=self.horizon # Pass simulation horizon for proper bus spacing
-        )
+        # Simulate both completed and current partial route being built
+        routes_to_simulate = self.all_routes + [self.current_route]
+        
+        for route_idx, route in enumerate(routes_to_simulate):
+            # Determine bus stops based on STOP_SPACING for this route
+            bus_stops = route[::self.STOP_SPACING]
+            
+            bus_name = f"bus_route_{route_idx}"
+            departure_time = 0  # First bus starts at time 0
+            
+            bus = self.world.addVehicle(
+                orig=route[0], 
+                dest=route[1],  # Next node in path
+                departure_time=int(departure_time),
+                name=bus_name, # unique name for each bus
+                mode="bus"
+            )
 
-        print(f"Original bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
+            # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
+            buses = bus.set_bus_route(
+                path=route,
+                stops=bus_stops,  # Use the calculated bus stops for this route
+                is_circular=False, # Do not make routes circular 
+                capacity=self.BUS_CAPACITY,
+                stop_duration=self.STOP_DURATION,
+                service_frequency=self.SERVICE_FREQUENCY, # This creates multiple buses for the frequency
+                sim_horizon=self.horizon # Pass simulation horizon for proper bus spacing
+            )
+
+            route_status = "completed" if route in self.all_routes else "current"
+            print(f"Route {route_idx} ({route_status}) bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
                 
         # Print bus summary AFTER all buses are created
         all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
         print(f"\nTotal buses in simulation: {len(all_buses)} - {[b.name for b in all_buses]}")
+        
+        return {
+            'route_completed': route_completed,
+            'route_forced_end': route_forced_end,
+            'ep_done': ep_done
+        }
 
-    def _get_final_metrics(self, handler: BusHandler, current_path_str: list) -> int:
+    def _get_final_metrics(self, handler: BusHandler) -> Dict[str, Any]:
         """
         Get metrics after the sim has been run.
         - Average bus speed (m/s, calculated per bus and averaged)
@@ -612,9 +672,6 @@ class TransitEnv(gym.Env):
             if total_operating_time > 0 and total_distance > 0:
                 speed = total_distance / total_operating_time
                 bus_speeds.append(speed)
-            # else:
-            #     # Skip buses that haven't started yet (negative operating time) or haven't moved
-            #     print(f"  -> Skipping bus {bus.name}: {'not started yet' if total_operating_time <= 0 else 'no distance traveled'}")
 
         avg_bus_speed_mps = np.mean(bus_speeds) if bus_speeds else 0.0
         
@@ -643,50 +700,61 @@ class TransitEnv(gym.Env):
             utilization_sum += average_utilization_this_bus
 
         avg_bus_utilization_pct = (utilization_sum / buses_with_data * 100) if buses_with_data > 0 else 0.0  # Use buses_with_data instead of len(all_buses)
-        
-        # for bus_name, utilization_list in bus_utilizations.items():
-        #     print(f"\nUtilization for bus: {bus_name}")
-        #     print(f"Utilization: {utilization_list}")
 
-        # 3. Travel time distribution (wait time + in-vehicle time)
-        # 4. Waiting time distribution (wait_time is only calculated for completed passengers upon alighting)
+        # 3. Travel time distributions (wait time, in-vehicle time (movement time), total travel time)
         wait_time_dstr = []
         movement_time_dstr = []
         travel_time_dstr = [] # wait time + in-vehicle time
-        
-        total_wait_time = 0.0
+        all_passengers_total_wait_time = 0.0
+
         # Handle COMPLETED trips (from passenger_stats, not buses)
+        # These logs will automatically include wait and travel time across multiple legs.
         for p_stats in handler.passenger_stats:
-            wait_time = p_stats['wait_time']
-            total_wait_time += wait_time
+            wait_time = p_stats['total_wait_time']  
+            all_passengers_total_wait_time += wait_time
+
             wait_time_dstr.append(wait_time) 
-            movement_time_dstr.append(p_stats['in_vehicle_time'])
+            movement_time_dstr.append(p_stats['total_in_vehicle_time'])
             travel_time_dstr.append(p_stats['total_travel_time'])
             
-        # Handle PARTIAL/ONGOING trips. This loop only looks at passengers who are currently a part of any bus.
-        # When a passenger alights at their destination (completing the trip), they are explicitly removed from the bus's passengers list
+        # Handle PARTIAL/ONGOING trips.
+        # looking at passengers who are currently on a bus. Use journey_log from new BusHandler structure.
         on_going_count_sim_end = 0
         for bus in all_buses:
             for passenger in bus.passengers:
-                # Passengers with partial trips
-                # if passenger.is_on_bus: # Safety check, though it should always be True here
-                wait_time = passenger.board_time - passenger.wait_start_time
-                total_wait_time += wait_time
-
-                movement_time = self.world.TIME - passenger.board_time
-                wait_time_dstr.append(wait_time)
-                movement_time_dstr.append(movement_time)
-                travel_time_dstr.append(wait_time + movement_time)
-                on_going_count_sim_end += 1
+                
+                # Looking at all prior legs of the journey.
+                # Passengers whose wait time is completed (not None)
+                completed_waits = [log for log in passenger.journey_log if log['type'] == 'wait' and log['end'] is not None]
+                wait_time = sum(log['end'] - log['start'] for log in completed_waits)
+                
+                # Calculate total movement time: ALL completed rides + current ongoing ride
+                completed_rides = [log for log in passenger.journey_log if log['type'] == 'ride' and log['end'] is not None]
+                completed_movement_time = sum(log['end'] - log['start'] for log in completed_rides)
+                
+                current_ride = next((log for log in reversed(passenger.journey_log) if log['type'] == 'ride' and log['end'] is None), None)
+                
+                if current_ride:
+                    current_ride_time = self.world.TIME - current_ride['start']
+                    total_movement_time = completed_movement_time + current_ride_time
+                    
+                    all_passengers_total_wait_time += wait_time
+                    wait_time_dstr.append(wait_time)
+                    movement_time_dstr.append(total_movement_time)  # Now includes all legs
+                    travel_time_dstr.append(wait_time + total_movement_time)
+                    on_going_count_sim_end += 1
                 
 
-        # Handle STILL-WAITING (not onboarded). Separately add passengers who are still waiting for the bus to arrive 
+        # Handle STILL-WAITING (not onboarded) i.e., passengers whose departure time has arrived but are still waiting for the bus 
         # They only have wait time and have no in-vehicle time; no point in adding travel time)
         total_waiting_time_sim_end = 0.0
         for waiting_list in handler.waiting_passengers.values():
             for passenger in waiting_list:
-                if passenger.wait_start_time is not None:
-                    wait_time = self.world.TIME - passenger.wait_start_time
+                
+                current_wait = next((log for log in reversed(passenger.journey_log) if log['type'] == 'wait' and log['end'] is None), None)
+                
+                if current_wait:
+                    wait_time = self.world.TIME - current_wait['start']
                     wait_time_dstr.append(wait_time)
                     total_waiting_time_sim_end += wait_time
 
@@ -708,65 +776,105 @@ class TransitEnv(gym.Env):
                 'total_waiting_time_sim_end': total_waiting_time_sim_end,
                 'completed_count': completed_count,
                 'total_onboarded_count': total_onboarded_count,
-                'total_wait_time': total_wait_time}
+                'total_wait_time': all_passengers_total_wait_time}
 
-    def _get_initial_metrics(self, handler: BusHandler, current_path_str: list) -> Dict[str, float]:
+    def _get_initial_metrics(self) -> Dict[str, float]:
         """
         Compute metrics (which can be computed before the sim starts):
         - Route length (meters). Since we use heuristic baselines like shortest path, this should be part of the metrics .
-        - Wanting to onboard count (count of passengers whose O-D pairs are served by current route)
-        average bus speed, and average bus utilization throughout the journey.
+        - Count of wanting to onboard: 
+            - The goal is to serve all demand
+            - This measures the demand that can be served by current routes.
+            - If routes are designed well, this should be close to the total demand.
         """
 
         # 1. Route length 
         route_length = 0.0
-        if len(self.current_path) < 2:
+        if len(self.current_route) < 2:
             raise ValueError("Current path must have at least 2 nodes")
         
-        for i in range(len(self.current_path) - 1):
-            route_length += self.link_lengths[(str(self.current_path[i]), str(self.current_path[i+1]))]
+        for i in range(len(self.current_route) - 1):
+            route_length += self.link_lengths[(str(self.current_route[i]), str(self.current_route[i+1]))]
         
         # 2. Wanting to onboard 
         wanting_to_onboard = 0
-        # Counting all potential passengers whose O-D is served by the route.
-        for passenger in handler.pending_passengers:
-            if self._is_od_served(passenger.origin_stop.name, passenger.dest_stop.name, current_path_str):
-                wanting_to_onboard += 1
+        for _, row in self.demand_df_cached.iterrows():
+            orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
+            total_volume = volume_per_hour * (self.horizon / 3600) # Multiply by number of hours in horizon
 
-        return {'route_length': route_length, 'wanting_to_onboard': wanting_to_onboard}
+            if volume_per_hour > 0 and orig != dest and self._is_od_served(orig, dest):
+                wanting_to_onboard += total_volume * self.alpha  # Potential bus passengers
 
+        # 3. Total demand (may or may not lie on the routes)
+        total_demand = 0
+        for _, row in self.demand_df_cached.iterrows():
+            orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
+            total_volume = volume_per_hour * (self.horizon / 3600) # Multiply by number of hours in horizon
+
+            if volume_per_hour > 0 and orig != dest:
+                total_demand += total_volume
+
+        return {'route_length': route_length, 'wanting_to_onboard': wanting_to_onboard, 'total_demand': total_demand}
+    
+    def _calculate_route_overlap_ratio(self) -> float:
+        """
+        Calculate the ratio of overlapped segments in routes.
+        Logic: 
+        - pair-wise node overlap across all routes.
+        Returns:
+            - Ratio of overlapped segments [0-1]
+            - 0.0 = No overlaps
+            - 1.0 = All segments overlap
+        """
+        total_routes = self.all_routes + [self.current_route]
+        num_routes = len(total_routes)
+
+        # No overlap possible if there is only one route
+        if num_routes <= 1:
+            return 0.0
+        
+        overlap_sum = 0.0
+        num_pairs = 0
+
+        for i in range(num_routes):
+            for j in range(i + 1, num_routes):
+                set_i = set(total_routes[i])
+                set_j = set(total_routes[j])
+                common = len(set_i & set_j)
+                min_len = min(len(set_i), len(set_j))
+                pair_ratio = common / min_len if min_len > 0 else 0.0
+                overlap_sum += pair_ratio
+                num_pairs += 1
+
+        return overlap_sum / num_pairs if num_pairs > 0 else 0.0
+    
     def _step_until(self, until_t: int, print_metrics: bool = True) -> Dict[str, int]:
         """
-        Run the simulation until the given time.
+        Run the simulation until the given time and collect metrics related to performance of the route.
 
         Notes: 
         - Pending passengers → passengers that have been created by demand but not yet boarded a bus (start time has not arrived)
         - Waiting passengers → passengers that have been created by demand but not yet boarded a bus (waiting for a bus to arrive)
         - Onboarded passengers → passengers that have been boarded a bus and are currently traveling on it
         - Completed passengers → passengers that have reached their destination and have completed their trip
-
-        - All time metrics are converted to minutes.
         - Data to be collected to plot Distributions: 
             - Waiting time 
                 - distribution can be used to determine the quality of waiting time (how equitable is the distribution)
                 - passengers who completed trips + currently traveling + still waiting at sim end.
             - Travel time 
                 - passengers who completed trips + currently traveling in buses
-        - Metrics should relate to performance of the route.
+        - Service rate: % of passengers who "lie on the routes and wanted to board" that were able to get to their destination.
+        - Demand coverage: % of passengers who "are part of the demand and may or may not lie on the routes" that were able to onboard (if they onboard, given enough time, they will get to their destination).
         """
 
         handler = self.world.bus_handler
-        current_path_str = [str(node) for node in self.current_path]
+        current_route_str = [str(node) for node in self.current_route]
 
-        # Some metrics need to be collected at the begining of the sim? Like wanting to onboard.
-        # Collect initial wanting count before simulation moves passengers
-        initial_metrics = self._get_initial_metrics(handler, current_path_str)
-
+        initial_metrics = self._get_initial_metrics()
         self.world.exec_simulation(until_t=until_t)
+        final_metrics = self._get_final_metrics(handler)
 
-        final_metrics = self._get_final_metrics(handler, current_path_str)
-
-        # Calculation section 
+        # Calculations 
         total_wait_time_minutes = (1/60) * final_metrics['total_wait_time'] # How much time did the passengers who completed the trips, or who are currently traveling, spent waiting for the bus to arrive.
         wait_time_sim_end_minutes = (1/60) * final_metrics['total_waiting_time_sim_end'] # At the end of the simulation, how much time did the passengers who are still waiting at stops, spent waiting for the bus to arrive.
         movement_time_minutes = (1/60) * sum(final_metrics['movement_time_dstr']) # For trip completion how much time was spent in-vehicle for passengers who completed the trip + still in the bus at the end of sim.
@@ -775,17 +883,21 @@ class TransitEnv(gym.Env):
         # Service rate calculation (used in both metrics dict and print statements)
         service_rate_pct = 100 * (final_metrics['completed_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0 # What % of demand was fulfilled.
         
-        # Per-passenger averages (used in print statements)
+        # Per-passenger averages 
         total_combined_wait_time = total_wait_time_minutes + wait_time_sim_end_minutes
-        avg_wait_time_minutes = total_combined_wait_time / len(final_metrics['waiting_time_dstr']) if len(final_metrics['waiting_time_dstr']) > 0 else 0
-        avg_movement_time_minutes = movement_time_minutes / len(final_metrics['movement_time_dstr']) if len(final_metrics['movement_time_dstr']) > 0 else 0
-        avg_travel_time_minutes = sum(final_metrics['travel_time_dstr']) / len(final_metrics['travel_time_dstr']) / 60 if len(final_metrics['travel_time_dstr']) > 0 else 0
+        avg_wait_time_minutes = total_combined_wait_time / len(final_metrics['waiting_time_dstr']) if len(final_metrics['waiting_time_dstr']) > 0 else 0.0
+        avg_movement_time_minutes = movement_time_minutes / len(final_metrics['movement_time_dstr']) if len(final_metrics['movement_time_dstr']) > 0 else 0.0
+        avg_travel_time_minutes = sum(final_metrics['travel_time_dstr']) / len(final_metrics['travel_time_dstr']) / 60 if len(final_metrics['travel_time_dstr']) > 0 else 0.0
         
         # Onboarding rate calculation
-        onboard_rate_pct = (final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard'] * 100) if initial_metrics['wanting_to_onboard'] > 0 else 0
+        onboard_rate_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0
         
         # Route efficiency calculation (passengers completed per km of route)
-        route_efficiency_passengers_per_km = (final_metrics['completed_count'] / initial_metrics['route_length'] * 1000) if initial_metrics['route_length'] > 0 else 0.0
+        route_efficiency_passengers_per_km = 1000 * (final_metrics['completed_count'] / initial_metrics['route_length']) if initial_metrics['route_length'] > 0 else 0.0
+        
+        # Other components
+        demand_coverage_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
+        route_overlap_ratio = self._calculate_route_overlap_ratio()
 
         metrics = {
             # Waiting metrics (all times in seconds for consistency).
@@ -800,11 +912,20 @@ class TransitEnv(gym.Env):
             'completed_trip_passengers_count': final_metrics['completed_count'], # Count of passengers who completed trips
             'movement_time': sum(final_metrics['movement_time_dstr']), # Total in-vehicle time for completed/traveling passengers (seconds)
             'total_travel_time': sum(final_metrics['travel_time_dstr']), # Total travel time for completed/traveling passengers (seconds)
-
+            
+            # per passenger averages
+            'avg_wait_time': avg_wait_time_minutes * 60, # Average wait time per passenger (seconds)
+            'avg_movement_time': avg_movement_time_minutes * 60, # Average in-vehicle time per passenger (seconds)
+            
             # Data collected (raw distributions in seconds).
             'waiting_time_dstr': final_metrics['waiting_time_dstr'], # Waiting time distribution for all passengers (seconds)
             'movement_time_dstr': final_metrics['movement_time_dstr'], # In-vehicle time distribution for completed/traveling passengers (seconds)
             'travel_time_dstr': final_metrics['travel_time_dstr'], # Total travel time distribution for completed/traveling passengers (seconds)
+            
+            # Reward components
+            'demand_coverage': demand_coverage_pct, # Percentage of demand that boarded buses (onboarded/wanting)
+            'avg_travel_time': avg_travel_time_minutes * 60, # Average travel time per passenger (seconds)
+            'route_overlap_ratio': route_overlap_ratio, # Ratio of overlapped segments [0-1]
 
             # Route metrics.
             'route_length': initial_metrics['route_length'], # Route length (meters)
@@ -815,18 +936,6 @@ class TransitEnv(gym.Env):
             'route_efficiency': route_efficiency_passengers_per_km, # Passengers completed per km of route (passengers/km)
         }
 
-        # pending_count = len(handler.pending_passengers)
-        # end_of_sim_onboarded = final_metrics['total_onboarded_count'] - final_metrics['completed_count'] # Still on board.
-        # total_validation = pending_count + final_metrics['waiting_count_sim_end'] + end_of_sim_onboarded + final_metrics['completed_count']
-        # # Validation (wanting to onboard at the start of the sim) must be = (pending + waiting + onboarded + completed) at the end of the sim.
-        # print("Validation:")
-        # print(f"\tWanting to onboard at the start of the sim: {initial_metrics['wanting_to_onboard']}")
-        # print(f"\tPending at end of sim: {pending_count}")
-        # print(f"\tWaiting at end of sim: {final_metrics['waiting_count_sim_end']}")
-        # print(f"\tOnboarded at end of sim: {end_of_sim_onboarded}")
-        # print(f"\tCompleted at end of sim: {final_metrics['completed_count']}")
-        # print(f"\tTotal (pending + waiting + onboarded + completed): {total_validation}")
-
         if print_metrics:
             print("\n" + "="*70)
             print("SIMULATION METRICS")
@@ -834,7 +943,7 @@ class TransitEnv(gym.Env):
             
             # Route Information
             print("\nROUTE INFORMATION:")
-            print(f"   Route Path:               {' → '.join(current_path_str)}")
+            print(f"   Current Route:               {' → '.join(current_route_str)}")
             print(f"   Route Length:             {metrics['route_length']/1000:.2f} km")
             print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.1f} km/h)")
             print(f"   Bus Utilization:          {metrics['bus_utilization']:.1f}%")
@@ -896,44 +1005,44 @@ class TransitEnv(gym.Env):
         
         pass
 
-    def compute_reward(self, sim_result: Dict[str, int]) -> float:
+    def compute_reward(self, sim_result: Dict[str, int], action_signals: Dict[str, bool]) -> float:
         """
-        ---------
-        New (after multi-route pivot):
-        ---------
-        1. Penalty: 
-           1.1 Overlap between routes
-
-        Demand served. 
-            - Partial routes wont serve the full demand.
-        ---------
-
-        Passenger Travel Efficiency Focused 
-    
-        reward = β₀ × service_rate - β₁ × (avg_wait_time / max_wait_time) + β₂ × route_efficiency + β₃ × bus_utilization
+        Design routes that serve the full demand (100% coverage) with high passenger travel efficiency.
+        In addition to route performance, we will use some components to help the agent design better routes i.e., complete routes, minimal overlaps.
         
-        where, components:
-        - service_rate: % of passengers who completed their trips (0-100)
-            - Rewards routes that actually complete passenger trips (encourages connecting high-demand O-D pairs)
-            - Prevents low-demand route hacking
-        - avg_wait_time: Average waiting time per passenger (seconds)
-            - Penalizes routes with long passenger wait times (improves passenger experience quality)
-            - max_wait_time: Normalization constant for wait time penalty (1800s = 30min)
+        ---------
+        Encourage: 
+            1. Higher demand coverage. 
+            
+        Penalize: 
+           1. Total travel time (in-vehicle time + wait time) i.e., we want higher passenger travel efficiency.
+           2. Overlap between routes: some minimal overlaps are necessary for transfers (and 100% demand coverage)
+              but high overlaps mean duplication of service (waste of resources).
+           2. Forced end: 
+               - Early termination: Each route should be designed upto the full max_route_length. This represents poor planning from agent.
+               - When invalid (masked) action slips through.
+
+        TODO: Should I add a final reward at the end of the episode? Based on final performace metrics?
+        
+        As of now do not care about, operator side metrics like: 
         - route_efficiency: Passengers served per km of route (passengers/km)
             - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
         - bus_utilization: Average bus capacity utilization (0-100%)
             - Forces agent to choose routes with actual demand, preventing gaming via low-demand routes
+        ---------
+    
+        reward = β₀ × demand_coverage - β₁ × travel_time - β₂ × overlap_penalty - β₃ × forced_end_penalties
         
         - Units are normalized: 
-            - service_rate: [0,100] → [0,1] (divide by 100)
-            - avg_wait_time: [0,1800s] → [0,1] (normalize by max_wait_time = 30min)
-            - route_efficiency: [0,max_route_efficiency pax/km] → [0,1] (normalize by max_route_efficiency, capped at 1.0)  
-            - bus_utilization: [0,100%] → [0,1] (divide by 100)
-            - All components now balanced on [0,1] scale for proper β coefficient weighting
-        
+            - demand_coverage: [0 to 1] (divide by 100)
+            - avg_total_travel_time: [0 to perhaps >1] (normalize by max_travel_time = 1 hour)
+            - route_overlap_ratio: [0 to 1] (normalize by max_route_length i.e., max overlap = entire route overlap)
+            - forced_end_penalty: [0 to 1] 
+                - For early termination: 1 - (current route ended at what length/ max_route_length)
+                - TODO: For invalid action: set to 1. Not done for now (the probability is very low)
         ---------
-        On normalizing the reward: 
-        - Applying the Welford Normalization to the returns, not the absolute reward values.
+        TODO: On further normalizing the reward: 
+        - Applying the Welford Normalization to the returns (not the absolute reward values).
         - Normalizing raw rewards can be a problem, example: 
             - Episode 1: Total travel time = 1000s → reward = -1000
             - Episode 100: Total travel time = 500s → reward = -500
@@ -943,110 +1052,114 @@ class TransitEnv(gym.Env):
         ---------
         Potential pitfalls: 
         1. If the rewards are too small like 0.0001, then gradients are too small to be effective.
-           This can happen because: 
-            - Route lengths are un-normalized (can be large)
-            - Total travel time can be large
-            - Since bus capacity is relatively low (~40) it can only serve a small number of passengers.
-
         2. An improper reward formulation could lead to reward hacking: 
-           Example: 
-            - Maximize reward by selecting nodes with low demand so the average travel time is low.
-           How to prevent: 
-            - Add an utilization component
+           
         ---------
-        - Since this reward is for each node extended, instead of the passengers served, we can possibly look at only new passengers served?
-        
-        - If all positive norms are 1 (perfect service, efficiency, utilization) and wait_time_norm=0 (no waiting), reward = 50 + 20 + 25 = 95.
-        - If wait_time_norm=1 (max penalty) and others are 1, reward = 95 - 30 = 65.
-        - If all norms are 0 (worst case, no service/utilization/efficiency, no wait penalty), reward = 0.
-        """
-        # Units normalized. 
-        
-        # Reward coefficients (β parameters) - all work on [0,1] normalized inputs
-        beta0 = self.config.get("beta0", 50.0)     # Service rate  
-        beta1 = self.config.get("beta1", 30.0)     # Wait time penalty  
-        beta2 = self.config.get("beta2", 20.0)     # Route efficiency  
-        beta3 = self.config.get("beta3", 25.0)     # Bus utilization (prevent reward hacking)
-        
-        # Normalization constants - TODO: These should be data-driven for the specific network
-        max_wait_time = 1800.0  # 30 minutes - based on transit service standards (should analyze actual wait time distribution)
-        max_route_efficiency = 30.0  # 20 pax/km - rough estimate (should analyze demand density and bus capacity in the network)
-        # 40 passenger bus capacity ÷ ~2 km average route length = 20 pax/km
 
-        # Extract metrics from simulation results  
-        service_rate = sim_result['service_rate']  # In percentage [0-100]
-        avg_wait_time = sim_result['avg_wait_time']  # In seconds
-        route_efficiency = sim_result['route_efficiency']  # Passengers per km
-        bus_utilization = sim_result['bus_utilization']  # In percentage [0-100]
+        Max reward:
+        - 100% demand coverage: +50
+        - 0 travel time penalty: +0  
+        - No overlaps: +0
+        - No forced ends: +0
+        → Total: +50
         
-        # Normalize all components to [0-1] scale for balanced reward components
-        service_rate_norm = service_rate / 100.0  
-        wait_time_norm = avg_wait_time / max_wait_time  
-        route_efficiency_norm = min(route_efficiency / max_route_efficiency, 1.0)
-        bus_utilization_norm = bus_utilization / 100.0  # [0-100%] → [0-1]  
+        Min reward:
+        - 0% demand coverage: +0 (If the demand coverage is 0 then perhaps routes terminated early and overlaps are low)
+        - Max travel time penalty: -30
+        - Overlap penalty: -5
+        - forced ends: -15
+        → Total: -50
         
-        # Calculate reward components (all β coefficients now work on [0-1] normalized inputs)
-        service_component = beta0 * service_rate_norm
-        wait_time_penalty = beta1 * wait_time_norm  
-        efficiency_component = beta2 * route_efficiency_norm
-        utilization_component = beta3 * bus_utilization_norm  # Prevents low-demand route hacking
+        Typical range: [-50, +50] 
+        """
         
-        # Total reward calculation
-        total_reward = service_component - wait_time_penalty + efficiency_component + utilization_component
+        BETA_0 = 50.0      # Demand coverage component (demand served)
+        BETA_1 = 30.0      # Travel time penalty (passenger efficiency)  
+        BETA_2 = 20.0      # Route overlap penalty
+        BETA_3 = 15.0      # Forced end penalty
+        MAX_TOTAL_TRAVEL_TIME = 3600.0   # 1 hour max expected travel time (seconds)
+
+        demand_coverage = sim_result['demand_coverage'] / 100.0 # Percentage [0-1] 
+        avg_travel_time = sim_result['avg_travel_time']  # Average total travel time per passenger (seconds)
+        route_overlap_ratio = sim_result['route_overlap_ratio']  # Ratio of overlapped segments [0-1]
+        
+        # Normalize components to [0-1] scale
+        demand_coverage_norm = demand_coverage # Already [0-1] from sim_result
+        avg_travel_time_norm = min(avg_travel_time / MAX_TOTAL_TRAVEL_TIME, 1.0)  # [0-1] capped at 1
+        overlap_penalty_norm = route_overlap_ratio  
+        
+        # Calculate reward components
+        demand_coverage_component = BETA_0 * demand_coverage_norm
+        travel_time_penalty = BETA_1 * avg_travel_time_norm  
+        overlap_penalty = BETA_2 * overlap_penalty_norm
+        
+        # Penalties for poor forced end
+        forced_end_penalty = 0.0
+        if action_signals['route_forced_end']:
+            # Calculate penalty based on how early the route was terminated
+            current_route_length = len(self.current_route)
+            early_termination_ratio = 1.0 - (current_route_length / self.MAX_ROUTE_LENGTH) 
+            forced_end_penalty = BETA_3 * early_termination_ratio  
+
+        # TODO: Add invalid action penalty
+
+        total_reward = (demand_coverage_component - travel_time_penalty - overlap_penalty - forced_end_penalty)
         
         print(f"Total reward: {total_reward:.2f}")
-        print(f"\tService rate component: {service_component:.2f} (β₀={beta0} × {service_rate:.1f}%)")
-        print(f"\tWait time penalty: -{wait_time_penalty:.2f} (β₁={beta1} × {avg_wait_time:.0f}s/{max_wait_time:.0f}s)")
-        print(f"\tRoute efficiency component: {efficiency_component:.2f} (β₂={beta2} × {route_efficiency:.2f} pax/km)")
-        print(f"\tBus utilization component: {utilization_component:.2f} (β₃={beta3} × {bus_utilization:.1f}%)")
+        print(f"\tDemand coverage component: +{demand_coverage_component:.2f} (β₀={BETA_0} × {demand_coverage:.1f}%)")
+        print(f"\tTravel time penalty: -{travel_time_penalty:.2f} (β₁={BETA_1} × {avg_travel_time:.0f}s)")
+        print(f"\tOverlap penalty: -{overlap_penalty:.2f} (β₂={BETA_2} × {route_overlap_ratio:.3f})")
+        print(f"\tForced end penalty: -{forced_end_penalty:.2f} (β₃={BETA_3} × early_termination_ratio)")
         
         return total_reward    
 
-    def step(self, action: str) -> Tuple[Any, float, bool, Dict[str, Any]]:
+    def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         """
-        Return (obs, reward, terminated, info).
+        Return (obs, reward, route_done, ep_done, info).
         Run the simulation on the current route and get metrics.
 
-        Episode termination conditions: 
-            - Max path length reached. Max path length is also the number of steps in the episode.   
+        Two-tier termination system:
+            - route_done: Current route is completed (max length reached or no valid moves)
+            - ep_done: Episode is completed (all NUM_ROUTES routes built)
         """
 
-        # 1. extend the path first
+        # 1. Extend the current route
         action_node = self.idx_to_node[action]
-        self.current_path = [str(node) for node in self.current_path] + [action_node]
-        print(f"Current path: {self.current_path}")
+        self.current_route = [str(node) for node in self.current_route] + [action_node]
+        print(f"Route {self.current_route_index} extended: {self.current_route}")
 
         # 2. Build_world needs to happen every step.
         # i.e., add the network and the classified demand (bus vs car).
         self.world = self.build_world(self.config.get("network"))
         
-        # 3. spawn necessary buses, and set their routes.
-        self._apply_action()
+        # 3. spawn necessary buses, set routes, and handle route completion
+        action_signals = self._apply_action()
         
         # 4. Run the full simulation upto horizon end.
         sim_result = self._step_until(self.horizon)
         
-        # 5. Compute reward
-        reward = self.compute_reward(sim_result)
+        # 5. Compute reward with termination signals
+        reward = self.compute_reward(sim_result, action_signals)
         
-        # 6. Check termination
-        terminated = len(self.current_path) >= self.MAX_PATH_LENGTH
+        # 6. Extract done signals from _apply_action
+        route_done = action_signals['route_completed'] or action_signals['route_forced_end']
+        ep_done = action_signals['ep_done']
 
-        return self._get_state(), reward, terminated, {'sim_result': sim_result}
+        return self._get_state(), reward, route_done, ep_done, {'sim_result': sim_result, 'action_signals': action_signals}
     
     def _get_valid_indices(self) -> list:
         """
         For a given frontier node, get the indices of valid next nodes.
         - When this is called, the action has not yet been applied i.e. current_path does not have the action attached.
         """
-        frontier = self.current_path[-1]
-        path_set = set(self.current_path)  # O(1) lookup
+        frontier = self.current_route[-1]
+        route_set = set(self.current_route)  # O(1) lookup
 
         # 1. Get all neighbors of frontier (with safe lookup)
         valid_neighbors = self.adj.get(frontier, set()) 
         
         # 2. Remove nodes that are already in the path
-        valid_neighbors = valid_neighbors - path_set  
+        valid_neighbors = valid_neighbors - route_set  
 
         # 3. Get the indices of valid next nodes
         valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
@@ -1058,5 +1171,5 @@ class TransitEnv(gym.Env):
         - Episode simulation gif.
         """
         output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
-        plot_network_demand_and_path(self.world, self.current_path, output_loc)
+        plot_network_demand_and_path(self.world, self.current_route, output_loc)O
 

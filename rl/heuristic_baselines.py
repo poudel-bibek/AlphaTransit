@@ -20,7 +20,7 @@ Heuristic Baselines:
 ---------------
 
 These baselines still need to respect constraints such as: 
-- MAX_PATH_LENGTH
+- MAX_ROUTE_LENGTH
 - SERVICE_FREQUENCY (This will be taken care by the sim bus handler)
 - alpha (facor to determine the % of demand allocated to bus)
 - For each baseline, we need to form a path and then simulate to get results.
@@ -292,7 +292,7 @@ class RandomBaseline:
         Step 3: Repeat step 2 until reaching the max path length.
         """
         current_path = list(self.env.current_path)  # Make a copy
-        while len(current_path) < self.env.MAX_PATH_LENGTH:
+        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
 
             # Get current frontier
             frontier = current_path[-1]
@@ -333,7 +333,7 @@ class GreedyDemandCoverage:
         Step 3: Repeat step 2 until reaching the max path length.
         """
         current_path = list(self.env.current_path) # Make a copy
-        while len(current_path) < self.env.MAX_PATH_LENGTH:
+        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
 
             # Get current frontier
             frontier = current_path[-1]
@@ -395,7 +395,7 @@ class GreedyShortestPath:
         - This may not result in overall shortest path but is a greedy selection of shortest path.
         """
         current_path = list(self.env.current_path)  # Make a copy
-        while len(current_path) < self.env.MAX_PATH_LENGTH:
+        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
 
             # Get current frontier
             frontier = current_path[-1]
@@ -450,7 +450,7 @@ class GreedyRewardMaximization:
         """
         current_path = list(self.env.current_path)  # Make a copy
         original_path = self.env.current_path[:]  # Save original path
-        while len(current_path) < self.env.MAX_PATH_LENGTH:
+        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
 
             # Get current frontier
             frontier = current_path[-1]
