@@ -19,11 +19,11 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     resolved_max_edges = num_edges_obs if max_edges is None else max_edges
 
     # Steps
-    steps_left = float(state["steps_left"][0])
-    steps_taken = len(self.current_path) - 1
+    route_progress = float(state["route_progress"][0])  # Current route progress
+    steps_taken = len(self.current_route) - 1
     print(f"\n=== State Summary ===")
-    print(f"Current path: {self.current_path}")
-    print(f"Steps taken / max: {steps_taken} / {self.MAX_ROUTE_LENGTH} (steps_left_norm={steps_left:.3f})")
+    print(f"Current route: {self.current_route}")
+    print(f"Steps taken / max: {steps_taken} / {self.MAX_ROUTE_LENGTH} (route_progress={route_progress:.3f})")
 
     # Node features
     feature_names = [

@@ -52,7 +52,7 @@ class TransitEnv(gym.Env):
         self.all_routes = []           # List of completed routes [[route1], [route2], ...]
         self.current_route = []        # Currently active route being built
         self.current_route_index = 0   # Index of route currently being built (0 to NUM_ROUTES-1)
-        self.N_NODE_FEATURES = 9
+        self.N_NODE_FEATURES = 12
         self.N_EDGE_FEATURES = 2
 
         # Lookup dicts for efficient queries:
@@ -168,25 +168,47 @@ class TransitEnv(gym.Env):
             - Remaining number of nodes to add.
         
         ##########
-        1. For each node in the network: 
-            - coordinates (x, y) - min-max normalized
-            - degree - divide by max degree in the network
-            - d_out: sum of all O-D flows emanating from node i  - divide by max demand in the network
-            - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
-            - d_out_path: sum of all O-D flows emanating from node i to nodes within the path - divide by max demand in the network   
-                - "If I add node i to the path, how much demand from i could be served by the existing path nodes?"
-                - Ridership potential of each node i.e., if I add this node 5 to the path, how many passengers who start from node 5 want to go to nodes that are already in the current path?
-            - d_in_path: sum of all O-D flows arriving at node i from nodes within the path - divide by max demand in the network
-                - "If I add node i to the path, how much demand from existing path nodes could be reach node i?"
-                - Attractiveness of the node i.e., if I add this node 5 to the path, how many passengers from the current path nodes want to go to node 5?
-            - in_path_k flag: binary (1 if node is in the path, else 0)
+        1. For each node in the network (12): 
+            Static (5): 
+                - coordinates (x, y) - min-max normalized
+                - degree - divide by max degree in the network
+                - d_out: sum of all O-D flows emanating from node i  - divide by max demand in the network
+                - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
+            
+            Dynamic:
+                - Related to demand (4):  
+                    
+                    - d_out_current_route: sum of all O-D flows emanating from node i to nodes within the current route - divide by max demand in the network
+                        - "If I add node i to the current route, how much demand from i could be served by the current route nodes?"
 
-            - is_valid_next: binary (1 if adjacent to current frontier and not in path, else 0)
-                - inform the policy about the validity of next nodes to select
-                - Not allowed if:
-                    - Node is already in the path.
-                    - Node is not adjacent to the current frontier.
-        2. Edges: 
+                    - d_in_current_route: sum of all O-D flows arriving at node i from nodes within the current route - divide by max demand in the network
+                        - "If I add node i to the current route, how much demand from nodes in current route could be reach node i?"
+
+                    - d_out_completed_routes: sum of all O-D flows emanating from node i to nodes within all completed routes - divide by max demand in the network   
+                        - "If I add node i to the current route, how much demand from i could be served by the completed route nodes?"
+                        - Ridership potential of each node i.e., if I add this node 5 to the current route, how many passengers who start from node 5 want to go to nodes that are already in the completed routes?
+                    
+                    - d_in_completed_routes: sum of all O-D flows arriving at node i from nodes within all completed routes - divide by max demand in the network
+                        - "If I add node i to the current route, how much demand from nodes in completed routes could be reach node i?"
+                         - Attractiveness of the node i.e., if I add this node 5 to the current route, how many passengers from the completed route nodes want to go to node 5?
+                
+                - Related to route:
+                    - Related to current route (2):
+
+                        - in_current_route_flag: binary (1 if node is in the current route, else 0). 
+                        
+                        - is_valid_next: binary (1 if adjacent to current frontier and not in current route, else 0)
+                            - inform the policy about the validity of next nodes to select
+                            - Not allowed if:
+                                - Node is already in the current route.
+                                - Node is not adjacent to the current frontier.
+
+                    - Related to completed routes (1):
+                        - in_completed_routes_flag: A single node can be in multiple routes.
+                            - A fraction to indicate how many completed routes the node is in. 0.0 = not in any completed routes. 1.0 = in all completed routes.
+                            - a value like 1/3 would mean that this is a potential node to expand as a transfer node.
+
+        2. For each edge in the network: 
             - Edge index (to indicate connectivity):
                 - For policy networks like GATv2, edge index is required. edge_index = a compact list of directed edges using node indices.
                 (https://pytorch-geometric.readthedocs.io/en/2.6.1/generated/torch_geometric.nn.conv.GATv2Conv.html)
@@ -196,12 +218,18 @@ class TransitEnv(gym.Env):
                     - if edges 1→5, 5→1, 5→8, and 8→5 then edge_index: src: [0,1,1,2], dst: [1,0,2,1]
             - Edge features:
                 - Since the policy network is a GAT, edge features can be provided.
-                - Edge features:
+                - Edge features (2):
                     - length
                     - free_flow_speed (u)
 
-        3. Steps left until max_route_length is reached. (Constraint)
+        3. Episode completion (self.NUM_ROUTES):
+            - For example if self.NUM_ROUTES = 3,[0.5, 0.9, 0.1] means route 1 was terminated after 50% completion, route 2 90% and current route 3 is 10% complete.
+            - Fractions indicate the completion of each route i.e., steps completed upto max_route_length.
         
+        - Total: 12 + 2 + 3 = 17
+        - The edge features injected at each GAT layer
+        - Episode completion features injected at the readout layer.
+
         Notes: 
         - d_out_path and d_in_path are "path-aware" demand service vectors
         - How to enforce the action mask?
@@ -266,7 +294,7 @@ class TransitEnv(gym.Env):
             "node_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_nodes, self.N_NODE_FEATURES), dtype=np.float32),  # +1 for is_valid_next
             "edge_index": gym.spaces.Box(low=0, high=self.n_nodes - 1, shape=(2, self.n_edges), dtype=np.int64), # int64 so torch.from_numpy(...).long() matches PyG expectations
             "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_edges, self.N_EDGE_FEATURES), dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
-            "steps_left": gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32), # Normalized to 0-1
+            "route_progress": gym.spaces.Box(low=0.0, high=1.0, shape=(self.NUM_ROUTES,), dtype=np.float32), # Normalized to 0-1
         })
         
     @property
@@ -302,26 +330,39 @@ class TransitEnv(gym.Env):
         """
         return gym.spaces.Discrete(self.n_nodes)
     
-    def _initialize_current_route(self, use_random: bool = False) -> list:
+    def _initialize_current_route(self, use_random: bool = False, avoid_completed_routes: bool = True) -> list:
         """
-        Various strategies can be used. 
-        Current one: Initialize at the highest demand node i.e., node from which highest demand emanates.
-        Other option: random i.e., pick a random node.
+        Initialize route design at: 
+        - The highest demand node i.e., node from which highest demand emanates.
+        - Random node.
+        Option to avoid starting from nodes that are already present in the completed routes.
         """
-
+        
+        all_nodes = list(self.demand_df_cached["orig"].unique())
+        if avoid_completed_routes:
+            choice_nodes = [node for node in all_nodes if node not in self.all_routes]
+        else:
+            choice_nodes = all_nodes
+        
         if use_random:
-            choice = random.choice(list(self.demand_df_cached["orig"].unique()))
+            choice = random.choice(choice_nodes)
             print(f"Initializing route randomly at node: {choice}")
             return [choice]
             
         else: 
+            # Rank all nodes by highest demand emanating from them (total volume leaving each node)
             demand_df_grouped = self.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
-            highest_demand_node = demand_df_grouped.loc[demand_df_grouped["volume"].idxmax()]
-            choice = highest_demand_node["orig"]
-            print(f"Initializing route at node: {choice}")
-            return [choice]
+            demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
+            
+            # Choose the highest ranking node from available choice_nodes
+            for _, row in demand_df_ranked.iterrows():
+                candidate_node = row["orig"]
+                if candidate_node in choice_nodes:
+                    choice = candidate_node
+                    print(f"Initializing route at highest available demand node: {choice}")
+                    return [choice]
 
-    def _allocate_demand_by_service(self, world: World, demand_csv: str, current_path: list = None, method: str = "volume") -> None:
+    def _allocate_demand_by_service(self, world: World, method: str = "volume") -> None:
         """
         Assigns mode-specific demands based on the current bus route:
         - for OD pairs served by the route (both O and D on route)
@@ -356,7 +397,7 @@ class TransitEnv(gym.Env):
         print(f"Loading {len(demand_df)} demand records...")  
         
         # current_path will have at least one node (where it starts) i.e., it wont have O-D pair then.
-        current_route_str = [str(node) for node in current_path] # ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] 
+        current_route_str = [str(node) for node in self.current_route] # ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] 
         total_demand = 0 
         bus_demand = 0 
         car_demand = 0 
@@ -389,41 +430,6 @@ class TransitEnv(gym.Env):
         # Not used right now for the sake of data standardization.
         # elif method == "flow":
         #     for _, row in demand_df.iterrows():
-            
-        #         orig, dest = str(row["orig"]), str(row["dest"])
-        #         start_t, end_t, flow_rate = row["start_t"], row["end_t"], row["q"]
-        #         if self._is_od_served(orig, dest, current_route_str):
-        #             bus_demand += flow_rate * self.alpha
-        #             car_demand += flow_rate * (1 - self.alpha)
-        #             total_demand += flow_rate
-
-        #             # Add demand to the world:
-        #             world.adddemand(orig=orig, 
-        #                             dest=dest, 
-        #                             t_start=start_t, 
-        #                             t_end=end_t, 
-        #                             flow=flow_rate * (1 - self.alpha), 
-        #                             mode="vehicle")
-
-        #             world.adddemand(orig=orig, 
-        #                             dest=dest, 
-        #                             t_start=start_t, 
-        #                             t_end=end_t, 
-        #                             flow=flow_rate * self.alpha, 
-        #                             mode="bus_passenger")
-        #         else: 
-        #             car_demand += flow_rate
-        #             total_demand += flow_rate
-
-        #             # Add demand to the world:
-        #             world.adddemand(orig=orig, 
-        #                             dest=dest, 
-        #                             t_start=start_t, 
-        #                             t_end=end_t, 
-        #                             flow=flow_rate, 
-        #                             mode="vehicle")
-        else:
-            raise ValueError(f"Invalid method: {method}")
 
         print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
 
@@ -470,34 +476,72 @@ class TransitEnv(gym.Env):
         node_features[:, 3] = self.demand_out / self.max_demand # d_out
         node_features[:, 4] = self.demand_in / self.max_demand # d_in
         
-        # Dymanic node features (5-6, path-aware demands):
-        path_indices = np.array([self.node_to_idx[node] for node in self.current_route]) # Set of nodes in the path
-        demand_out_path = self.od_matrix[:, path_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
-        demand_in_path = self.od_matrix[path_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
+        # Dymanic node features (5-6, route-aware demands to current route):
+        current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route]) # Set of nodes in the path
+        demand_out_current_route = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
+        demand_in_current_route = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
+        node_features[:, 5] = demand_out_current_route / self.max_demand # d_out_current_route
+        node_features[:, 6] = demand_in_current_route / self.max_demand # d_in_current_route
         
-        node_features[:, 5] = demand_out_path / self.max_demand # d_out_path
-        node_features[:, 6] = demand_in_path / self.max_demand # d_in_path
+        # Dynamic node features (7-8, route-aware demands to completed routes)
+        # NOTE: If the node is not connected to the completed routes, it cannot be served yet. So would be 0.
+        completed_routes_indices_set = set()  # Unique indices across all completed routes
+        for route in self.all_routes:
+            completed_routes_indices_set.update(self.node_to_idx[node] for node in route)  # Generator for efficiency, no list/array needed
+
+        completed_routes_indices = np.array(list(completed_routes_indices_set)) if completed_routes_indices_set else np.array([])
+
+        demand_out_completed_routes = self.od_matrix[:, completed_routes_indices].sum(axis=1) if len(completed_routes_indices) > 0 else np.zeros(self.n_nodes)  # Sum of all O-D flows emanating from node i to nodes within the path
+        demand_in_completed_routes = self.od_matrix[completed_routes_indices, :].sum(axis=0) if len(completed_routes_indices) > 0 else np.zeros(self.n_nodes)  # Sum of all O-D flows arriving at node i from nodes within the path
+
+        # Apply connectivity check (reuse existing current_route_indices from earlier in _get_state)
+        current_route_indices_set = set(current_route_indices)  # O(N) but N small; indices are ints
+        # If current route overlaps with any completed indices, it means the current route is connected to completed routes.
+        # In this case, demands to/from completed are meaningful (can be served via transfers).
+        # Otherwise, set to 0 across all nodes (no service to completed possible yet).
+        is_connected = bool(current_route_indices_set & completed_routes_indices_set)
+        if not is_connected:
+            demand_out_completed_routes = np.zeros(self.n_nodes)
+            demand_in_completed_routes = np.zeros(self.n_nodes)
+
+        node_features[:, 7] = demand_out_completed_routes / self.max_demand # d_out_completed_routes
+        node_features[:, 8] = demand_in_completed_routes / self.max_demand # d_in_completed_routes
+
+        # Node features that are Binary flags/ fractions (9-11):
+        # 9: in_current_route flag
+        node_features[current_route_indices, 9] = 1.0 
         
-        # Node features that are Binary flags (7-8):
-        node_features[path_indices, 7] = 1.0 # in_path flag
-        
+        # 10: is_valid_next flag
         frontier = self.current_route[-1]
         route_set = set(self.current_route)  # O(1) lookup
         valid_neighbors = self.adj.get(frontier, set()) - route_set  # Set difference with safe lookup
         valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
-        node_features[valid_indices, 8] = 1.0  # is_valid_next
+        if len(valid_indices) > 0:
+            node_features[valid_indices, 10] = 1.0 
+
+        # 11: in_completed_routes flag
+        # Expressed as fraction.
+        completed_count_per_node = np.zeros(self.n_nodes, dtype=np.float32)
+        for route in self.all_routes:
+            for node in route:
+                idx = self.node_to_idx[node]
+                completed_count_per_node[idx] += 1.0
+
+        node_features[:, 11] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
 
         # Edge index and edge features dont dynamically change. Already set in __init__.
-        # Steps left:
-        steps_taken = len(self.current_route) - 1  # -1 because we start with 1 node
-        steps_left_norm = 1.0 - (steps_taken / self.MAX_ROUTE_LENGTH)
+        # Route progress for self.NUM_ROUTES:
+        route_progress = np.zeros(self.NUM_ROUTES, dtype=np.float32)
+        for i, route in enumerate(self.all_routes):
+            route_progress[i] = len(route) / self.MAX_ROUTE_LENGTH
+        route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
         
         # Return the state as a dict
         state: Dict[str, Any] = {
             "node_features": node_features,
             "edge_index": self.edge_index,
             "edge_features": self.edge_features,
-            "steps_left": np.array([steps_left_norm], dtype=np.float32)
+            "route_progress": route_progress
         }
         
         return state
@@ -506,6 +550,9 @@ class TransitEnv(gym.Env):
         """
         TODO: Can I just sample the action space and get a random initial state?
         """
+
+        self.all_routes = []           # Reset completed routes
+        self.current_route_index = 0   # Start with first route
         self.current_route = self._initialize_current_route(use_random=self.random_path_init)
         state = self._get_state() # initial state
         return state, {}
@@ -554,9 +601,7 @@ class TransitEnv(gym.Env):
 
         # Required for adding bus passenger demand via world.adddemand(..., mode="bus_passenger")
         world.set_bus_handler(BusHandler)
-
-        # Size of the demand is required in observation space.
-        world = self._allocate_demand_by_service(world, demand_csv, current_path=self.current_route)
+        
         return world
         
     def _apply_action(self) -> Dict[str, bool]:
@@ -636,6 +681,12 @@ class TransitEnv(gym.Env):
         # Print bus summary AFTER all buses are created
         all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
         print(f"\nTotal buses in simulation: {len(all_buses)} - {[b.name for b in all_buses]}")
+        
+        # Build transit graph AFTER all buses are created
+        self.world.bus_handler.build_transit_graph()
+        
+        # Add demand AFTER buses and transit graph are ready
+        self.world = self._allocate_demand_by_service(self.world)
         
         return {
             'route_completed': route_completed,
@@ -1029,6 +1080,8 @@ class TransitEnv(gym.Env):
             - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
         - bus_utilization: Average bus capacity utilization (0-100%)
             - Forces agent to choose routes with actual demand, preventing gaming via low-demand routes
+        - fleet cost: 
+            - Some multiple of len(all_routes) * SERVICE_FREQUENCY 
         ---------
     
         reward = β₀ × demand_coverage - β₁ × travel_time - β₂ × overlap_penalty - β₃ × forced_end_penalties
@@ -1119,8 +1172,11 @@ class TransitEnv(gym.Env):
         Run the simulation on the current route and get metrics.
 
         Two-tier termination system:
-            - route_done: Current route is completed (max length reached or no valid moves)
-            - ep_done: Episode is completed (all NUM_ROUTES routes built)
+            - route_done: Current route is completed (max length reached or no valid moves). Just used for logging. 
+            - ep_done: Episode is completed (all NUM_ROUTES routes built). True episode termination signal.
+
+        Truncation: 
+         - This does not indicate a truncation of the episode. It is a truncation of current route. Just used for logging.
         """
 
         # 1. Extend the current route
@@ -1141,11 +1197,12 @@ class TransitEnv(gym.Env):
         # 5. Compute reward with termination signals
         reward = self.compute_reward(sim_result, action_signals)
         
-        # 6. Extract done signals from _apply_action
-        route_done = action_signals['route_completed'] or action_signals['route_forced_end']
-        ep_done = action_signals['ep_done']
+        # 6. Extract done signals from _apply_action  
+        terminated = action_signals['ep_done']  # Episode completely finished
+        sim_result['route_completed'] = action_signals['route_completed']  # Route completed gracefully 
+        sim_result['route_forced_end'] = action_signals['route_forced_end']  # Route got stuck (bad truncation)
 
-        return self._get_state(), reward, route_done, ep_done, {'sim_result': sim_result, 'action_signals': action_signals}
+        return self._get_state(), reward, terminated, None, sim_result # Truncation is not used.
     
     def _get_valid_indices(self) -> list:
         """
@@ -1171,5 +1228,5 @@ class TransitEnv(gym.Env):
         - Episode simulation gif.
         """
         output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
-        plot_network_demand_and_path(self.world, self.current_route, output_loc)O
+        plot_network_demand_and_path(self.world, self.current_route, output_loc)
 

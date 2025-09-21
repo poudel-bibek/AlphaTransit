@@ -39,10 +39,10 @@ class CachedPyGConverter:
         
         # Only create tensors for dynamic components  
         x = torch.from_numpy(state["node_features"]).float().to(self.device)
-        steps_left = torch.from_numpy(state["steps_left"]).float().to(self.device)
+        route_progress = torch.from_numpy(state["route_progress"]).float().to(self.device)
         
         data = Data(x=x, edge_index=self._cached_edge_index, edge_attr=self._cached_edge_attr)
-        data.steps_left = steps_left
+        data.route_progress = route_progress
         return data
 
 # def state_to_pyg(state: Dict[str, Any]) -> Data:
@@ -187,10 +187,7 @@ def train(config: Dict[str, Any]) -> None:
     
     # PyG converter
     pyg_converter = CachedPyGConverter(config["device"])
-
-    episode = 0
-    steps_elapsed = 0
-    update_count = 0
+    episode, steps_elapsed, update_count = 0, 0, 0
     
     while steps_elapsed < config["total_timesteps"]:
         episode += 1
@@ -202,45 +199,37 @@ def train(config: Dict[str, Any]) -> None:
         terminated = False
         bootstrap_value = None  # Initialize outside loop
 
-        while True:
+        while not terminated:
             data = pyg_converter.convert(state)
             print("\nEpisode data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
-
-            batch = Batch.from_data_list([data])  # Data already on device
-            steps_left = batch.steps_left
-            valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
-            print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
             
-            if valid_indices.shape[1] == 0: # Episode is truncated.
+            batch = Batch.from_data_list([data])  # Data already on device
+            valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
 
-                # TODO: Penalty set to an arbitrary high value (hard-coded).
-                # Make it configurable based on how bad of the truncation was.
-                truncation_penalty = 0.0
-                reward = truncation_penalty
-                _, _, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices, truncated=True)
-                bootstrap_value = value_tensor.cpu().item()
-
-                if len(ppo.memory) > 0:
-                    ppo.memory.rewards[-1] += truncation_penalty  # Add penalty to the reward of the action that led here
-                print(f"\nEpisode truncated - bootstrap value: {bootstrap_value}\n")
-                break
+            print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
 
             with torch.no_grad():
-                action_tensor, log_prob_tensor, value_tensor = model.act(batch, steps_left, deterministic=False, valid_indices=valid_indices)
+                action_tensor, log_prob_tensor, value_tensor = model.act(batch, 
+                                                                       deterministic=False, 
+                                                                       valid_indices=valid_indices,
+                                                                       truncated=False)
                 print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
                 print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
                 print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
             
             action = action_tensor.cpu().item() 
-            next_state, reward, terminated, _ = env.step(action)
-            
+            next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
+
+            episode_steps += 1
+            steps_elapsed += 1
+
             # Store transition
             store_data = Data(
                 x=data.x.cpu(),
                 edge_index=data.edge_index.cpu(),
                 edge_attr=data.edge_attr.cpu(),
-                steps_left=data.steps_left.cpu()
+                route_progress=data.route_progress.cpu()
             )
             
             ppo.memory.store({
@@ -249,33 +238,30 @@ def train(config: Dict[str, Any]) -> None:
                 'reward': reward,
                 'value': value_tensor.cpu().item(),
                 'log_prob': log_prob_tensor.cpu().item(),
-                'terminated': terminated,  # Natural end    
+                'terminated': terminated,  # Episode end signal from env
                 'valid_indices': valid_indices.squeeze(0).cpu().tolist()  # Flatten to list[int] (single env)
             })
                     
             state = next_state
-            episode_steps += 1
             
-            if terminated:
-                bootstrap_value = 0.0
-                print(f"\nEpisode terminated naturally - bootstrap value: 0.0\n")
-                break
+        # Truncation is not possible. Simplified bootstrapping. 
+        bootstrap_value = 0.0
+        print(f"\nEpisode terminated naturally - bootstrap value: {bootstrap_value}\n")
 
         # only render at the end of the episode.
         env.render(training_save_dir, f"ep_{episode}.png")
 
         # Mark episode boundary with bootstrap value.
         ppo.memory.mark_episode_end(bootstrap_value)
-        steps_elapsed += episode_steps
-        episode_reward = reward # This is the final reward for the episode. 
+
+        # The reward after the entire route has been built. 
+        episode_final_reward = reward 
         # This makes sense for episodes that terminate naturally (with complete routes).
         
-        print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_reward:.2f}")
-        wandb.log({"episode_reward": episode_reward}, step=steps_elapsed)
+        print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_final_reward:.2f}")
+        wandb.log({"episode_final_reward": episode_final_reward}, step=steps_elapsed)
         
         # Update PPO when we have enough samples in memory
-        # Episodes are not divisible i.e., waits for the full episode to complete before updating.
-        # This is harmless and is actually good for GAE calculations.
         if len(ppo.memory) >= config["update_frequency"]:
             perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
             update_count += 1
@@ -286,11 +272,6 @@ def train(config: Dict[str, Any]) -> None:
 
             if update_count % config["eval_every"] == 0:
                 eval(config, policy_path, steps_elapsed, training_save_dir)
-
-    # Final update if there's remaining data in memory (Its not that meaningful)
-    # if len(ppo.memory) > 0:
-    #     perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
-    #     update_count += 1
     
 def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir: str) -> Dict[str, float]: 
     """
@@ -327,26 +308,24 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
     while not terminated:
         data = pyg_converter.convert(state)
         batch = Batch.from_data_list([data])  # Data already on device
-        steps_left = batch.steps_left
         valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
         
-        if valid_indices.shape[1] == 0:
-            print("No valid actions during evaluation, breaking early.")
-            break
-        
         with torch.no_grad():
-            action_tensor, _, _ = model.act(batch, steps_left, deterministic=True, valid_indices=valid_indices)
+            action_tensor, _, _ = model.act(batch, 
+            deterministic=True, 
+            valid_indices=valid_indices,
+            truncated=False)
  
         action = action_tensor.cpu().item()
-        next_state, reward, terminated, info = env.step(action)
+        next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
         state = next_state
-    episode_reward = reward
-    sim_result = info['sim_result']
+
+    episode_final_reward = reward
     if not config.get("wandb_off"):
         # Log the 10 
         wandb.log({
             # Final reward (after a full path has been constructed)
-            "eval/episode_reward": episode_reward, # Set to maximize in the sweep.
+            "eval/episode_final_reward": episode_final_reward, # Set to maximize in the sweep.
             "eval/route_length": sim_result['route_length'],
             "eval/service_rate": sim_result['service_rate'],
             "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
@@ -446,9 +425,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
     parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
-    parser.add_argument("--random_path_init", action="store_true", help="Initialize path randomly (omit flag for False)")
+    parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
+    
     # Constraints:
-    parser.add_argument("--num_routes", type=int, default=1, help="Number of routes")
+    parser.add_argument("--num_routes", type=int, default=3, help="Number of routes")
     parser.add_argument("--max_route_length", type=int, default=10, help="Maximum path length")
     parser.add_argument("--min_route_length", type=int, default=1, help="Minimum path length")
 
@@ -469,7 +449,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--activation", type=str, default="tanh", help="Activation function")
     parser.add_argument("--concat", type=bool, default=True, help="Concatenate attention heads")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
-    parser.add_argument("--global_dim", type=int, default=1, help="Global dimension (additional feature to the graph-level features)")
+    parser.add_argument("--global_dim", type=int, default=3, help="Global dimension (additional feature to the graph-level features)")
     
     # WandB:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")

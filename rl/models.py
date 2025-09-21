@@ -12,7 +12,7 @@ class GATV2ActorCritic(nn.Module):
     Actor-Critic with shared GATv2 features with separate actor/critic heads.
     - GATv2 processes graph-structured data (nodes, edges) to produce node embeddings, 
       which are then aggregated into a graph-level features in readout layer, where we have a fixed sized vector.
-    - The steps_left is a scalar that applies to the whole graph (global feature), which we concatentate after the graph-level features..
+    - The route_progress is a vector that applies to the whole graph (global feature), which we concatentate after the graph-level features..
     """
 
     def __init__( self, num_actions: int, **kwargs) -> None:
@@ -30,7 +30,7 @@ class GATV2ActorCritic(nn.Module):
                 num_heads: Number of attention heads for each GATv2 layer (list: [num_heads 1, num_heads 2, ...])
                 num_edge_features: edge features (int)
                 dropout: Dropout probability (float)
-                global_dim: size of steps_left (int)
+                global_dim: size of route_progress (float array)
                 activation: activation function (str: "elu", "tanh", "leaky_relu", "relu")
                 model_size: choice for model size (str: "small", "medium")
 
@@ -197,27 +197,31 @@ class GATV2ActorCritic(nn.Module):
             if i < len(self.gat_layers) - 1:
                 x = self.activation(x)
 
-        return x, batch
+        return x
 
     def _compute_dist_and_value(self, 
                                 graph_batch: Batch, 
-                                steps_left: Optional[torch.Tensor], 
                                 valid_indices: Optional[torch.Tensor]
                                 ) -> Tuple[Categorical, torch.Tensor]:
         """
         Returns a dummy action (-1) if episode is truncated. Still need to return a value in this case.
         """
         # Compute GAT features once
-        node_features, batch = self.gat_forward(graph_batch)
+        node_features = self.gat_forward(graph_batch)
+        print(f"[DEBUG] Node features - has NaN: {torch.isnan(node_features).any()}, shape: {node_features.shape}")
         
         # Use readout functions with shared node features
-        actor_features = self.actor_readout(node_features, batch, steps_left)
-        logits = self.actor_net(actor_features)
+        actor_features = self.actor_readout(node_features, graph_batch)
+        print(f"[DEBUG] Actor features - has NaN: {torch.isnan(actor_features).any()}, shape: {actor_features.shape}")
         
-        critic_features = self.critic_readout(node_features, batch, steps_left)
+        logits = self.actor_net(actor_features)
+        print(f"[DEBUG] Logits - has NaN: {torch.isnan(logits).any()}, shape: {logits.shape}")
+        
+        critic_features = self.critic_readout(node_features, graph_batch)
         values = self.critic_net(critic_features).squeeze(-1)
         
         masked_logits = self._mask_logits(logits, valid_indices)
+        print(f"[DEBUG] Masked logits - has NaN: {torch.isnan(masked_logits).any()}, shape: {masked_logits.shape}")
         dist = Categorical(logits=masked_logits)
         # print("[DEBUG] Distribution probs:\n", dist.probs)
         return dist, values
@@ -248,7 +252,7 @@ class GATV2ActorCritic(nn.Module):
         
         return conv
 
-    def actor_readout(self, node_features: torch.Tensor, batch: torch.Tensor, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def actor_readout(self, node_features: torch.Tensor, graph_batch: Batch) -> torch.Tensor:
         """
         Readout: Aggregate node embeddings into graph-level features i.e., a way to get a fixed sized vector for the graph.
         However, in this case we don't have a variable sized input (current path is embedded as node features) 
@@ -272,7 +276,7 @@ class GATV2ActorCritic(nn.Module):
                 - If we remove pooling, actor logits would be computed directly from each node's embedding. 
                 - This avoids the averaging loss, allowing better differentiation between nodes/actions.
                 - At the same time, perhaps the critic benefits from pooling, as value estimation is inherently graph-level.
-                - steps_left is a global feature (not broadcasted to each node); maybe more important to the critic.
+                - route_progress is a global feature (not broadcasted to each node); maybe more important to the critic.
             - Cons: 
                 - Changing node order changes the concatenated vector (Same graph, different node order = different results). 
                     - However, for a given graph, the node order is fixed.
@@ -283,38 +287,51 @@ class GATV2ActorCritic(nn.Module):
         """
         # 1. Global mean pooling
         # graph_features = global_mean_pool(node_features, batch)
-        # graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1) # Concatenate global features (steps_left)
+        # graph_features = torch.cat([graph_features, route_progress.view(-1, 1)], dim=1) # Concatenate global features (route_progress)
         
         # 3. No pooling.
         # Flatten all node features per graph
-        batch_size = len(torch.unique(batch))  # Number of graphs in batch
+        batch_size = len(torch.unique(graph_batch.batch))  # Number of graphs in batch
         emb_dim = node_features.shape[1]
         num_nodes = node_features.shape[0] // batch_size  # Assumes fixed num_nodes per graph
         # Reshape to [batch_size, num_nodes * emb_dim]
         graph_features = node_features.view(batch_size, num_nodes * emb_dim)
-        # print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
-        # Concatenate global features (steps_left)
-        graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
-        # print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
+        print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
+
+        route_progress = graph_batch.route_progress
+        # For a single item batch, its shape is [NUM_ROUTES], so we add a batch dimension.
+        # For a multi-item batch, its shape is already [batch_size, NUM_ROUTES], so this does nothing.
+        if route_progress.dim() == 1:
+            route_progress = route_progress.unsqueeze(0)
+        print(f"[DEBUG] Route progress shape: {route_progress.shape}")
+
+        # Concatenate global features (route_progress) 
+        graph_features = torch.cat([graph_features, route_progress], dim=1)
+        print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
 
         return graph_features
 
-    def critic_readout(self, node_features: torch.Tensor, batch: torch.Tensor, steps_left: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def critic_readout(self, node_features: torch.Tensor, graph_batch: Batch) -> torch.Tensor:
         """
         Critic readout: Global mean pooling for graph-level value estimation.
         """
         # 1. Global mean pooling 
-        graph_features = global_mean_pool(node_features, batch)
-        # print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
+        graph_features = global_mean_pool(node_features, graph_batch.batch)
         
-        # Concatenate global features (steps_left)
-        graph_features = torch.cat([graph_features, steps_left.view(-1, 1)], dim=1)
-        # print(f"[DEBUG] Critic graph features shape after concatenation: {graph_features.shape}")
+        print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
+        
+        route_progress = graph_batch.route_progress
+        if route_progress.dim() == 1:
+            route_progress = route_progress.unsqueeze(0)
+        print(f"[DEBUG] Route progress shape: {route_progress.shape}")
+
+        # Concatenate global features (route_progress)
+        graph_features = torch.cat([graph_features, route_progress], dim=1)
+        print(f"[DEBUG] Critic graph features shape after concatenation: {graph_features.shape}")
 
         return graph_features
     
     def act(self, graph_batch: Batch, 
-            steps_left: Optional[torch.Tensor] = None, 
             deterministic: bool = False, 
             valid_indices: Optional[torch.Tensor] = None, 
             truncated: bool = False
@@ -328,16 +345,16 @@ class GATV2ActorCritic(nn.Module):
             values: Value estimates
         """
         
-        # Handle truncation
-        if truncated:
-            node_features, batch = self.gat_forward(graph_batch)
-            critic_features = self.critic_readout(node_features, batch, steps_left)
-            values = self.critic_net(critic_features).squeeze(-1)
-            dummy_action = torch.tensor([-1], device=graph_batch.x.device)
-            dummy_log_prob = torch.tensor([0.0], device=graph_batch.x.device)
-            return dummy_action, dummy_log_prob, values
+        # # Handle truncation
+        # if truncated:
+        #     node_features = self.gat_forward(graph_batch)
+        #     critic_features = self.critic_readout(node_features, graph_batch)
+        #     values = self.critic_net(critic_features).squeeze(-1)
+        #     dummy_action = torch.tensor([-1], device=graph_batch.x.device)
+        #     dummy_log_prob = torch.tensor([0.0], device=graph_batch.x.device)
+        #     return dummy_action, dummy_log_prob, values
         
-        dist, values = self._compute_dist_and_value(graph_batch, steps_left, valid_indices)
+        dist, values = self._compute_dist_and_value(graph_batch, valid_indices)
         
         if deterministic:
             actions = dist.logits.argmax(-1)
@@ -350,7 +367,7 @@ class GATV2ActorCritic(nn.Module):
         # print(f"[DEBUG] Log probs: {log_probs}")
         return actions, log_probs, values
     
-    def evaluate(self, graph_batch: Batch, actions: torch.Tensor, steps_left: Optional[torch.Tensor] = None, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def evaluate(self, graph_batch: Batch, actions: torch.Tensor, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute log-probs, entropy, and values for PPO loss.
         
@@ -360,7 +377,7 @@ class GATV2ActorCritic(nn.Module):
             values: Value estimates
         """
         
-        dist, values = self._compute_dist_and_value(graph_batch, steps_left, valid_indices)
+        dist, values = self._compute_dist_and_value(graph_batch, valid_indices)
         
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
