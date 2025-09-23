@@ -71,6 +71,9 @@ def create_initial_network_plot(env, config, img_dir):
     """
     # Build a temporary world for initial visualization
     temp_world = env.build_world(config.get("network"))
+    temp_world.name = config.get("network", "Unknown")  # Set proper network name
+    # Load demand data for visualization
+    env.load_demand_for_plotting(temp_world)
     output_path = os.path.join(img_dir, f"00_{config.get('network')}_demand_network.png")
     plot_network_and_demand(temp_world, output_path)
     print(f"Initial network plot saved to: {output_path}")
@@ -80,7 +83,9 @@ def create_path_visualization(env, config, path, img_dir):
     Create network + path overlay visualization.
     """
     output_path = os.path.join(img_dir, f"{config.get('baseline_type', 'unknown')}_final_path.png")
-    plot_network_demand_and_path(env.world, path, output_path)
+    # Convert single path to list format for consistency with multi-route function
+    routes = [path] if path else []
+    plot_network_demand_and_path(env.world, routes, output_path)
     print(f"Path visualization saved to: {output_path}")
 
 def create_fancy_animations(env, config, baseline_save_dir):

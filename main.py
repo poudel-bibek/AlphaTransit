@@ -147,10 +147,12 @@ def train(config: Dict[str, Any]) -> None:
     img_dir = os.path.join(training_save_dir, "images")
     os.makedirs(img_dir, exist_ok=True)
 
-    # Build temp world for initial visualization only (not persistent)
+    # Build world for initial visualization
     temp_world = env.build_world(config.get("network"))
+    # Load demand data for visualization
+    env.load_demand_for_plotting(temp_world)
     output_path = os.path.join(img_dir, f"00_{config.get('network')}_demand_network.png")
-    plot_network_and_demand(temp_world, output_path) # Visualize only after building world
+    plot_network_and_demand(temp_world, output_path) # Visualize the network
 
     print(f"\nNetwork details:")
     print(f"\tNumber of nodes: {env.n_nodes}")
@@ -423,7 +425,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Learning environment specific: 
     parser.add_argument("--service_frequency", type=int, default=6, help="Service frequency. 1 means one bus per hour")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
-    parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Modal split parameter for served O-D pairs (proportion taking bus)")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
     parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
     

@@ -370,6 +370,8 @@ class TransitEnv(gym.Env):
             - Since buses go back and forth in the route, we dont have to enforce that O comes before D.
         - bus_passenger gets alpha * q, car gets (1 - alpha) * q
         - alpha: Modal split parameter for served O-D pairs (proportion taking bus)
+        - alpha=1.0 means 100% of SERVED demand goes to bus, but UNSERVED demand still goes to car!
+        
         - TODO: radius: Radius within each node to consider for demand allocation.
             - how far are passengers willing to walk to the bus stop? In kilometers i.e., 0.5 = 500m
             - Both during boarding and alighting. 
@@ -396,8 +398,6 @@ class TransitEnv(gym.Env):
         demand_df = self.demand_df_cached
         print(f"Loading {len(demand_df)} demand records...")  
         
-        # current_path will have at least one node (where it starts) i.e., it wont have O-D pair then.
-        current_route_str = [str(node) for node in self.current_route] # ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] 
         total_demand = 0 
         bus_demand = 0 
         car_demand = 0 
@@ -410,7 +410,7 @@ class TransitEnv(gym.Env):
                 if volume_per_hour <= 0 or orig == dest: 
                     continue
                 
-                is_served = orig in current_route_str and dest in current_route_str
+                is_served = self._is_od_served(orig, dest)
                 bus_volume = total_volume * self.alpha if is_served else 0
                 car_volume = total_volume - bus_volume
                 
@@ -530,11 +530,13 @@ class TransitEnv(gym.Env):
         node_features[:, 11] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
 
         # Edge index and edge features dont dynamically change. Already set in __init__.
-        # Route progress for self.NUM_ROUTES:
+        # Route progress for self.NUM_ROUTES (including completed and current route)
         route_progress = np.zeros(self.NUM_ROUTES, dtype=np.float32)
         for i, route in enumerate(self.all_routes):
             route_progress[i] = len(route) / self.MAX_ROUTE_LENGTH
-        route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
+        print(f"\nAll routes: {self.all_routes}, length: {len(self.all_routes)}\n")
+        if self.current_route_index < self.NUM_ROUTES:  # Only if there's a current route being built
+            route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
         
         # Return the state as a dict
         state: Dict[str, Any] = {
@@ -559,10 +561,10 @@ class TransitEnv(gym.Env):
     
     def build_world(self, network: str) -> World:
         """
-        generate nodes from csv: 
+        generate nodes from csv:
         - expects: name, x, y
-        generate links from csv: 
-        - expects: link_name, start, end, length, free_flow_speed 
+        generate links from csv:
+        - expects: link_name, start, end, length, free_flow_speed
         """
         if not network:
             raise ValueError("Network name must be provided in config['network']")
@@ -574,14 +576,14 @@ class TransitEnv(gym.Env):
         for path in (nodes_csv, links_csv, demand_csv):
             if not path.exists():
                 raise FileNotFoundError(f"Missing required file: {path}")
-        
+
         world = World(
-            name="",  # Empty name to prevent automatic output folder creation
+            name=network,
             deltan=int(self.delta_n),
             reaction_time=float(self.delta_t),
             tmax=self.horizon,
-            print_mode=0, 
-            save_mode=0, 
+            print_mode=0,
+            save_mode=0,
             show_mode=0,
             random_seed=self.config.get("seed"),
         )
@@ -601,9 +603,25 @@ class TransitEnv(gym.Env):
 
         # Required for adding bus passenger demand via world.adddemand(..., mode="bus_passenger")
         world.set_bus_handler(BusHandler)
-        
+
         return world
-        
+
+    def load_demand_for_plotting(self, world: World) -> None:
+        """
+        Load demand data for plotting purposes only.
+        This is a simplified version that loads all demand as car traffic.
+        """
+        demand_csv = self.network_dir / f"{self.config.get('network')}_demand_standard.csv"
+        df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str})
+
+        for _, row in df_demand.iterrows():
+            orig, dest, volume = str(row["orig"]), str(row["dest"]), row["volume"]
+            if volume > 0 and orig != dest:
+                # Spread volume over simulation horizon
+                total_volume = volume * (self.horizon / 3600)  # convert per-hour to total
+                world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
+                               volume=total_volume, mode="vehicle")
+
     def _apply_action(self) -> Dict[str, bool]:
         """
         Invoked internally by step 
@@ -633,21 +651,25 @@ class TransitEnv(gym.Env):
         elif len(self._get_valid_indices()) == 0:
             print(f"Route {self.current_route_index} forced to end (no valid moves, incomplete: {len(self.current_route)} < {self.MAX_ROUTE_LENGTH})")
             route_forced_end = True
-            
-        # Move to next route if any completion condition was met
-        if route_completed or route_forced_end:
-            self.current_route_index += 1
-            if self.current_route_index < self.NUM_ROUTES:
-                # Initialize next route
-                self.current_route = self._initialize_current_route(use_random=self.random_path_init)
-                print(f"Starting route {self.current_route_index}: {self.current_route}")
-            else:
-                # All routes processed
-                print("All routes processed!")
-                ep_done = True
+        
+        # Dont init the next route here, defer it to step()
+        # # Move to next route if any completion condition was met
+        # if route_completed or route_forced_end:
+        #     self.current_route_index += 1
+        #     if self.current_route_index < self.NUM_ROUTES:
+        #         # Initialize next route
+        #         self.current_route = self._initialize_current_route(use_random=self.random_path_init)
+        #         print(f"Starting route {self.current_route_index}: {self.current_route}")
+        #     else:
+        #         # All routes processed
+        #         print("All routes processed!")
+        #         ep_done = True
+        #         self.current_route = [] # Reset the current route to avoid duplication of the last route.
 
-        # Simulate both completed and current partial route being built
-        routes_to_simulate = self.all_routes + [self.current_route]
+        # Simulate both completed and current partial route being built (only if current route has at least 2 nodes)
+        routes_to_simulate = self.all_routes.copy()  # Create a copy, not a reference!
+        if len(self.current_route) > 1:
+            routes_to_simulate.append(self.current_route)
         
         for route_idx, route in enumerate(routes_to_simulate):
             # Determine bus stops based on STOP_SPACING for this route
@@ -994,6 +1016,7 @@ class TransitEnv(gym.Env):
             
             # Route Information
             print("\nROUTE INFORMATION:")
+            print(f"   All Routes:                {self.all_routes}")
             print(f"   Current Route:               {' → '.join(current_route_str)}")
             print(f"   Route Length:             {metrics['route_length']/1000:.2f} km")
             print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.1f} km/h)")
@@ -1197,10 +1220,20 @@ class TransitEnv(gym.Env):
         # 5. Compute reward with termination signals
         reward = self.compute_reward(sim_result, action_signals)
         
-        # 6. Extract done signals from _apply_action  
-        terminated = action_signals['ep_done']  # Episode completely finished
+        # 6. Extract route completion signals from _apply_action  
         sim_result['route_completed'] = action_signals['route_completed']  # Route completed gracefully 
         sim_result['route_forced_end'] = action_signals['route_forced_end']  # Route got stuck (bad truncation)
+        
+        # 7. If route completed this step, init next route NOW (after sim/ reward)
+        terminated = False  # Default to continue episode
+        if action_signals['route_completed'] or action_signals['route_forced_end']:
+            self.current_route_index += 1
+            if self.current_route_index < self.NUM_ROUTES:
+                self.current_route = self._initialize_current_route(use_random=self.random_path_init)
+                print(f"Starting route {self.current_route_index}: {self.current_route}")
+            else:
+                print("All routes processed!")
+                terminated = True  # Episode is done when all routes are processed
 
         return self._get_state(), reward, terminated, None, sim_result # Truncation is not used.
     
@@ -1224,9 +1257,15 @@ class TransitEnv(gym.Env):
 
     def render(self, save_dir: str, render_name: str) -> None:
         """
-        - Visualize network + path.
+        - Visualize network + all routes.
         - Episode simulation gif.
         """
+
+        all_routes_to_display = self.all_routes.copy()
+        # Only add current_route if it's not already in all_routes (avoid duplicates)
+        if self.current_route and len(self.current_route) > 1 and self.current_route not in all_routes_to_display:
+            all_routes_to_display.append(self.current_route)
+
         output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
-        plot_network_demand_and_path(self.world, self.current_route, output_loc)
+        plot_network_demand_and_path(self.world, all_routes_to_display, output_loc)
 
