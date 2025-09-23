@@ -269,7 +269,7 @@ def train(config: Dict[str, Any]) -> None:
             update_count += 1
 
             # Save policy after every update.
-            policy_path = os.path.join(policy_dir, f"policy_{update_count}.pth")
+            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_st_{steps_elapsed}.pth")
             torch.save(model.state_dict(), policy_path)
 
             if update_count % config["eval_every"] == 0:

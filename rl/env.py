@@ -327,6 +327,27 @@ class TransitEnv(gym.Env):
         Solution 2 (This is used, with action masking): 
         - Large action space: Discrete(N) where N is the number of nodes in the network.
         - i.e., Select a node index (0 to N-1) to add to the path.
+        
+        --------------
+
+        Adding Frequency of Service (FOS) to the action space:
+        - Although the stand-alone route design by itself is a well formed problem, incorporating FOS is important: 
+            - FOS has direct impact on : 
+                - Passenger satisfaction: wait time, total travel time
+                - Operator cost
+                - Network wide effects such as congestion, emissions, etc.
+        - The current env has "partial route with dense reward" setup i.e., every step is rewarded.
+            - However, learning frequency on a partial routes may be mis-leading to the full routes.
+                - Initially, the route might just be [1 -> 5], this short segment only serves a single O-D pair. 
+                  The agent may learn that setting a high frequency is beneficial for reducing wait times, etc. 
+                - But later, when routes are longer, high frequencies might induce congestion and waste.
+                - A frequency of 6 buses/hour is a bad choice for a 2-node route but might be an excellent choice for a 10-node route. 
+                  The agent would have to learn a completely different frequency preference for step 1, step 2, step 3.. which is extremely difficult.
+                - Using (next node, frequency) as the action space would also increase the action space significantly. Increasing the difficulty of learning.
+                - 
+            - Solution: 
+
+
         """
         return gym.spaces.Discrete(self.n_nodes)
     
@@ -362,7 +383,7 @@ class TransitEnv(gym.Env):
                     print(f"Initializing route at highest available demand node: {choice}")
                     return [choice]
 
-    def _allocate_demand_by_service(self, world: World, method: str = "volume") -> None:
+    def _allocate_demand_by_service(self, world: World, method: str = "volume", unserved_as_cars: bool = False) -> None:
         """
         Assigns mode-specific demands based on the current bus route:
         - for OD pairs served by the route (both O and D on route)
@@ -370,20 +391,21 @@ class TransitEnv(gym.Env):
             - Since buses go back and forth in the route, we dont have to enforce that O comes before D.
         - bus_passenger gets alpha * q, car gets (1 - alpha) * q
         - alpha: Modal split parameter for served O-D pairs (proportion taking bus)
-        - alpha=1.0 means 100% of SERVED demand goes to bus, but UNSERVED demand still goes to car!
-        
+        - alpha=1.0 means 100% of SERVED demand goes to bus
+
+        - Dealing with demand that is not served by the route (UNSERVED demand):
+            - Option 1: Ignore it i.e., keep it unserved. (if unserved_as_cars is True; default)
+            - Option 2: Allocate it to cars. (if unserved_as_cars is False)
+            - Notes: 
+                - Some nodes (associated O-D pairs) may not be served because of 1) partial route construction 2) no coverage even at full route construction.
+
+        --------------
         - TODO: radius: Radius within each node to consider for demand allocation.
             - how far are passengers willing to walk to the bus stop? In kilometers i.e., 0.5 = 500m
             - Both during boarding and alighting. 
             - TODO Notes: 
                 - Requires modifications to BusHandler.py to support this. 
                 - The links file has lengths in meters, will be helpful.
-
-        Caveats: 
-            - The number of nodes (where demand exists) that is being served changed dynamically as the route is being constructed. 
-            - But the observation space is fixed. 
-            - Solution: Do not input the partial route demand as part of the state.
-                - Other solutions possible.
 
         The flow-based demand csv expects: 
             - Mandatory: orig, dest, start_t, end_t, mode (its optional in sim; mandatory in the RL env to split with alpha) 
@@ -412,7 +434,7 @@ class TransitEnv(gym.Env):
                 
                 is_served = self._is_od_served(orig, dest)
                 bus_volume = total_volume * self.alpha if is_served else 0
-                car_volume = total_volume - bus_volume
+                car_volume = total_volume - bus_volume if unserved_as_cars else 0
                 
                 total_demand += total_volume
                 bus_demand += bus_volume
@@ -969,7 +991,8 @@ class TransitEnv(gym.Env):
         route_efficiency_passengers_per_km = 1000 * (final_metrics['completed_count'] / initial_metrics['route_length']) if initial_metrics['route_length'] > 0 else 0.0
         
         # Other components
-        demand_coverage_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
+        demand_coverage_potential_pct = 100 * (initial_metrics['wanting_to_onboard'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
+        demand_coverage_actual_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
         route_overlap_ratio = self._calculate_route_overlap_ratio()
 
         metrics = {
@@ -977,7 +1000,6 @@ class TransitEnv(gym.Env):
             'total_wait_time': final_metrics['total_wait_time'], # Total wait time for completed/traveling passengers (seconds)
             'wait_time_sim_end': final_metrics['total_waiting_time_sim_end'], # Wait time for passengers still waiting at sim end (seconds)
             'sim_end_waiting_passengers_count': final_metrics['waiting_count_sim_end'], # Count of passengers still waiting at sim end
-            'avg_wait_time': avg_wait_time_minutes * 60, # Average wait time per passenger (seconds)
 
             # Travel metrics (all times in seconds for consistency).
             'wanting_to_onboard': initial_metrics['wanting_to_onboard'], # Count of passengers whose O-D is served by route
@@ -996,7 +1018,8 @@ class TransitEnv(gym.Env):
             'travel_time_dstr': final_metrics['travel_time_dstr'], # Total travel time distribution for completed/traveling passengers (seconds)
             
             # Reward components
-            'demand_coverage': demand_coverage_pct, # Percentage of demand that boarded buses (onboarded/wanting)
+            'demand_coverage_potential': demand_coverage_potential_pct, # Percentage of demand that wants to board buses (wanting/total)
+            'demand_coverage_actual': demand_coverage_actual_pct, # Percentage of demand that boarded buses (onboarded/total)
             'avg_travel_time': avg_travel_time_minutes * 60, # Average travel time per passenger (seconds)
             'route_overlap_ratio': route_overlap_ratio, # Ratio of overlapped segments [0-1]
 
@@ -1086,18 +1109,21 @@ class TransitEnv(gym.Env):
         
         ---------
         Encourage: 
-            1. Higher demand coverage. 
+            1. Higher demand coverage potential.
+            2. Higher service rate (demand coverage actual/ demand coverage potential)
+                - This is related to frequency of service as well.
             
         Penalize: 
-           1. Total travel time (in-vehicle time + wait time) i.e., we want higher passenger travel efficiency.
-           2. Overlap between routes: some minimal overlaps are necessary for transfers (and 100% demand coverage)
-              but high overlaps mean duplication of service (waste of resources).
-           2. Forced end: 
-               - Early termination: Each route should be designed upto the full max_route_length. This represents poor planning from agent.
-               - When invalid (masked) action slips through.
+        1. Total travel time (in-vehicle time + wait time) i.e., we want higher passenger travel efficiency.
+        2. Overlap between routes: some minimal overlaps are necessary for transfers (and 100% demand coverage)
+            but high overlaps mean duplication of service (waste of resources).
+        2. Forced end: 
+            - Early termination: Each route should be designed upto the full max_route_length. This represents poor planning from agent.
+            - When invalid (masked) action slips through.
 
         TODO: Should I add a final reward at the end of the episode? Based on final performace metrics?
         
+
         As of now do not care about, operator side metrics like: 
         - route_efficiency: Passengers served per km of route (passengers/km)
             - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
@@ -1107,10 +1133,11 @@ class TransitEnv(gym.Env):
             - Some multiple of len(all_routes) * SERVICE_FREQUENCY 
         ---------
     
-        reward = β₀ × demand_coverage - β₁ × travel_time - β₂ × overlap_penalty - β₃ × forced_end_penalties
+        reward = β₀ × demand_coverage_potential + β₁ × service_rate - β₂ × travel_time - β₃ × overlap_penalty - β₄ × forced_end_penalties
         
         - Units are normalized: 
-            - demand_coverage: [0 to 1] (divide by 100)
+            - demand_coverage_potential: [0 to 1] (divide by 100)
+            - demand_coverage_actual: [0 to 1] (divide by 100)
             - avg_total_travel_time: [0 to perhaps >1] (normalize by max_travel_time = 1 hour)
             - route_overlap_ratio: [0 to 1] (normalize by max_route_length i.e., max overlap = entire route overlap)
             - forced_end_penalty: [0 to 1] 
@@ -1150,42 +1177,47 @@ class TransitEnv(gym.Env):
         """
         
         BETA_0 = 50.0      # Demand coverage component (demand served)
-        BETA_1 = 30.0      # Travel time penalty (passenger efficiency)  
-        BETA_2 = 20.0      # Route overlap penalty
-        BETA_3 = 15.0      # Forced end penalty
+        BETA_1 = 30.0      # Service rate component (demand coverage actual/ demand coverage potential)
+        BETA_2 = 30.0      # Travel time penalty (passenger efficiency)  
+        BETA_3 = 20.0      # Route overlap penalty
+        BETA_4 = 15.0      # Forced end penalty
         MAX_TOTAL_TRAVEL_TIME = 3600.0   # 1 hour max expected travel time (seconds)
 
-        demand_coverage = sim_result['demand_coverage'] / 100.0 # Percentage [0-1] 
+        demand_coverage_potential = sim_result['demand_coverage_potential'] / 100.0 # Percentage [0-1] 
+        demand_coverage_actual = sim_result['demand_coverage_actual'] / 100.0 # Percentage [0-1] 
         avg_travel_time = sim_result['avg_travel_time']  # Average total travel time per passenger (seconds)
         route_overlap_ratio = sim_result['route_overlap_ratio']  # Ratio of overlapped segments [0-1]
         
         # Normalize components to [0-1] scale
-        demand_coverage_norm = demand_coverage # Already [0-1] from sim_result
+        demand_coverage_potential_norm = demand_coverage_potential # Already [0-1] from sim_result
+        demand_coverage_actual_norm = demand_coverage_actual # Already [0-1] from sim_result
         avg_travel_time_norm = min(avg_travel_time / MAX_TOTAL_TRAVEL_TIME, 1.0)  # [0-1] capped at 1
         overlap_penalty_norm = route_overlap_ratio  
         
         # Calculate reward components
-        demand_coverage_component = BETA_0 * demand_coverage_norm
-        travel_time_penalty = BETA_1 * avg_travel_time_norm  
-        overlap_penalty = BETA_2 * overlap_penalty_norm
-        
+        demand_coverage_component = BETA_0 * demand_coverage_potential_norm
+        service_rate_component = BETA_1 * (demand_coverage_actual_norm / demand_coverage_potential_norm)
+        travel_time_penalty = BETA_2 * avg_travel_time_norm  
+        overlap_penalty = BETA_3 * overlap_penalty_norm
+
         # Penalties for poor forced end
         forced_end_penalty = 0.0
         if action_signals['route_forced_end']:
             # Calculate penalty based on how early the route was terminated
             current_route_length = len(self.current_route)
             early_termination_ratio = 1.0 - (current_route_length / self.MAX_ROUTE_LENGTH) 
-            forced_end_penalty = BETA_3 * early_termination_ratio  
+            forced_end_penalty = BETA_4 * early_termination_ratio  
 
         # TODO: Add invalid action penalty
 
-        total_reward = (demand_coverage_component - travel_time_penalty - overlap_penalty - forced_end_penalty)
+        total_reward = (demand_coverage_component + service_rate_component - travel_time_penalty - overlap_penalty - forced_end_penalty)
         
         print(f"Total reward: {total_reward:.2f}")
-        print(f"\tDemand coverage component: +{demand_coverage_component:.2f} (β₀={BETA_0} × {demand_coverage:.1f}%)")
+        print(f"\tDemand coverage component: +{demand_coverage_component:.2f} (β₀={BETA_0} × {demand_coverage_potential:.1f}%)")
+        print(f"\tService rate component: +{service_rate_component:.2f} (β₁={BETA_1} × {demand_coverage_actual:.1f}%/{demand_coverage_potential:.1f}%)")
         print(f"\tTravel time penalty: -{travel_time_penalty:.2f} (β₁={BETA_1} × {avg_travel_time:.0f}s)")
-        print(f"\tOverlap penalty: -{overlap_penalty:.2f} (β₂={BETA_2} × {route_overlap_ratio:.3f})")
-        print(f"\tForced end penalty: -{forced_end_penalty:.2f} (β₃={BETA_3} × early_termination_ratio)")
+        print(f"\tOverlap penalty: -{overlap_penalty:.2f} (β₂={BETA_3} × {route_overlap_ratio:.3f})")
+        print(f"\tForced end penalty: -{forced_end_penalty:.2f} (β₃={BETA_4} × early_termination_ratio)")
         
         return total_reward    
 
