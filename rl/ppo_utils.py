@@ -29,8 +29,17 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         # No constraints, all actions valid
         valid_indices_tensor = None
     
+    # Handle route_progress separately since PyG doesn't batch custom attributes properly
+    batch_obs_list = [item['obs'] for item in batch]
+    batched_obs = Batch.from_data_list(batch_obs_list)
+
+    # Manually stack route_progress tensors to ensure proper batching
+    route_progress_list = [obs.route_progress for obs in batch_obs_list]
+    # torch.stack automatically handles both 1D and 2D tensors correctly
+    batched_obs.route_progress = torch.stack(route_progress_list, dim=0)
+
     collated = {
-        'obs': Batch.from_data_list([item['obs'] for item in batch]),
+        'obs': batched_obs,
         'actions': torch.tensor([item['actions'] for item in batch], dtype=torch.long),
         'log_probs': torch.tensor([item['log_probs'] for item in batch], dtype=torch.float32),
         'advantages': torch.tensor([item['advantages'] for item in batch], dtype=torch.float32),

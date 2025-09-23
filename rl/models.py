@@ -299,13 +299,14 @@ class GATV2ActorCritic(nn.Module):
         print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
 
         route_progress = graph_batch.route_progress
-        # For a single item batch, its shape is [NUM_ROUTES], so we add a batch dimension.
-        # For a multi-item batch, its shape is already [batch_size, NUM_ROUTES], so this does nothing.
+        # Route progress shape handling:
+        # - Single observation: [NUM_ROUTES] -> add batch dim -> [1, NUM_ROUTES]
+        # - Batched observations: [batch_size, NUM_ROUTES] (already correct)
         if route_progress.dim() == 1:
             route_progress = route_progress.unsqueeze(0)
         print(f"[DEBUG] Route progress shape: {route_progress.shape}")
 
-        # Concatenate global features (route_progress) 
+        # Concatenate global features (route_progress)
         graph_features = torch.cat([graph_features, route_progress], dim=1)
         print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
 
@@ -321,6 +322,9 @@ class GATV2ActorCritic(nn.Module):
         print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
         
         route_progress = graph_batch.route_progress
+        # Route progress shape handling:
+        # - Single observation: [NUM_ROUTES] -> add batch dim -> [1, NUM_ROUTES]
+        # - Batched observations: [batch_size, NUM_ROUTES] (already correct)
         if route_progress.dim() == 1:
             route_progress = route_progress.unsqueeze(0)
         print(f"[DEBUG] Route progress shape: {route_progress.shape}")

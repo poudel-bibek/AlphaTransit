@@ -65,7 +65,7 @@ class PPO:
                 valid_indices = batch_data['valid_indices'].to(self.device)
                 
                 # Get current policy outputs
-                log_probs, entropy, values = self.model.evaluate(obs, actions, route_progress=obs.route_progress, valid_indices=valid_indices)
+                log_probs, entropy, values = self.model.evaluate(obs, actions, valid_indices=valid_indices)
                 
                 # Normalize advantages (per batch; similar to cleanRL)
                 # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero

@@ -469,8 +469,8 @@ class BusHandler:
                 itinerary.append({'board_stop': self.W.get_node(leg_start_stop), 'alight_stop': self.W.get_node(path[-1]), 'bus_route': current_route })
             passenger.itinerary = itinerary
             passenger.num_transfers = max(0, len(itinerary) - 1)
-            print(f"\nItinerary: {[(leg['board_stop'].name, leg['alight_stop'].name, leg['bus_route']) for leg in itinerary]}")
-            print(f"Num transfers: {passenger.num_transfers}\n")
+            # print(f"\nItinerary: {[(leg['board_stop'].name, leg['alight_stop'].name, leg['bus_route']) for leg in itinerary]}")
+            # print(f"Num transfers: {passenger.num_transfers}\n")
             
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             passenger.itinerary = []  # Unserviceable

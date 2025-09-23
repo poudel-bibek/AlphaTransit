@@ -48,7 +48,7 @@ week_8
 uxsim.egg-info/__pycache__/
 *.pyc
 *.pyo
-*.pyd
+*.pyd.
 
 
 ./training_data/
@@ -69,3 +69,7 @@ training_data/*wandb/
 ./out
 ./out/*
 
+./outsioux_falls
+./outsioux_falls/*
+
+outsioux_falls
