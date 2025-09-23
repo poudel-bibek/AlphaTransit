@@ -10,7 +10,7 @@ from pathlib import Path
 from collections import defaultdict
 from uxsim.BusHandler import BusHandler
 from rl.env_utils import plot_network_demand_and_path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List 
 
 class TransitEnv(gym.Env):
     """
@@ -34,11 +34,12 @@ class TransitEnv(gym.Env):
         self.network_dir = Path(__file__).resolve().parents[1] / "networks" / self.config.get("network")
     
         # Important params: 
-        self.SERVICE_FREQUENCY = self.config.get("service_frequency")
+        self.service_frequency_mode = self.config.get("service_frequency_mode")
         self.STOP_SPACING = self.config.get("stop_spacing")
         self.BUS_CAPACITY = self.config.get("bus_capacity")
         self.STOP_DURATION = self.config.get("stop_duration")
         self.alpha = self.config.get("alpha")
+        self.comfort_threshold = self.config.get("comfort_threshold")
         self.radius = self.config.get("radius")
         self.random_path_init = self.config.get("random_path_init")
         
@@ -644,6 +645,77 @@ class TransitEnv(gym.Env):
                 world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
                                volume=total_volume, mode="vehicle")
 
+    def _get_service_frequency(self, route: List[str]) -> int:
+        """
+        Calculates the bus service frequency for a given route based on the selected mode.
+
+        The frequency represents the number of buses dispatched per hour.
+
+        Modes:
+        -------
+        - "fixed": Returns a constant, predefined service frequency.
+        
+        - "max_load": Calculates frequency based on the peak passenger load on the busiest segment of the route. 
+            - The formula used is: ceil(Q_max / (comfort_threshold * capacity)) with Q_max as peak segment demand.
+            - i.e., How often buses should run on a route to handle the peak passenger demand while keeping buses comfortable
+            - If Q_k,max = 200 pph, C_k = 40, and delta_max = 0.8, then: f_k = ceil(6.25) = 7 buses/hour
+            - Notes: 
+                - We are not simply looking at the O-D pairs, but instead at the trips in each segment because of various O-D pairs.
+                - TODO: We are currently NOT considering contributions to segments due to potential transfers. Very hard problem.
+        """
+
+        if self.service_frequency_mode == "fixed":
+            return 10 # A fixed value
+
+        elif self.service_frequency_mode == "max_load":
+
+            # 1. Create a quick lookup for node positions on the route.
+            route_indices = {node: idx for idx, node in enumerate(route)}
+            segment_loads = np.zeros(len(route) - 1, dtype=np.float64)
+            
+            # # We are going to be looking at transers as well.
+            # transit_graph = self.world.bus_handler.transit_graph # Has the transit graph been built before this function is called?
+
+            # 2. Iterate through all potential trips to calculate passenger load on each segment.
+            for _, row in self.demand_df_cached.iterrows():
+                orig, dest = str(row["orig"]), str(row["dest"])
+                
+                # Consider only trips where both start and end are on the current route.
+                if orig in route_indices and dest in route_indices:
+                    orig_idx = route_indices[orig]
+                    dest_idx = route_indices[dest]
+
+                    # Skip trips that don't traverse any segments.
+                    if orig_idx == dest_idx:
+                        continue
+                    
+                    # Calculate the number of bus passengers for this trip.
+                    # This demand has been converted to hourly ( during data standardization) 
+                    passenger_volume = float(row["volume"]) * float(self.alpha) # Since only the volume * alpha is considered for bus demand
+                    if passenger_volume <= 0:
+                        continue
+                    
+                    # Add this trip's passenger volume to all traversed segments.
+                    # This correctly handles bidirectional travel along the linear route.
+                    start_idx = min(orig_idx, dest_idx)
+                    end_idx = max(orig_idx, dest_idx)
+                    # Accumulate demand on every traversed segment between the OD pair.
+                    segment_loads[start_idx:end_idx] += passenger_volume
+
+            # Identify the bottleneck load; if no load exists default to single-bus service.
+            max_segment_load = float(segment_loads.max()) 
+            if max_segment_load <= 0:
+                return 1
+            
+            # Compute the comfortable capacity per departure and ensure the threshold is well defined.
+            comfort_capacity = float(self.comfort_threshold) * float(self.BUS_CAPACITY)
+            if comfort_capacity <= 0:
+                raise ValueError("Comfort-adjusted capacity must be positive.")
+
+            # Scale frequency to meet the comfort headroom and clip to at least once per hour.
+            frequency = int(np.ceil(max_segment_load / comfort_capacity))
+            return max(1, frequency)
+            
     def _apply_action(self) -> Dict[str, bool]:
         """
         Invoked internally by step 
@@ -707,6 +779,9 @@ class TransitEnv(gym.Env):
                 name=bus_name, # unique name for each bus
                 mode="bus"
             )
+            
+            service_frequency_route = self._get_service_frequency(route)
+            print(f"\nService frequency for route {route_idx}: {service_frequency_route}\n")
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
             buses = bus.set_bus_route(
@@ -715,7 +790,7 @@ class TransitEnv(gym.Env):
                 is_circular=False, # Do not make routes circular 
                 capacity=self.BUS_CAPACITY,
                 stop_duration=self.STOP_DURATION,
-                service_frequency=self.SERVICE_FREQUENCY, # This creates multiple buses for the frequency
+                service_frequency=service_frequency_route, # This creates multiple buses for the frequency
                 sim_horizon=self.horizon # Pass simulation horizon for proper bus spacing
             )
 

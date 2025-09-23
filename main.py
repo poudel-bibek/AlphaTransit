@@ -423,11 +423,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_baseline_runs", type=int, default=5, help="Number of runs (over which we average the results) for the baseline")
 
     # Learning environment specific: 
-    parser.add_argument("--service_frequency", type=int, default=6, help="Service frequency. 1 means one bus per hour")
+    parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
     parser.add_argument("--alpha", type=float, default=1.0, help="Modal split parameter for served O-D pairs (proportion taking bus)")
+    parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
-    parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
+    parser.add_argument("--random_path_init", type=bool, default=False, help="Initialize path randomly (default: True)")
     
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=3, help="Number of routes")

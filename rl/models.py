@@ -255,7 +255,7 @@ class GATV2ActorCritic(nn.Module):
     def actor_readout(self, node_features: torch.Tensor, graph_batch: Batch) -> torch.Tensor:
         """
         Readout: Aggregate node embeddings into graph-level features i.e., a way to get a fixed sized vector for the graph.
-        However, in this case we don't have a variable sized input (current path is embedded as node features) 
+        However, in this case we don't have a variable sized input (current routes are embedded as node features) 
 
         Approaches: 
             1. Global mean pooling: 
@@ -284,6 +284,9 @@ class GATV2ActorCritic(nn.Module):
                     - No big deal.
                 - Probably the most prominent con of this approach is that this is not scalable to large networks.
                     - When the number of nodes is large, the parameter count for actor MLP head is too high.
+
+            4. Alternative: Validity-Weighted Attention Readout
+            
         """
         # 1. Global mean pooling
         # graph_features = global_mean_pool(node_features, batch)

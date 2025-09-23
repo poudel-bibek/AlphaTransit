@@ -345,7 +345,6 @@ class BusHandler:
                 distance = link.length if link else 0  # 0 if no link (or add min 100 if preferred)
                 self.transit_graph.add_edge(stops[i].name, stops[i+1].name, weight=distance, bus_pattern=pattern)
                     
-
         # Add a self-loop transfer edge (zero weight) if a stop is present across two routes. 
         route_stop_count = {}
         for route in self.all_bus_routes.values():
