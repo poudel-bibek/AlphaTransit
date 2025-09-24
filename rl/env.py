@@ -1056,7 +1056,7 @@ class TransitEnv(gym.Env):
             all_routes_nodes.update(route)
         if len(self.current_route) > 1:  # Only add current route if it has more than just the starting node
             all_routes_nodes.update(self.current_route)
-        node_coverage_pct = (len(all_routes_nodes) / self.n_nodes) * 100.0 if self.n_nodes > 0 else 0.0
+        node_coverage_pct = 100 * (len(all_routes_nodes) / self.n_nodes) if self.n_nodes > 0 else 0.0
 
         metrics = {
             # Waiting metrics (all times in seconds for consistency).
