@@ -353,17 +353,18 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         save_as_mp4 = False
     )
 
-    env.world.analyzer.network_fancy(
-        animation_speed_inverse = 10,
-        sample_ratio = 1.0,
-        interval = 5,
-        trace_length = 5,
-        network_font_size = 14,
-        antialiasing = False,
-        file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}_bus_only.gif"),
-        save_as_mp4 = False,
-        bus_only = True
-    )
+    # Since our new setup already only contains buses only.
+    # env.world.analyzer.network_fancy(
+    #     animation_speed_inverse = 10,
+    #     sample_ratio = 1.0,
+    #     interval = 5,
+    #     trace_length = 5,
+    #     network_font_size = 14,
+    #     antialiasing = False,
+    #     file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}_bus_only.gif"),
+    #     save_as_mp4 = False,
+    #     bus_only = True
+    # )
         
 
 def get_config() -> Dict[str, Any]:

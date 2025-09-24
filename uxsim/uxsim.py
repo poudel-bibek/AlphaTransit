@@ -183,26 +183,43 @@ class Node:
         """
         outlinks0 = list(s.outlinks.values())
         if len(outlinks0):
+            # The loop iterates once for each available departure lane at the node
             for i in range(sum([l.number_of_lanes for l in outlinks0])):
                 if len(s.generation_queue) > 0:                    
                     veh = s.generation_queue[0]
-
-                    #consider the link preferences
-                    outlinks = list(s.outlinks.values())
-                    if set(outlinks) & set(veh.links_prefer):
-                        outlinks = sorted(set(outlinks) & set(veh.links_prefer), key=lambda l:l.name)
-                    if set(outlinks) & set(veh.links_avoid):
-                        outlinks = sorted(set(outlinks) - set(veh.links_avoid), key=lambda l:l.name)
+                    outlink = None
                     
-                    preference = np.array([veh.route_pref[l.id] for l in outlinks], dtype=float)
-                    if s.W.hard_deterministic_mode == False:
-                        if sum(preference) > 0:
-                            outlink = s.W.rng.choice(outlinks, p=preference/sum(preference))
-                        else:
-                            outlink = s.W.rng.choice(outlinks)
+                    # =================== START: MODIFIED LOGIC ===================
+                    if veh.mode == "bus":
+                        # For a bus, the route is fixed. Find the single correct link.
+                        if len(veh.route_path) > 1:
+                            target_node = veh.route_path[1] # The second node in its path
+                            # Find the direct link from this node (s) to the target
+                            for l in s.outlinks.values():
+                                if l.end_node == target_node:
+                                    outlink = l
+                                    break
+                    
                     else:
-                        outlink = max(zip(preference, outlinks), key=lambda x:x[0])[1]
+                    # For all other vehicles, use the original shortest-path logic
+                        #consider the link preferences
+                        outlinks = list(s.outlinks.values())
+                        if set(outlinks) & set(veh.links_prefer):
+                            outlinks = sorted(set(outlinks) & set(veh.links_prefer), key=lambda l:l.name)
+                        if set(outlinks) & set(veh.links_avoid):
+                            outlinks = sorted(set(outlinks) - set(veh.links_avoid), key=lambda l:l.name)
+                        
+                        preference = np.array([veh.route_pref[l.id] for l in outlinks], dtype=float)
+                        if s.W.hard_deterministic_mode == False:
+                            if sum(preference) > 0:
+                                outlink = s.W.rng.choice(outlinks, p=preference/sum(preference))
+                            else:
+                                outlink = s.W.rng.choice(outlinks)
+                        else:
+                            outlink = max(zip(preference, outlinks), key=lambda x:x[0])[1]
+                    # =================== END: MODIFIED LOGIC ===================
 
+                    # Now, proceed with the original logic using the chosen `outlink` (works for both buses and cars).
                     if (len(outlink.vehicles) < outlink.number_of_lanes or outlink.vehicles[-outlink.number_of_lanes].x > outlink.delta_per_lane*s.W.DELTAN) and outlink.capacity_in_remain >= s.W.DELTAN:
                         #受け入れ可能な場合，リンク優先度に応じて選択
                         veh = s.generation_queue.popleft()
@@ -949,9 +966,9 @@ class Vehicle:
         if s.mode == "bus":
             # Route 1. PATH: Exact sequence of nodes the bus must follow
             s.route_path = []            # Ordered list of nodes defining the bus route path
-            s.current_path_index = 0     # Current position in the route path
-            s.is_circular_route = True   # Whether route is circular or back-and-forth
-            s.route_direction = 1        # Direction for non-circular routes: 1=forward, -1=backward
+            s.current_node_index = 0     # Current node position in the route path
+            s.is_circular_route = False   # Whether route is circular or back-and-forth
+            s.route_direction = 1        # Direction of traversal in route path: 1=forward, -1=backward
             
             # Route 2. STOPS: Subset of path nodes where bus actually stops
             s.route_stops = []           # List of designated stop nodes (subset of route_path)
@@ -1085,33 +1102,36 @@ class Vehicle:
                     
                     # Update current position in route
                     if current_node in s.route_path:
-                        s.current_path_index = s.route_path.index(current_node)
-                    
+                        s.current_node_index = s.route_path.index(current_node)
+                    else:
+                        print(f"\nWARNING: Bus {s.name} is at {current_node.name}, which is NOT on its defined route.\n")
+                        
                     # Update direction for non-circular routes
                     if not s.is_circular_route:
-                        if s.current_path_index == len(s.route_path) - 1:
+                        if s.current_node_index == len(s.route_path) - 1:
                             s.route_direction = -1
-                        elif s.current_path_index == 0:
+                        elif s.current_node_index == 0:
                             s.route_direction = 1
                     
                     # Get next node on the route
                     next_node = s.get_next_path_node()
+                    print(f"\nBus {s.name}: {current_node} -> {next_node}")
                     if next_node:
                         s.dest = next_node
                         # Find the link that follows the route
-                        s.route_next_link = s.find_route_link_to_node(s.dest)
+                        s.route_next_link = s.find_route_link_to_node(current_node, next_node)
                         if s.route_next_link is None and s.W.print_mode >= 1:
                             s.W.print(f"ERROR: Bus {s.name} at {current_node.name} cannot continue on route to {s.dest.name}. Check for one-way streets or invalid route definition.")
                     else:
                         # End of route reached
+                        print(f"\nBus {s.name}: End of route reached\n {s.route_path}")
                         s.flag_waiting_for_trip_end = 1
                         if s.link.vehicles[0] == s:
                             s.end_trip()
-                            return
+                            return # Important: exit after ending trip
                     
                     # Add to incoming vehicles queue
-                    if s.route_next_link is not None:
-                        s.link.end_node.incoming_vehicles.append(s)
+                    s.link.end_node.incoming_vehicles.append(s)
                     
                     # Check if bus should stop at this node
                     if s.should_stop_at_node(current_node) and not s.is_currently_stopped:
@@ -1343,21 +1363,25 @@ class Vehicle:
         for dest in dests:
             s.add_dest(dest)
     
-    def _configure_single_bus(s, path, stops, is_circular, capacity, stop_duration, service_frequency):
+    def _configure_single_bus(s, route, stops, is_circular, capacity, stop_duration, service_frequency):
         """
-        Helper function 
+        Helper function called once per bus to configure route and pre-compute navigation data.
+
+        Called from set_bus_route() for:
+        - Root bus (first bus on route)
+        - Frequency buses (additional buses for service frequency)
         """
-        s.route_path = [s.W.get_node(node) for node in path]
-        s.current_path_index = 0
+        s.route_path = [s.W.get_node(node) for node in route]
+        s.current_node_index = 0
         s.is_circular_route = is_circular
         s.route_direction = 1  # Start going forward for non-circular routes
         
-        # Route 2. STOPS: Set designated stops (must be subset of path)
+        # Route 2. STOPS: Set designated stops (must be subset of route)
         if stops is None:
             s.route_stops = s.route_path[:]
         else:
             s.route_stops = [s.W.get_node(stop) for stop in stops]
-            # Validate that all stops are in the path
+            # Validate that all stops are in the route
             for stop in s.route_stops:
                 if stop not in s.route_path:
                     raise ValueError(f"Stop {stop.name} is not on the specified route path.")
@@ -1369,17 +1393,17 @@ class Vehicle:
         s.capacity = capacity
         s.passengers = []
         
-    def set_bus_route(s, path=None, stops=None, is_circular=True, capacity=50, stop_duration=30, service_frequency=6, sim_horizon=3600):
+    def set_bus_route(s, route=None, stops=None, is_circular=True, capacity=50, stop_duration=30, service_frequency=6, sim_horizon=3600):
         """
         Component added for TNDP using RL
         Set the complete bus route: PATH + STOPS + SERVICE FREQUENCY.
 
         Parameters
         ----------
-        path : list of str | Node
-            The exact sequence of nodes the bus must follow (the complete route path).
+        route : list of str | Node
+            The exact sequence of nodes the bus must follow (the complete route).
         stops : list of str | Node
-            The subset of path nodes where the bus will actually stop for passengers.
+            The subset of route nodes where the bus will actually stop for passengers.
         is_circular : bool, optional
             Whether the route is circular (True) or back-and-forth (False), default is True.
         capacity : int, optional
@@ -1399,27 +1423,15 @@ class Vehicle:
             raise ValueError(f"Vehicle {s.name} is not in bus mode. Cannot set bus route.")
         
         # Route 1. PATH: Set the exact route path
-        if path is None:
+        if route is None:
             raise ValueError("Bus route path must be specified.")
         
         # Configure the original bus (this one)
-        s._configure_single_bus(path, stops, is_circular, capacity, stop_duration, service_frequency)
+        s._configure_single_bus(route, stops, is_circular, capacity, stop_duration, service_frequency)
         
         # Initialize route position - buses ALWAYS start at their origin which MUST be on the route
         if s.orig not in s.route_path:
             raise ValueError(f"Bus {s.name} origin '{s.orig.name}' is not on its route path. Buses must start on their defined route.")
-        
-        s.current_path_index = s.route_path.index(s.orig)
-        # Get the next node on the route
-        next_node = s.get_next_path_node()
-        if next_node:
-            s.dest = next_node
-        else:
-            # Edge case: single-node route or starting at end of non-circular route
-            if s.is_circular_route:
-                s.dest = s.route_path[0]  # Wrap around
-            else:
-                raise ValueError(f"Bus {s.name} starts at end of non-circular route with nowhere to go.")
         
         # Create additional buses for service frequency > 1, horizon-aware
         created_buses = [s]  # Include the original bus
@@ -1446,33 +1458,18 @@ class Vehicle:
                 # print(f"[DEBUG] Bus: {s.name} - departure time: {new_departure_time}")
                 # Only create if departure time is within simulation horizon
                 if new_departure_time < sim_horizon:
-                    # Create new bus with same origin/dest but different departure time
+                    # Create new bus with same origin but different departure time and initial destination that is not inherited from the original bus
                     new_bus = s.W.addVehicle(
-                        orig = s.orig.name, 
-                        dest = s.dest.name, 
+                        orig = s.orig.name,
+                        dest = route[1],  # Always start with next node as dest (gets updated later)
                         departure_time = new_departure_time,
-                        mode = "bus", 
+                        mode = "bus",
                         name = f"{s.name}_freq_{i}",
                         departure_time_is_time_step=0  # 0 = departure time in seconds
                     )
                     
                     # Configure new bus with same route parameters
-                    new_bus._configure_single_bus(path, stops, is_circular, capacity, stop_duration, service_frequency)
-                    
-                    # Initialize route position - same as original bus
-                    if new_bus.orig not in new_bus.route_path:
-                        raise ValueError(f"Bus {new_bus.name} origin '{new_bus.orig.name}' is not on its route path. Buses must start on their defined route.")
-                    
-                    new_bus.current_path_index = new_bus.route_path.index(new_bus.orig)
-                    next_node = new_bus.get_next_path_node()
-                    if next_node:
-                        new_bus.dest = next_node
-                    else:
-                        if new_bus.is_circular_route:
-                            new_bus.dest = new_bus.route_path[0]
-                        else:
-                            raise ValueError(f"Bus {new_bus.name} starts at end of non-circular route with nowhere to go.")
-                    
+                    new_bus._configure_single_bus(route, stops, is_circular, capacity, stop_duration, service_frequency)
                     created_buses.append(new_bus)
         
         return created_buses
@@ -1498,83 +1495,39 @@ class Vehicle:
             
         if s.is_circular_route:
             # For circular routes, wrap around to beginning
-            next_index = (s.current_path_index + 1) % len(s.route_path)
+            next_index = (s.current_node_index + 1) % len(s.route_path)
         else:
             # For back-and-forth routes, use direction to determine next node
-            next_index = s.current_path_index + s.route_direction
+            next_index = s.current_node_index + s.route_direction
             
             # Check if we need to reverse direction
             if next_index >= len(s.route_path):
                 # Reached end, reverse direction
                 s.route_direction = -1
-                next_index = s.current_path_index - 1
+                next_index = s.current_node_index - 1
             elif next_index < 0:
                 # Reached beginning, reverse direction
                 s.route_direction = 1
-                next_index = s.current_path_index + 1
+                next_index = s.current_node_index + 1
                 
-        if 0 <= next_index < len(s.route_path):
-            return s.route_path[next_index]
-        else:
-            return None
+        return s.route_path[next_index]
     
-    def find_route_link_to_node(s, target_node):
+    def find_route_link_to_node(s, current_node, target_node):
         """
         Find the next link that follows the bus route to reach the target node.
         This ensures buses only use links that are part of their route sequence.
+
+        This function is called when vehicle arrives at current_node (which is the end of the current link), We need next link.
         """
-        if s.mode != "bus" or not s.route_path or target_node not in s.route_path:
+        if s.mode != "bus" or target_node not in s.route_path:
             return None
             
-        current_node = s.link.end_node
-        
-        # If already at target, no link needed
-        if current_node == target_node:
-            return None
-            
-        # Build valid link sequences from route path
-        valid_sequences = []
-        for i in range(len(s.route_path) - 1):
-            valid_sequences.append((s.route_path[i], s.route_path[i+1]))
-        
-        # For circular routes, add wrap-around link
-        if s.is_circular_route and len(s.route_path) > 1:
-            valid_sequences.append((s.route_path[-1], s.route_path[0]))
-        
-        # For non-circular routes, add reverse direction links
-        if not s.is_circular_route:
-            for i in range(len(s.route_path) - 1, 0, -1):
-                valid_sequences.append((s.route_path[i], s.route_path[i-1]))
-        
-        # Find direct link if it's a valid sequence
+        # Find the link that is both in the network 
         for link in current_node.outlinks.values():
-            if (current_node, link.end_node) in valid_sequences:
-                # Check if this link leads toward our target
-                if link.end_node == target_node:
-                    return link
-                # For multi-hop, just take the first valid route link
-                elif current_node in s.route_path:
-                    current_idx = s.route_path.index(current_node)
-                    target_idx = s.route_path.index(target_node)
-                    
-                    # Determine which direction to go
-                    if s.is_circular_route:
-                        # For circular, go forward
-                        next_idx = (current_idx + 1) % len(s.route_path)
-                        if link.end_node == s.route_path[next_idx]:
-                            return link
-                    else:
-                        # For non-circular, check both directions
-                        if target_idx > current_idx and current_idx < len(s.route_path) - 1:
-                            if link.end_node == s.route_path[current_idx + 1]:
-                                return link
-                        elif target_idx < current_idx and current_idx > 0:
-                            if link.end_node == s.route_path[current_idx - 1]:
-                                return link
-        
+            if link.end_node == target_node:
+                return link
+            
         return None
-
-
 
     def should_stop_at_node(s, node):
         """

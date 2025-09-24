@@ -455,7 +455,6 @@ class TransitEnv(gym.Env):
         #     for _, row in demand_df.iterrows():
 
         print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
-
         return world
 
     def _is_od_served(self, orig: str, dest: str) -> bool:
@@ -661,7 +660,7 @@ class TransitEnv(gym.Env):
             - If Q_k,max = 200 pph, C_k = 40, and delta_max = 0.8, then: f_k = ceil(6.25) = 7 buses/hour
             - Notes: 
                 - We are not simply looking at the O-D pairs, but instead at the trips in each segment because of various O-D pairs.
-                - TODO: We are currently NOT considering contributions to segments due to potential transfers. Very hard problem.
+                - TODO: We are currently NOT considering contributions to segments due to potential transfers. Seemingly difficult because of the way transit graph is built.
         """
 
         if self.service_frequency_mode == "fixed":
@@ -718,7 +717,7 @@ class TransitEnv(gym.Env):
             
     def _apply_action(self) -> Dict[str, bool]:
         """
-        Invoked internally by step 
+        Invoked internally by step
         - Add stops based on STOP_SPACING.
         - Add necessary vehicles to the world.
             - Add buses based on the current path and SERVICE_FREQUENCY.
@@ -726,14 +725,12 @@ class TransitEnv(gym.Env):
         
         Returns a dict with route completion signals:
         - route_completed: Route was successfully completed (met min length)
-        - route_forced_end: Route ended due to no valid moves (may be short)  
+        - route_forced_end: Route ended due to no valid moves (may be short)
         - ep_done: All routes have been processed
         """
         
         # Check for route completion conditions BEFORE creating buses
-        route_completed = False
-        route_forced_end = False
-        ep_done = False
+        route_completed, route_forced_end, ep_done = False, False, False
         
         # Route reached maximum length - complete it successfully
         if len(self.current_route) >= self.MAX_ROUTE_LENGTH:
@@ -745,20 +742,6 @@ class TransitEnv(gym.Env):
         elif len(self._get_valid_indices()) == 0:
             print(f"Route {self.current_route_index} forced to end (no valid moves, incomplete: {len(self.current_route)} < {self.MAX_ROUTE_LENGTH})")
             route_forced_end = True
-        
-        # Dont init the next route here, defer it to step()
-        # # Move to next route if any completion condition was met
-        # if route_completed or route_forced_end:
-        #     self.current_route_index += 1
-        #     if self.current_route_index < self.NUM_ROUTES:
-        #         # Initialize next route
-        #         self.current_route = self._initialize_current_route(use_random=self.random_path_init)
-        #         print(f"Starting route {self.current_route_index}: {self.current_route}")
-        #     else:
-        #         # All routes processed
-        #         print("All routes processed!")
-        #         ep_done = True
-        #         self.current_route = [] # Reset the current route to avoid duplication of the last route.
 
         # Simulate both completed and current partial route being built (only if current route has at least 2 nodes)
         routes_to_simulate = self.all_routes.copy()  # Create a copy, not a reference!
@@ -768,14 +751,11 @@ class TransitEnv(gym.Env):
         for route_idx, route in enumerate(routes_to_simulate):
             # Determine bus stops based on STOP_SPACING for this route
             bus_stops = route[::self.STOP_SPACING]
-            
             bus_name = f"bus_route_{route_idx}"
-            departure_time = 0  # First bus starts at time 0
-            
             bus = self.world.addVehicle(
                 orig=route[0], 
-                dest=route[1],  # Next node in path
-                departure_time=int(departure_time),
+                dest=route[1],  # Always start with next node as dest (consistent with UXSim)
+                departure_time= 0, # First bus starts at time 0
                 name=bus_name, # unique name for each bus
                 mode="bus"
             )
@@ -785,7 +765,7 @@ class TransitEnv(gym.Env):
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
             buses = bus.set_bus_route(
-                path=route,
+                route=route,
                 stops=bus_stops,  # Use the calculated bus stops for this route
                 is_circular=False, # Do not make routes circular 
                 capacity=self.BUS_CAPACITY,
@@ -798,8 +778,8 @@ class TransitEnv(gym.Env):
             print(f"Route {route_idx} ({route_status}) bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
                 
         # Print bus summary AFTER all buses are created
-        all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
-        print(f"\nTotal buses in simulation: {len(all_buses)} - {[b.name for b in all_buses]}")
+        # all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
+        # print(f"\nTotal buses in simulation: {len(all_buses)} - {[b.name for b in all_buses]}")
         
         # Build transit graph AFTER all buses are created
         self.world.bus_handler.build_transit_graph()
