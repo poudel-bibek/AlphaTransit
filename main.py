@@ -92,13 +92,14 @@ def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
     print(f"Mean Clip Ratio: {stats['mean_clip_ratio']:.4f}")
     print("==================\n")
     wandb.log({
-        "policy_loss": stats['pg_loss'],
-        "value_loss": stats['value_loss'],
-        "entropy_loss": stats['entropy_loss'],
-        "clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
-        "mean_buffer_reward": stats['mean_buffer_reward'], 
-        "approx_kl": stats['approx_kl'],
-        "mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
+        "ppo/policy_loss": stats['pg_loss'],
+        "ppo/value_loss": stats['value_loss'],
+        "ppo/entropy_loss": stats['entropy_loss'],
+        "ppo/clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
+        "ppo/mean_buffer_reward": stats['mean_buffer_reward'],
+        "ppo/approx_kl": stats['approx_kl'],
+        "ppo/mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
+        "ppo/learning_rate": ppo.optimizer.param_groups[0]['lr'], # Current learning rate after annealing
     }, step=steps_elapsed)
 
 def train(config: Dict[str, Any]) -> None:
@@ -261,7 +262,23 @@ def train(config: Dict[str, Any]) -> None:
         # This makes sense for episodes that terminate naturally (with complete routes).
         
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_final_reward:.2f}")
-        wandb.log({"episode_final_reward": episode_final_reward}, step=steps_elapsed)
+
+        wandb.log({
+            "episode/episode_final_reward": episode_final_reward,
+            "episode/episode_length": episode_steps, # Length of routes
+            # reward related
+            "episode/service_rate": sim_result['service_rate'],
+            "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
+            "episode/demand_coverage_actual": sim_result['demand_coverage_actual'],
+            "episode/route_overlap_ratio": sim_result['route_overlap_ratio'],
+            "episode/node_coverage": sim_result['node_coverage'], # Percentage of nodes covered by routes
+            # performance related
+            "episode/onboard_rate": sim_result['onboard_rate'],
+            "episode/completed_trips": sim_result['completed_trip_passengers_count'],
+            "episode/avg_wait_time": sim_result['avg_wait_time'],
+            "episode/avg_travel_time": sim_result['avg_travel_time'],
+            "episode/bus_utilization": sim_result['bus_utilization'],
+            }, step=steps_elapsed)
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
@@ -306,7 +323,7 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
 
     state, _ = env.reset()
     terminated = False
-    
+    eval_episode_steps = 0
     while not terminated:
         data = pyg_converter.convert(state)
         batch = Batch.from_data_list([data])  # Data already on device
@@ -321,22 +338,26 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         action = action_tensor.cpu().item()
         next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
         state = next_state
-
+        eval_episode_steps += 1
     episode_final_reward = reward
     if not config.get("wandb_off"):
-        # Log the 10 
+        # Log 
         wandb.log({
             # Final reward (after a full path has been constructed)
             "eval/episode_final_reward": episode_final_reward, # Set to maximize in the sweep.
-            "eval/route_length": sim_result['route_length'],
+            "eval/episode_length": eval_episode_steps,
+
             "eval/service_rate": sim_result['service_rate'],
-            "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
-            "eval/completed_trips": sim_result['completed_trip_passengers_count'],
-            "eval/route_efficiency": sim_result['route_efficiency'],
-            "eval/avg_wait_time": sim_result['avg_wait_time'],
-            "eval/bus_utilization": sim_result['bus_utilization'],
+            "eval/demand_coverage_potential": sim_result['demand_coverage_potential'],
+            "eval/demand_coverage_actual": sim_result['demand_coverage_actual'],
+            "eval/route_overlap_ratio": sim_result['route_overlap_ratio'],
+            "eval/node_coverage": sim_result['node_coverage'],
+
             "eval/onboard_rate": sim_result['onboard_rate'],
-            "eval/average_bus_speed": sim_result['average_bus_speed'],
+            "eval/completed_trips": sim_result['completed_trip_passengers_count'],
+            "eval/avg_wait_time": sim_result['avg_wait_time'],
+            "eval/avg_travel_time": sim_result['avg_travel_time'],
+            "eval/bus_utilization": sim_result['bus_utilization'],
         }, step=steps_elapsed)
 
 
@@ -350,22 +371,10 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         network_font_size = 14,
         antialiasing = False,
         file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}.gif"),
-        save_as_mp4 = False
+        save_as_mp4 = False, 
+        bus_only = False # Since our new setup already only contains buses only.
     )
 
-    # Since our new setup already only contains buses only.
-    # env.world.analyzer.network_fancy(
-    #     animation_speed_inverse = 10,
-    #     sample_ratio = 1.0,
-    #     interval = 5,
-    #     trace_length = 5,
-    #     network_font_size = 14,
-    #     antialiasing = False,
-    #     file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}_bus_only.gif"),
-    #     save_as_mp4 = False,
-    #     bus_only = True
-    # )
-        
 
 def get_config() -> Dict[str, Any]:
     """
@@ -412,13 +421,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
-    parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon")
+    parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
-    parser.add_argument("--total_timesteps", type=int, default=15000, help="Total training timesteps") # This is not directly related to the simulation horizon.
+    parser.add_argument("--total_timesteps", type=int, default=1000000, help="Total training timesteps") # This is not directly related to the simulation horizon.
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy_reward_max, greedy_demand_cover, greedy_shortest_path")
     parser.add_argument("--num_baseline_runs", type=int, default=5, help="Number of runs (over which we average the results) for the baseline")
@@ -429,7 +438,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alpha", type=float, default=1.0, help="Modal split parameter for served O-D pairs (proportion taking bus)")
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
-    parser.add_argument("--random_path_init", type=bool, default=False, help="Initialize path randomly (default: True)")
+    parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
     
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=3, help="Number of routes")

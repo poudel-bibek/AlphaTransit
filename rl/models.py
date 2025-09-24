@@ -208,20 +208,20 @@ class GATV2ActorCritic(nn.Module):
         """
         # Compute GAT features once
         node_features = self.gat_forward(graph_batch)
-        print(f"[DEBUG] Node features - has NaN: {torch.isnan(node_features).any()}, shape: {node_features.shape}")
+        # print(f"[DEBUG] Node features - has NaN: {torch.isnan(node_features).any()}, shape: {node_features.shape}")
         
         # Use readout functions with shared node features
         actor_features = self.actor_readout(node_features, graph_batch)
-        print(f"[DEBUG] Actor features - has NaN: {torch.isnan(actor_features).any()}, shape: {actor_features.shape}")
+        # print(f"[DEBUG] Actor features - has NaN: {torch.isnan(actor_features).any()}, shape: {actor_features.shape}")
         
         logits = self.actor_net(actor_features)
-        print(f"[DEBUG] Logits - has NaN: {torch.isnan(logits).any()}, shape: {logits.shape}")
+        # print(f"[DEBUG] Logits - has NaN: {torch.isnan(logits).any()}, shape: {logits.shape}")
         
         critic_features = self.critic_readout(node_features, graph_batch)
         values = self.critic_net(critic_features).squeeze(-1)
         
         masked_logits = self._mask_logits(logits, valid_indices)
-        print(f"[DEBUG] Masked logits - has NaN: {torch.isnan(masked_logits).any()}, shape: {masked_logits.shape}")
+        # print(f"[DEBUG] Masked logits - has NaN: {torch.isnan(masked_logits).any()}, shape: {masked_logits.shape}")
         dist = Categorical(logits=masked_logits)
         # print("[DEBUG] Distribution probs:\n", dist.probs)
         return dist, values
@@ -299,7 +299,7 @@ class GATV2ActorCritic(nn.Module):
         num_nodes = node_features.shape[0] // batch_size  # Assumes fixed num_nodes per graph
         # Reshape to [batch_size, num_nodes * emb_dim]
         graph_features = node_features.view(batch_size, num_nodes * emb_dim)
-        print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
+        # print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
 
         route_progress = graph_batch.route_progress
         # Route progress shape handling:
@@ -307,11 +307,11 @@ class GATV2ActorCritic(nn.Module):
         # - Batched observations: [batch_size, NUM_ROUTES] (already correct)
         if route_progress.dim() == 1:
             route_progress = route_progress.unsqueeze(0)
-        print(f"[DEBUG] Route progress shape: {route_progress.shape}")
+        # print(f"[DEBUG] Route progress shape: {route_progress.shape}")
 
         # Concatenate global features (route_progress)
         graph_features = torch.cat([graph_features, route_progress], dim=1)
-        print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
+        # print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
 
         return graph_features
 
@@ -322,7 +322,7 @@ class GATV2ActorCritic(nn.Module):
         # 1. Global mean pooling 
         graph_features = global_mean_pool(node_features, graph_batch.batch)
         
-        print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
+        # print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
         
         route_progress = graph_batch.route_progress
         # Route progress shape handling:
@@ -330,11 +330,11 @@ class GATV2ActorCritic(nn.Module):
         # - Batched observations: [batch_size, NUM_ROUTES] (already correct)
         if route_progress.dim() == 1:
             route_progress = route_progress.unsqueeze(0)
-        print(f"[DEBUG] Route progress shape: {route_progress.shape}")
+        # print(f"[DEBUG] Route progress shape: {route_progress.shape}")
 
         # Concatenate global features (route_progress)
         graph_features = torch.cat([graph_features, route_progress], dim=1)
-        print(f"[DEBUG] Critic graph features shape after concatenation: {graph_features.shape}")
+        # print(f"[DEBUG] Critic graph features shape after concatenation: {graph_features.shape}")
 
         return graph_features
     

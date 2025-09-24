@@ -1050,6 +1050,14 @@ class TransitEnv(gym.Env):
         demand_coverage_actual_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
         route_overlap_ratio = self._calculate_route_overlap_ratio()
 
+        # Calculate node coverage percentage
+        all_routes_nodes = set()
+        for route in self.all_routes:
+            all_routes_nodes.update(route)
+        if len(self.current_route) > 1:  # Only add current route if it has more than just the starting node
+            all_routes_nodes.update(self.current_route)
+        node_coverage_pct = (len(all_routes_nodes) / self.n_nodes) * 100.0 if self.n_nodes > 0 else 0.0
+
         metrics = {
             # Waiting metrics (all times in seconds for consistency).
             'total_wait_time': final_metrics['total_wait_time'], # Total wait time for completed/traveling passengers (seconds)
@@ -1085,6 +1093,7 @@ class TransitEnv(gym.Env):
             'service_rate': service_rate_pct, # Percentage of demand fulfilled (completed/wanting)
             'onboard_rate': onboard_rate_pct, # Percentage of demand that boarded buses (onboarded/wanting)
             'route_efficiency': route_efficiency_passengers_per_km, # Passengers completed per km of route (passengers/km)
+            'node_coverage': node_coverage_pct, # Percentage of nodes covered by routes (0-100%)
         }
 
         if print_metrics:
@@ -1126,6 +1135,7 @@ class TransitEnv(gym.Env):
             print("\nPERFORMANCE SUMMARY:")
             print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['completed_trip_passengers_count']} / {metrics['wanting_to_onboard']})")
             print(f"   Boarding Success:         {onboard_rate_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
+            print(f"   Node Coverage:            {node_coverage_pct:.1f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
             print(f"   Route Efficiency:         {route_efficiency_passengers_per_km:.2f} passengers/km")
             
             print("="*70)
@@ -1165,6 +1175,7 @@ class TransitEnv(gym.Env):
         ---------
         Encourage: 
             1. Higher demand coverage potential.
+                - This encourages agent to select include O-D pairs that have high demand.
             2. Higher service rate (demand coverage actual/ demand coverage potential)
                 - This is related to frequency of service as well.
             
@@ -1216,6 +1227,7 @@ class TransitEnv(gym.Env):
 
         Max reward:
         - 100% demand coverage: +50
+        - 100% service rate: +30
         - 0 travel time penalty: +0  
         - No overlaps: +0
         - No forced ends: +0
@@ -1223,12 +1235,13 @@ class TransitEnv(gym.Env):
         
         Min reward:
         - 0% demand coverage: +0 (If the demand coverage is 0 then perhaps routes terminated early and overlaps are low)
+        - 0% service rate: +0
         - Max travel time penalty: -30
         - Overlap penalty: -5
         - forced ends: -15
         → Total: -50
         
-        Typical range: [-50, +50] 
+        Typical range: [-50, +80] 
         """
         
         BETA_0 = 50.0      # Demand coverage component (demand served)
@@ -1251,7 +1264,8 @@ class TransitEnv(gym.Env):
         
         # Calculate reward components
         demand_coverage_component = BETA_0 * demand_coverage_potential_norm
-        service_rate_component = BETA_1 * (demand_coverage_actual_norm / demand_coverage_potential_norm)
+        # Prevent division by zero (initially demand_coverage_potential_norm could be zero)
+        service_rate_component = BETA_1 * (demand_coverage_actual_norm / demand_coverage_potential_norm) if demand_coverage_potential_norm > 0 else 0.0
         travel_time_penalty = BETA_2 * avg_travel_time_norm  
         overlap_penalty = BETA_3 * overlap_penalty_norm
 

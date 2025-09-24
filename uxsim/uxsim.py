@@ -1115,7 +1115,7 @@ class Vehicle:
                     
                     # Get next node on the route
                     next_node = s.get_next_path_node()
-                    print(f"\nBus {s.name}: {current_node} -> {next_node}")
+                    # print(f"\nBus {s.name}: {current_node} -> {next_node}")
                     if next_node:
                         s.dest = next_node
                         # Find the link that follows the route
