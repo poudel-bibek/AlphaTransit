@@ -52,6 +52,50 @@ def set_global_seeds(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def initialize_route(env, route_index, use_random=None, avoid_completed_routes=True):
+    """
+    Initialize a route exactly like the RL environment.
+
+    Args:
+        env: TransitEnv instance
+        route_index: Index of route being initialized (0, 1, 2, ...)
+        use_random: Whether to use random initialization. If None, uses env.random_path_init
+        avoid_completed_routes: Whether to avoid starting from nodes in completed routes
+
+    Returns:
+        List containing the starting node for the route
+    """
+    # Use same logic as RL env initialization
+    all_nodes = list(env.demand_df_cached["orig"].unique())
+
+    # Determine if we should use random initialization
+    if use_random is None:
+        use_random = env.random_path_init
+
+    # Filter nodes to avoid completed routes (same as RL env)
+    if avoid_completed_routes:
+        choice_nodes = [node for node in all_nodes if node not in env.all_routes]
+    else:
+        choice_nodes = all_nodes
+
+    if use_random:
+        choice = random.choice(choice_nodes)
+        print(f"Initializing route {route_index} randomly at node: {choice}")
+        return [choice]
+
+    else:
+        # Rank all nodes by highest demand emanating from them (total volume leaving each node)
+        demand_df_grouped = env.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
+        demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
+
+        # Choose the highest ranking node from available choice_nodes
+        for _, row in demand_df_ranked.iterrows():
+            candidate_node = row["orig"]
+            if candidate_node in choice_nodes:
+                choice = candidate_node
+                print(f"Initializing route {route_index} at highest available demand node: {choice}")
+                return [choice]
+
 def create_main_save_dir(config):
     """
     Create main save directory for baseline results.
@@ -78,15 +122,13 @@ def create_initial_network_plot(env, config, img_dir):
     plot_network_and_demand(temp_world, output_path)
     print(f"Initial network plot saved to: {output_path}")
 
-def create_path_visualization(env, config, path, img_dir):
+def create_path_visualization(env, config, routes, img_dir):
     """
-    Create network + path overlay visualization.
+    Create network + path overlay visualization for multiple routes.
     """
-    output_path = os.path.join(img_dir, f"{config.get('baseline_type', 'unknown')}_final_path.png")
-    # Convert single path to list format for consistency with multi-route function
-    routes = [path] if path else []
+    output_path = os.path.join(img_dir, f"{config.get('baseline_type', 'unknown')}_final_routes.png")
     plot_network_demand_and_path(env.world, routes, output_path)
-    print(f"Path visualization saved to: {output_path}")
+    print(f"Routes visualization saved to: {output_path}")
 
 def create_fancy_animations(env, config, baseline_save_dir):
     """
@@ -106,50 +148,53 @@ def create_fancy_animations(env, config, baseline_save_dir):
         )
         print(f"All vehicles animation saved to: {all_vehicles_anim_path}")
         
-        # Create fancy animation with buses only
-        bus_only_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type', 'unknown')}_anim_bus_only.gif")
-        env.world.analyzer.network_fancy(
-            animation_speed_inverse=10,
-            sample_ratio=1.0,
-            interval=5,
-            trace_length=5,
-            network_font_size=14,
-            antialiasing=False,
-            file_name=bus_only_anim_path,
-            save_as_mp4=False,
-            bus_only=True
-        )
-        print(f"Bus-only animation saved to: {bus_only_anim_path}")
+        # # Create fancy animation with buses only
+        # bus_only_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type', 'unknown')}_anim_bus_only.gif")
+        # env.world.analyzer.network_fancy(
+        #     animation_speed_inverse=10,
+        #     sample_ratio=1.0,
+        #     interval=5,
+        #     trace_length=5,
+        #     network_font_size=14,
+        #     antialiasing=False,
+        #     file_name=bus_only_anim_path,
+        #     save_as_mp4=False,
+        #     bus_only=True
+        # )
+        # print(f"Bus-only animation saved to: {bus_only_anim_path}")
         
     except Exception as e:
         print(f"Warning: Could not create fancy animations: {e}")
         print("This might be due to insufficient simulation data or missing dependencies.")
 
-def simulate_baseline_path(env, config, path, img_dir, baseline_save_dir):
+def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
     """
     Shared across all baselines.
-    Simulate the path to get the performance results.
+    Simulate routes to get the performance results.
     Includes visualization and animation generation similar to RL training.
     """
     # Create initial network visualization before simulation
     create_initial_network_plot(env, config, img_dir)
 
-    # Update env's path
-    env.current_path = path
-    
+    # For baselines, we get the completed routes and then simulate the final.
+    env.all_routes = routes
+    env.current_route = []  # No current route being built for baselines
+    env.current_route_index = len(routes)  # All routes completed
+    env.is_baseline = True  # Set baseline flag
+
     # Build world with correct demand allocation
     env.world = env.build_world(config.get("network"))
-    
-    # Apply buses using env's method
-    env._apply_action()
-    
+
+    # Apply buses using env's method (this will handle all routes)
+    env._apply_action()  # Will automatically skip route completion checks due to is_baseline flag
+
     # Run simulation and get metrics
     sim_result = env._step_until(env.horizon, print_metrics=True)
 
     # Generate visualizations using standalone functions
-    create_path_visualization(env, config, path, img_dir)
+    create_path_visualization(env, config, routes, img_dir)
     create_fancy_animations(env, config, baseline_save_dir)
-    
+
     return {
         'sim_result': sim_result
     }
@@ -181,61 +226,50 @@ def average_sim_results(results_list):
 def print_results(results_list, averaged):
     """
     """
-    units = {
-        'total_wait_time': 'seconds',
-        'wait_time_sim_end': 'seconds',
-        'sim_end_waiting_passengers_count': 'count',
-        'avg_wait_time': 'seconds',
-        'wanting_to_onboard': 'count',
-        'total_onboarded_count': 'count',
-        'completed_trip_passengers_count': 'count',
-        'movement_time': 'seconds',
-        'total_travel_time': 'seconds',
-        'route_length': 'meters',
-        'bus_utilization': '%',
-        'average_bus_speed': 'm/s',
+    # Match the exact metric names from RL eval logging
+    eval_metrics = {
+        'episode_final_reward': 'reward',
+        'episode_length': 'count',
         'service_rate': '%',
+        'demand_coverage_potential': '%',
+        'demand_coverage_actual': '%',
+        'route_overlap_ratio': 'ratio',
+        'node_coverage': '%',
         'onboard_rate': '%',
-        'route_efficiency': 'passengers/km'
+        'completed_trips': 'count',  # maps to completed_trip_passengers_count
+        'avg_wait_time': 'seconds',
+        'avg_travel_time': 'seconds',
+        'bus_utilization': '%'
     }
 
     print("\n=== Individual Run Results ===")
     # Find max key length for alignment
-    max_key_len = 0
-    for res in results_list:
-        for key in res['sim_result']:
-            if isinstance(res['sim_result'][key], (int, float)):
-                max_key_len = max(max_key_len, len(key))
-    
+    max_key_len = max(len(key) for key in eval_metrics.keys())
+
     for i, res in enumerate(results_list, 1):
         print(f"Run {i}:")
-        for key, val in sorted(res['sim_result'].items()):  # Sort keys for consistent order
-            if isinstance(val, (int, float)):
+        for key in eval_metrics.keys():
+            val = res['sim_result'].get(key)
+            if val is not None and isinstance(val, (int, float)):
                 val_str = f"{val:.2f}" if isinstance(val, float) else f"{val}"
-                unit_str = f" ({units.get(key, '')})" if units.get(key) else ""
+                unit_str = f" ({eval_metrics[key]})"
                 print(f"  {key:<{max_key_len}} : {val_str}{unit_str}")
         print("---")
 
     print("\n=== Averaged Results ===")
-    for key in sorted(averaged):  # Sort keys for consistent order
+    for key in eval_metrics.keys():
         values = []
         for res in results_list:
             val = res['sim_result'].get(key)
-            if isinstance(val, (int, float)):
+            if val is not None and isinstance(val, (int, float)):
                 values.append(val)
-        
+
         if values:
-            str_values = []
-            for v in values:
-                if isinstance(v, float):
-                    str_values.append(f"{v:.2f}")
-                else:
-                    str_values.append(f"{v}")
-            
+            str_values = [f"{v:.2f}" if isinstance(v, float) else f"{v}" for v in values]
             calc_str = " + ".join(str_values)
-            avg_val = averaged[key]
+            avg_val = averaged.get(key, 0.0)
             avg_str = f"{avg_val:.2f}" if isinstance(avg_val, float) else f"{avg_val}"
-            unit_str = f" ({units.get(key, '')})" if units.get(key) else ""
+            unit_str = f" ({eval_metrics[key]})"
             print(f"  {key:<{max_key_len}} : ({calc_str}) / {len(values)} = {avg_str}{unit_str}")
     
     # Print LaTeX row
@@ -263,11 +297,11 @@ def execute_runs(baseline, num_runs, base_seed):
         
         # Reset env
         state, _ = baseline.env.reset()
-        
-        path = baseline.construct_path(state)
-        print(f"Path: {path}")
-        
-        result = simulate_baseline_path(baseline.env, baseline.config, path, img_dir, seed_dir)
+
+        routes = baseline.construct_path(state)
+        print(f"Routes: {routes}")
+
+        result = simulate_baseline_routes(baseline.env, baseline.config, routes, img_dir, seed_dir)
         results.append(result)
     
     averaged = average_sim_results(results)
@@ -291,30 +325,46 @@ class RandomBaseline:
 
     def construct_path(self, state):
         """
+        Multi-route version:
         Algorithm:
-        Step 1: Initialization (same initialization as RL), happens in main at reset.
-        Step 2: At each step, select a random neighbor from the valid neighbors.
-        Step 3: Repeat step 2 until reaching the max path length.
+        Step 1: Initialize first route (same initialization as RL)
+        Step 2: For each route, select random neighbors until max length or no valid moves
+        Step 3: Move to next route and repeat
+        Step 4: Return all completed routes
         """
-        current_path = list(self.env.current_path)  # Make a copy
-        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
+        all_routes = []
+        current_route_index = 0
 
-            # Get current frontier
-            frontier = current_path[-1]
-            
-            # Get valid neighbors (adjacent and not already in path)
-            path_set = set(current_path)
-            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
-            if not valid_neighbors:
-                print(f"No valid neighbors found for frontier: {frontier}")
-                break
+        while current_route_index < self.env.NUM_ROUTES:
+            print(f"\n=== Building Route {current_route_index + 1} ===")
 
-            # Select random neighbor
-            next_node = random.choice(valid_neighbors)
-            
-            current_path.append(next_node)
-            print(f"\nRoute so far: {current_path}\n")
-        return current_path
+            # Initialize current route (exactly like RL env initialization)
+            current_route = initialize_route(self.env, current_route_index)
+
+            while len(current_route) < self.env.MAX_ROUTE_LENGTH:
+                # Get current frontier
+                frontier = current_route[-1]
+
+                # Get valid neighbors (adjacent and not already in current route)
+                route_set = set(current_route)
+                valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+                if not valid_neighbors:
+                    print(f"No valid neighbors found for frontier: {frontier}")
+                    break
+
+                # Select random neighbor
+                next_node = random.choice(valid_neighbors)
+
+                current_route.append(next_node)
+                print(f"Route {current_route_index + 1} so far: {current_route}")
+
+            # Add completed route to all_routes
+            all_routes.append(current_route)
+            print(f"Route {current_route_index + 1} completed: {current_route}")
+            current_route_index += 1
+
+        print(f"\nAll routes completed: {all_routes}")
+        return all_routes
 
 class GreedyDemandCoverage:
     def __init__(self, env, config, num_runs, base_seed):
@@ -330,7 +380,7 @@ class GreedyDemandCoverage:
 
     def construct_path(self, state):
         """
-        Algorithm: 
+        Algorithm:
         Step 1: Initialization (same initialization as RL), happens in main at reset.
         Step 2: At each step, from valid neighboring nodes
             - Calculate the incremental demand that would be served by adding that node to the path.
@@ -342,7 +392,7 @@ class GreedyDemandCoverage:
 
             # Get current frontier
             frontier = current_path[-1]
-            
+
             # Get valid neighbors (adjacent and not already in path)
             path_set = set(current_path)
             valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
@@ -358,19 +408,19 @@ class GreedyDemandCoverage:
 
             for neighbor in valid_neighbors:
                 neigh_idx = self.env.node_to_idx[neighbor]
-                
+
                 # Incremental outgoing: flows from neighbor to current path nodes
                 d_out_inc = self.env.od_matrix[neigh_idx, path_indices].sum()
-                
+
                 # Incremental incoming: flows from current path nodes to neighbor
                 d_in_inc = self.env.od_matrix[path_indices, neigh_idx].sum()
-                
+
                 score = d_out_inc + d_in_inc
-                
+
                 if score > best_score:
                     best_score = score
                     best_node = neighbor
-            
+
             current_path.append(best_node)
             print(f"\nRoute so far: {current_path}\n")
         return current_path
@@ -389,7 +439,7 @@ class GreedyShortestPath:
 
     def construct_path(self, state):
         """
-        Algorithm: 
+        Algorithm:
         Step 1: Initialization (same initialization as RL), happens in main at reset.
         Step 2: At each step, from valid neighboring nodes
             - Calculate the shortest path between the current path and the valid neighboring nodes.
@@ -404,7 +454,7 @@ class GreedyShortestPath:
 
             # Get current frontier
             frontier = current_path[-1]
-            
+
             # Get valid neighbors (adjacent and not already in path)
             path_set = set(current_path)
             valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
@@ -419,11 +469,11 @@ class GreedyShortestPath:
             for neighbor in valid_neighbors:
                 # Get the edge length between frontier and neighbor
                 edge_length = self.env.link_lengths.get((frontier, neighbor), np.inf)
-                
+
                 if edge_length < best_score:
                     best_score = edge_length
                     best_node = neighbor
-                
+
             current_path.append(best_node)
             print(f"\nRoute so far: {current_path}\n")
         return current_path
@@ -439,13 +489,13 @@ class GreedyRewardMaximization:
         self.num_runs = num_runs
         self.base_seed = base_seed
         self.main_save_dir = create_main_save_dir(config)
-        
+
     def run(self):
         return execute_runs(self, self.num_runs, self.base_seed)
 
     def construct_path(self, state):
         """
-        Algorithm: 
+        Algorithm:
         Step 1: Initialization (same initialization as RL), happens in main at reset.
         Step 2: At each step, from valid neighboring nodes
             - Calculate the reward that would be obtained by adding that node to the path.
@@ -459,7 +509,7 @@ class GreedyRewardMaximization:
 
             # Get current frontier
             frontier = current_path[-1]
-            
+
             # Get valid neighbors (adjacent and not already in path)
             path_set = set(current_path)
             valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
@@ -472,7 +522,7 @@ class GreedyRewardMaximization:
 
             for neighbor in valid_neighbors:
                 temp_path = current_path + [neighbor]
-                
+
                 # Temporarily set path and simulate
                 self.env.current_path = temp_path
                 self.env.world = self.env.build_world(self.env.config.get("network"))
@@ -483,7 +533,7 @@ class GreedyRewardMaximization:
                 if reward > best_reward:
                     best_reward = reward
                     best_node = neighbor
-            
+
             # Restore original path after evaluations
             self.env.current_path = original_path
             current_path.append(best_node)

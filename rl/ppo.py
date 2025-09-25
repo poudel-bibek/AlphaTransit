@@ -31,7 +31,6 @@ class PPO:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
-        self.total_timesteps = kwargs.get('total_timesteps')
         self.memory = Memory()
 
     def update(self) -> Dict[str, float]:

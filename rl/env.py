@@ -48,11 +48,12 @@ class TransitEnv(gym.Env):
         self.MAX_ROUTE_LENGTH = self.config.get("max_route_length")
         self.MIN_ROUTE_LENGTH = self.config.get("min_route_length")
         self.world = None
-        
+
         # Multi-route management:
         self.all_routes = []           # List of completed routes [[route1], [route2], ...]
         self.current_route = []        # Currently active route being built
         self.current_route_index = 0   # Index of route currently being built (0 to NUM_ROUTES-1)
+        self.is_baseline = False       # Flag to indicate if this is baseline evaluation mode
         self.N_NODE_FEATURES = 12
         self.N_EDGE_FEATURES = 2
 
@@ -722,30 +723,34 @@ class TransitEnv(gym.Env):
         - Add necessary vehicles to the world.
             - Add buses based on the current path and SERVICE_FREQUENCY.
         - Check for route completion conditions and handle transitions
-        
+
+        Args:
+            baseline: If True, skip route completion checks (for baseline evaluation)
+
         Returns a dict with route completion signals:
         - route_completed: Route was successfully completed (met min length)
         - route_forced_end: Route ended due to no valid moves (may be short)
         - ep_done: All routes have been processed
         """
-        
-        # Check for route completion conditions BEFORE creating buses
+
+        # Check for route completion conditions BEFORE creating buses (skip for baselines)
         route_completed, route_forced_end, ep_done = False, False, False
-        
-        # Route reached maximum length - complete it successfully
-        if len(self.current_route) >= self.MAX_ROUTE_LENGTH:
-            self.all_routes.append(self.current_route[:])  # Store completed route
-            print(f"Route {self.current_route_index} completed successfully: {self.current_route}")
-            route_completed = True
-        
-        # No valid moves left - route is incomplete/forced to end
-        elif len(self._get_valid_indices()) == 0:
-            print(f"Route {self.current_route_index} forced to end (no valid moves, incomplete: {len(self.current_route)} < {self.MAX_ROUTE_LENGTH})")
-            route_forced_end = True
+
+        if not self.is_baseline:
+            # Route reached maximum length - complete it successfully
+            if len(self.current_route) >= self.MAX_ROUTE_LENGTH:
+                self.all_routes.append(self.current_route[:])  # Store completed route
+                print(f"Route {self.current_route_index} completed successfully: {self.current_route}")
+                route_completed = True
+
+            # No valid moves left - route is incomplete/forced to end
+            elif len(self._get_valid_indices()) == 0:
+                print(f"Route {self.current_route_index} forced to end (no valid moves, incomplete: {len(self.current_route)} < {self.MAX_ROUTE_LENGTH})")
+                route_forced_end = True
 
         # Simulate both completed and current partial route being built (only if current route has at least 2 nodes)
         routes_to_simulate = self.all_routes.copy()  # Create a copy, not a reference!
-        if len(self.current_route) > 1:
+        if not self.is_baseline and len(self.current_route) > 1:
             routes_to_simulate.append(self.current_route)
         
         for route_idx, route in enumerate(routes_to_simulate):
@@ -932,21 +937,27 @@ class TransitEnv(gym.Env):
         """
         Compute metrics (which can be computed before the sim starts):
         - Route length (meters). Since we use heuristic baselines like shortest path, this should be part of the metrics .
-        - Count of wanting to onboard: 
+        - Count of wanting to onboard:
             - The goal is to serve all demand
             - This measures the demand that can be served by current routes.
             - If routes are designed well, this should be close to the total demand.
         """
 
-        # 1. Route length 
+        # 1. Route length - sum of all completed routes plus current route
         route_length = 0.0
-        if len(self.current_route) < 2:
-            raise ValueError("Current path must have at least 2 nodes")
-        
-        for i in range(len(self.current_route) - 1):
-            route_length += self.link_lengths[(str(self.current_route[i]), str(self.current_route[i+1]))]
-        
-        # 2. Wanting to onboard 
+
+        # Add length of all completed routes
+        for route in self.all_routes:
+            if len(route) >= 2:
+                for i in range(len(route) - 1):
+                    route_length += self.link_lengths.get((str(route[i]), str(route[i+1])), 0.0)
+
+        # Add length of current route (if it has at least 2 nodes and not baseline)
+        if not self.is_baseline and len(self.current_route) >= 2:
+            for i in range(len(self.current_route) - 1):
+                route_length += self.link_lengths.get((str(self.current_route[i]), str(self.current_route[i+1])), 0.0)
+
+        # 2. Wanting to onboard
         wanting_to_onboard = 0
         for _, row in self.demand_df_cached.iterrows():
             orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
