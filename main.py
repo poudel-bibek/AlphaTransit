@@ -58,9 +58,9 @@ class CachedPyGConverter:
 #     data.steps_left = steps_left
 #     return data
 
-def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
+def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """
-    mean_buffer_reward: average per-step rewards stored in the current memory buffer. 
+    mean_buffer_reward: average per-step rewards stored in the current memory buffer.
     Is not a true measure of the policy's performance.
     """
     print("\n==================\n")
@@ -75,13 +75,13 @@ def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
     print(f"\tBootstrap values: {ppo.memory.bootstrap_values}")
 
     if anneal_lr:
-        ppo.update_learning_rate(steps_elapsed)
+        ppo.update_learning_rate(episode, config["num_episodes"])
 
-    mem_len = len(ppo.memory)  
+    mem_len = len(ppo.memory)
     stats = ppo.update() # Also clears the memory.
 
     print("\n=== PPO Update ===")
-    print(f"Step: {steps_elapsed}")
+    print(f"Episode: {episode}, Steps elapsed: {steps_elapsed}")
     print(f"Samples: {mem_len}")
     print(f"PG Loss: {stats['pg_loss']:.4f}")
     print(f"Value Loss: {stats['value_loss']:.4f}")
@@ -100,7 +100,8 @@ def perform_ppo_update(ppo: PPO, steps_elapsed: int, anneal_lr: bool) -> None:
         "ppo/approx_kl": stats['approx_kl'],
         "ppo/mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
         "ppo/learning_rate": ppo.optimizer.param_groups[0]['lr'], # Current learning rate after annealing
-    }, step=steps_elapsed)
+        "ppo/steps_elapsed": steps_elapsed, # Total steps across all episodes
+    }, step=episode)
 
 def train(config: Dict[str, Any]) -> None:
     """
@@ -187,12 +188,12 @@ def train(config: Dict[str, Any]) -> None:
     ppo = PPO(model, **config)
     policy_dir = os.path.join(training_save_dir, "policies")
     os.makedirs(policy_dir, exist_ok=True)
-    
+
     # PyG converter
     pyg_converter = CachedPyGConverter(config["device"])
     episode, steps_elapsed, update_count = 0, 0, 0
-    
-    while steps_elapsed < config["total_timesteps"]:
+
+    while episode < config["num_episodes"]:
         episode += 1
         print(f"\n=== Episode {episode} ===")
         
@@ -266,6 +267,7 @@ def train(config: Dict[str, Any]) -> None:
         wandb.log({
             "episode/episode_final_reward": episode_final_reward,
             "episode/episode_length": episode_steps, # Length of routes
+            "episode/steps_elapsed": steps_elapsed, # Total steps across all episodes
             # reward related
             "episode/service_rate": sim_result['service_rate'],
             "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
@@ -278,21 +280,21 @@ def train(config: Dict[str, Any]) -> None:
             "episode/avg_wait_time": sim_result['avg_wait_time'],
             "episode/avg_travel_time": sim_result['avg_travel_time'],
             "episode/bus_utilization": sim_result['bus_utilization'],
-            }, step=steps_elapsed)
+            }, step=episode)
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
-            perform_ppo_update(ppo, steps_elapsed, config.get("anneal_lr"))
+            perform_ppo_update(ppo, episode, steps_elapsed, config.get("anneal_lr"), config)
             update_count += 1
 
             # Save policy after every update.
-            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_st_{steps_elapsed}.pth")
+            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_ep_{episode}.pth")
             torch.save(model.state_dict(), policy_path)
 
             if update_count % config["eval_every"] == 0:
-                eval(config, policy_path, steps_elapsed, training_save_dir)
+                eval(config, policy_path, episode, training_save_dir)
     
-def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir: str) -> Dict[str, float]: 
+def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) -> Dict[str, float]: 
     """
     Evaluate a trained policy
     - Load a saved policy
@@ -341,7 +343,7 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         eval_episode_steps += 1
     episode_final_reward = reward
     if not config.get("wandb_off"):
-        # Log 
+        # Log
         wandb.log({
             # Final reward (after a full path has been constructed)
             "eval/episode_final_reward": episode_final_reward, # Set to maximize in the sweep.
@@ -358,11 +360,11 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
             "eval/avg_wait_time": sim_result['avg_wait_time'],
             "eval/avg_travel_time": sim_result['avg_travel_time'],
             "eval/bus_utilization": sim_result['bus_utilization'],
-        }, step=steps_elapsed)
+        }, step=episode)
 
 
     # Plots
-    env.render(save_dir, f"eval_{str(steps_elapsed)}.png")
+    env.render(save_dir, f"eval_{str(episode)}.png")
     env.world.analyzer.network_fancy(
         animation_speed_inverse = 10,
         sample_ratio = 1.0,
@@ -370,8 +372,8 @@ def eval(config: Dict[str, Any], policy_path: str, steps_elapsed: str, save_dir:
         trace_length = 5,
         network_font_size = 14,
         antialiasing = False,
-        file_name = os.path.join(save_dir, f"eval_anim_{str(steps_elapsed)}.gif"),
-        save_as_mp4 = False, 
+        file_name = os.path.join(save_dir, f"eval_anim_{str(episode)}.gif"),
+        save_as_mp4 = False,
         bus_only = False # Since our new setup already only contains buses only.
     )
 
@@ -428,6 +430,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--total_timesteps", type=int, default=1000000, help="Total training timesteps") # This is not directly related to the simulation horizon.
+    parser.add_argument("--num_episodes", type=int, default=100000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy_reward_max, greedy_demand_cover, greedy_shortest_path")
     parser.add_argument("--num_baseline_runs", type=int, default=5, help="Number of runs (over which we average the results) for the baseline")

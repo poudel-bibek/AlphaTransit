@@ -1,3 +1,13 @@
+
+```
+conda create -n transit python=3.12
+```
+
+
+```
+pip install .
+```
+
 # UXsim: Network traffic flow simulator in pure Python
 
 [![PyPi](https://img.shields.io/pypi/v/uxsim.svg)](https://pypi.python.org/pypi/uxsim)

@@ -209,11 +209,11 @@ class PPO:
             self.memory.advantages = all_advantages.numpy()
             self.memory.returns = all_returns.numpy()
 
-    def update_learning_rate(self, current_timestep: int) -> None:
+    def update_learning_rate(self, current_episode: int, total_episodes: int) -> None:
         """
-        Update learning rate according to a linear schedule.
+        Update learning rate according to a linear schedule based on episodes.
         """
-        progress = current_timestep / self.total_timesteps
+        progress = current_episode / total_episodes
         new_lr = self.lr * (1 - progress)
 
         for param_group in self.optimizer.param_groups:
