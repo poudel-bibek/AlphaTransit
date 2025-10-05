@@ -1,9 +1,5 @@
 """
-Title: Helper functions to standardize data.
-Author: Anonynomus for submission.
-
-DATA SOURCES:
-================================================================================
+Helper functions to standardize data 
 
 1. Sioux Falls Network:
    - Original source: LeBlanc, L.J., Morlok, E.K., Pierskalla, W.P. (1975). 
@@ -30,34 +26,23 @@ DATA SOURCES:
          - From the repo, the header "ton" lists OD flows as daily vehicle trips, with a total OD flow of 360,600 vehicles per day across all pairs. 
          - Convert to vehicles per hour using a peak hour factor.
 
-2. Mumford 3 Network:
-   - Original source: Mumford, Christine L. (2013). 
-     "New heuristic and evolutionary operators for the multi-objective urban transit routing problem." 
-     IEEE Congress on Evolutionary Computation (CEC)
-   - Repository: https://github.com/RenatoArbex/TransitNetworkDesign
-   - Network size: 127 nodes, 425 links
+2. Bloomington Network:
+   - Original source: This network is being released by us. 
+   - Network size: 143 nodes, 240 links
    - Notes: 
-       - Synthetic network based on real-world characteristics.
-       - Transit time is recorded in minutes (with "Inf" between nodes that are not connected).
-
-2. Rivera City Network:
-   - Original source: Mauttone, Antonio (2005). 
-     "Optimización de recorridos y frecuencias en sistemas de transporte público urbano colectivo." 
-     Master's Thesis, Universidad de la República, Uruguay.
-   - Repository: https://github.com/RenatoArbex/TransitNetworkDesign
-   - Network size: 84 nodes, 143 links  
-   - Notes: 
-       - Real-world network from Rivera, Uruguay (border city). Geographic coordinates.
-
-4. Laval Network:
-   - Original source: Holliday, A., El-Geneidy, A., Dudek, G. (2024).
-     "Learning Heuristics for Transit Network Design and Improvement with Deep Reinforcement Learning."
-     arXiv preprint https://arxiv.org/html/2404.05894v2
-   - Repository: Obtained from email correspondence with the authors.
-   - Network size: 632 nodes, 1971 links
-   - Notes: 
-       - Real-world network from Laval, Canada
-
+      - The coordinates, links, and demand are from the real-world.
+      - Nodes: 
+         - Coordinates are in longitude, latitude format.
+         - Convert to (x, y) in meters.
+      - Links:
+         - The length of the links are obtained from Google Maps. 
+         - There are a total of i.e., missing link names: Link names 
+      - Existing real-world routes: 
+         - Source 1: https://www.google.com/maps/d/u/0/viewer?mid=1hABSC6s2MoTnnfVmxy1JPLFAvcfkPZs&ll=39.174579022786%2C-86.5382328329941&z=15
+         - Source 2: https://www.transit.land/operators/o-dnfq-bloomingtontransit
+      - Demand:
+         - F
+         
 STANDARDIZED FORMAT:
 ================================================================================
 
@@ -79,10 +64,8 @@ STANDARDIZED FORMAT:
    - volume: float (vehicles/hour)
 """
 
-from re import S
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 class Helpers: 
    def __init__(self):
@@ -235,22 +218,18 @@ class Helpers:
       nodes_standard_csv = nodes_csv.replace('.csv', '_standard.csv')
       self.convert_links_csv_tntp(links_tntp, nodes_standard_csv)
 
+### Sioux Falls Network ###
+# sioux_falls = Helpers()
+# sioux_falls_nodes_csv = "./sioux_falls/sioux_falls_nodes.csv"
+# sioux_falls_links_tntp = "./sioux_falls/sioux_falls_net.tntp"
+# sioux_falls_demand_csv = "./sioux_falls/sioux_falls_demand.csv"
+# sioux_falls.convert_sioux_falls(nodes_csv=sioux_falls_nodes_csv, demand_csv=sioux_falls_demand_csv, links_tntp=sioux_falls_links_tntp)
 
-sioux_falls = Helpers()
-sioux_falls_nodes_csv = "./sioux_falls/sioux_falls_nodes.csv"
-sioux_falls_links_tntp = "./sioux_falls/sioux_falls_net.tntp"
-sioux_falls_demand_csv = "./sioux_falls/sioux_falls_demand.csv"
-sioux_falls.convert_sioux_falls(nodes_csv=sioux_falls_nodes_csv, demand_csv=sioux_falls_demand_csv, links_tntp=sioux_falls_links_tntp)
+### Bloomington Network ###
+bloomington = Helpers()
+bloomington_nodes_csv = "./bloomington/bloomington_nodes.csv"
+bloomington_links_tntp = "./bloomington/bloomington_links.csv"
+bloomington_demand_csv = "./bloomington/bloomington_demand.csv"
+bloomington.convert_bloomington(nodes_csv=bloomington_nodes_csv, demand_csv=bloomington_demand_csv, links_tntp=bloomington_links_tntp)
 
 
-
-
-# def travel_time_to_length_speed(links_csv: str) -> None:
-#    """
-#    For Links: Convert `travel time` column to `length` and `free_flow_speed` columns using ..
-#    TODO: Complete this.
-#    """
-#    df = pd.read_csv(links_csv)
-#    df["length"] = df["length"].apply(lambda x: x * 1000)
-#    df["speed"] = df["speed"].apply(lambda x: x * 1000)
-#    df.to_csv(links_csv, index=False)
