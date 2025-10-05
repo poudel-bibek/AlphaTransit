@@ -219,6 +219,23 @@ class Helpers:
       nodes_standard_csv = nodes_csv.replace('.csv', '_standard.csv')
       self.convert_links_csv_tntp(links_tntp, nodes_standard_csv)
 
+   def convert_bloomington(self, nodes_csv: str, demand_csv: str, links_tntp: str):
+      """
+      For Nodes: Assuming columns: node_name, longitude, latitude
+        - Convert to (x, y) in meters.
+      For edges:
+        - Convert length from miles to meters.
+      For demand:
+        - Convert
+      """
+      
+      nodes_map = {'name': 'name', 'lon': 'lon', 'lat': 'lat'}
+      self.convert_lat_long_to_meters(nodes_csv, nodes_map)
+      
+      # name, start, end, length
+
+
+
 ### Sioux Falls Network ###
 # sioux_falls = Helpers()
 # sioux_falls_nodes_csv = "./sioux_falls/sioux_falls_nodes.csv"
