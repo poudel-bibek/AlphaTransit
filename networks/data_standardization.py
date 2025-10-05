@@ -38,6 +38,7 @@ Helper functions to standardize data
          - The length of the links are obtained from Google Maps. 
          - There are a total of i.e., missing link names: Link names 
       - Existing real-world routes: 
+         - 16 total existing routes. 
          - Source 1: https://www.google.com/maps/d/u/0/viewer?mid=1hABSC6s2MoTnnfVmxy1JPLFAvcfkPZs&ll=39.174579022786%2C-86.5382328329941&z=15
          - Source 2: https://www.transit.land/operators/o-dnfq-bloomingtontransit
       - Demand:
