@@ -41,8 +41,10 @@ Helper functions to standardize data
          - 16 total existing routes. 
          - Source 1: https://www.google.com/maps/d/u/0/viewer?mid=1hABSC6s2MoTnnfVmxy1JPLFAvcfkPZs&ll=39.174579022786%2C-86.5382328329941&z=15
          - Source 2: https://www.transit.land/operators/o-dnfq-bloomingtontransit
+         - Source 3: https://bloomingtontransit.com/gtfs/
       - Demand:
          - F
+         - Source: https://lehd.ces.census.gov/data/lodes/LODES8/in/od/in_od_main_JT05_2022.csv.gz
          
 STANDARDIZED FORMAT:
 ================================================================================
@@ -219,6 +221,12 @@ class Helpers:
       nodes_standard_csv = nodes_csv.replace('.csv', '_standard.csv')
       self.convert_links_csv_tntp(links_tntp, nodes_standard_csv)
 
+
+   def confusion_matrix()
+   """
+   Plot the O-D demand as a confusion matrix.
+   """
+
    def convert_bloomington(self, nodes_csv: str, demand_csv: str, links_tntp: str):
       """
       For Nodes: Assuming columns: node_name, longitude, latitude
@@ -228,7 +236,7 @@ class Helpers:
       For demand:
         - Convert
       """
-      
+
       nodes_map = {'name': 'name', 'lon': 'lon', 'lat': 'lat'}
       self.convert_lat_long_to_meters(nodes_csv, nodes_map)
       
