@@ -73,3 +73,23 @@ training_data/*wandb/
 ./outsioux_falls/*
 
 outsioux_falls
+
+./networks/bloomington/in_od_main_JT00_2022.csv
+networks/bloomington/in_od_main_JT00_2022.csv
+
+./networks/bloomington/bloomington_demand_step_1.csv
+./networks/bloomington/bloomington_demand_step_2.csv
+./networks/bloomington/bloomington_demand_step_3.csv
+
+networks/bloomington/bloomington_demand_step_1.csv
+networks/bloomington/bloomington_demand_step_2.csv
+networks/bloomington/bloomington_demand_step_3.csv
+
+./networks/bloomington/tl_2022_18_tabblock20/
+./networks/bloomington/tl_2022_18_tabblock20/*
+
+networks/bloomington/tl_2022_18_tabblock20/
+networks/bloomington/tl_2022_18_tabblock20/*
+
+./networks/bloomington/blocks_centroids_grid.png
+networks/bloomington/blocks_centroids_grid.png
