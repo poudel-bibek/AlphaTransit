@@ -308,6 +308,10 @@ def execute_runs(baseline, num_runs, base_seed):
     print_results(results, averaged)
     return results, averaged
 
+#####################################
+# Heuristic Baselines: 
+#####################################
+
 class RandomBaseline:
     """
     Random Neighbor Baseline.
@@ -539,3 +543,16 @@ class GreedyRewardMaximization:
             current_path.append(best_node)
             print(f"\nRoute so far: {current_path}\n")
         return current_path
+
+#####################################
+# Real-world Baseline: 
+#####################################
+
+class RealWorldBaseline:
+    def __init__(self, env, config, num_runs, base_seed):
+        self.env = env
+        self.config = config
+        self.world = env.build_world(config.get("network"))
+        self.num_runs = num_runs
+        self.base_seed = base_seed
+        self.main_save_dir = create_main_save_dir(config)

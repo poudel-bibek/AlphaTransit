@@ -13,7 +13,7 @@ from rl.models import GATV2ActorCritic
 from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
 from rl.env_utils import plot_network_and_demand
-from rl.heuristic_baselines import RandomBaseline, GreedyDemandCoverage, GreedyShortestPath, GreedyRewardMaximization
+from rl.baselines import RandomBaseline, GreedyDemandCoverage, GreedyShortestPath, GreedyRewardMaximization
 
 class CachedPyGConverter:
     """
@@ -419,7 +419,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
     # Simulation setup: 
-    parser.add_argument("--network", choices=["sioux_falls", "laval", "rivera", "mumford3"], default="sioux_falls", help="Network selection")
+    parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")

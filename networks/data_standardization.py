@@ -28,7 +28,7 @@ Helper functions to standardize data
 
 2. Bloomington Network:
    - Original source: This network is being released by us. 
-   - Network size: 143 nodes, 240 links
+   - Network size: 143 nodes, 243 links
    - Notes: 
       - The coordinates, links, and demand are from the real-world.
       - Nodes: 
@@ -82,9 +82,15 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Polygon as MplPolygon, Circle
 from pyproj import Transformer
 from matplotlib.collections import LineCollection
+import contextily as ctx
+from matplotlib.ticker import FuncFormatter
+from scipy.spatial import ConvexHull
+
+# Import plotting functions
+from plot_data import plot_demand_viz, plot_unified, plot_bloomington_base, plot_validation_mapping
 
 class Helpers: 
    def __init__(self):
@@ -235,12 +241,6 @@ class Helpers:
       self.convert_links_csv_tntp(links_tntp, nodes_standard_csv)
 
 
-   def plot_confusion_matrix(self, demand_csv: str):
-      """
-      Plot the O-D demand as a confusion matrix.
-      """
-      pass 
-
    def convert_bloomington(self, nodes_csv: str, links_csv: str, demand_lodes_csv: str):
       """
       For Nodes: Assuming columns: node_name, longitude, latitude
@@ -251,7 +251,11 @@ class Helpers:
       For demand:
         - Convert
       """
-      PEAK_HOUR_FACTOR = 0.06
+
+      PEAK_HOUR_FACTOR = 0.11
+
+      # Non-Commuter Trip Expansion Factor
+      OTHER_TRIPS_FACTOR = 1.50 # Since the data only has commuter (work trips), include 100% of other trips
 
       # The original nodes file contains name, lon, lat
       nodes_map = {'name': 'name', 'lon': 'lon', 'lat': 'lat'}
@@ -264,8 +268,8 @@ class Helpers:
       df_links['length'] = df_links['length'].round(1)
 
       # If adding a free_flow_speed column
-      # if 'free_flow_speed' not in df_links.columns:
-      #     df_links['free_flow_speed'] = 13.89  # Default m/s (50 km/h); adjust as needed
+      if 'free_flow_speed' not in df_links.columns:
+          df_links['free_flow_speed'] = 13.89  # Default m/s (50 km/h); adjust as needed
 
       output_links = links_csv.replace('.csv', '_standard.csv')
       df_links.to_csv(output_links, index=False)
@@ -307,12 +311,19 @@ class Helpers:
       print(f"Bounds:{bounds}, \nWidth: {width}, Height: {height}")
 
       # The inset sizes are chosen empirically/ iteratively.
-      inset_left = 0.2 * width
+      inset_left = 0.22 * width
       inset_right = 0.4 * width
       inset_top = 0.37 * height
-      inset_bottom = 0.3 * height
+      inset_bottom = 0.32 * height
       shrunk_bounds = [bounds[0] + inset_left, bounds[1] + inset_bottom, bounds[2] - inset_right, bounds[3] - inset_top]
-      print(f"\nShrunk bounds: {shrunk_bounds}\n Width: {shrunk_bounds[2] - shrunk_bounds[0]}, Height: {shrunk_bounds[3] - shrunk_bounds[1]}")
+
+      # Calculate and print area in square kilometers
+      shrunk_width = shrunk_bounds[2] - shrunk_bounds[0]
+      shrunk_height = shrunk_bounds[3] - shrunk_bounds[1]
+      area_sqm = shrunk_width * shrunk_height
+      area_sqkm = area_sqm / 1_000_000
+      print(f"\nShrunk area: {area_sqkm:.2f} square kilometers\n")
+      print(f"\nShrunk bounds: {shrunk_bounds}\n Width: {shrunk_width}, Height: {shrunk_height}")
 
       # d. Within the  shrunk bounds, identify the centroid of each block (x, y) and not (long, lat)
       gdf_monroe['centroid'] = gdf_monroe.geometry.centroid  # Temp for filtering
@@ -351,9 +362,9 @@ class Helpers:
 
       # Step 4: Map census block to nodes
       # At this point we have: 
-      # - gdf_monroe with tons of columns. I only need GEOID20, centroid.x, centroid.y
+      # - gdf_monroe with tons of columns. I only need GEOID20, centroid, and geometry
       # - df_demand with h_geocode, w_geocode, S000
-      gdf_monroe = gdf_monroe[['GEOID20', 'centroid']]
+      gdf_monroe = gdf_monroe[['GEOID20', 'centroid', 'geometry']]
       print(f"\nAfter selecting columns:\n{gdf_monroe.head()}")
       
       # For each row in df_demand, for both h_geocode and w_geocode:
@@ -403,36 +414,36 @@ class Helpers:
             orig_node = closest_node(h_point.x, h_point.y)
             dest_node = closest_node(w_point.x, w_point.y)
             if orig_node != dest_node:
-               df_demand.loc[_, 'orig_node'] = orig_node
-               df_demand.loc[_, 'dest_node'] = dest_node
+               df_demand.loc[_, 'orig'] = orig_node
+               df_demand.loc[_, 'dest'] = dest_node
             else:
                print(f"Warning: orig_node and dest_node are the same for row {_}")
                continue
 
       print(f"\nAfter mapping:\n{df_demand.head()}")
-      print(f"Unique orig_nodes: {df_demand['orig_node'].unique()}, Total: {len(df_demand['orig_node'].unique())}")
-      print(f"Unique dest_nodes: {df_demand['dest_node'].unique()}, Total: {len(df_demand['dest_node'].unique())}")
+      print(f"Unique orig_nodes: {df_demand['orig'].unique()}, Total: {len(df_demand['orig'].unique())}")
+      print(f"Unique dest_nodes: {df_demand['dest'].unique()}, Total: {len(df_demand['dest'].unique())}")
       print(f"Number of rows: {len(df_demand)}")
-      print(f"Number of None/ NaN in orig_node: {df_demand['orig_node'].isna().sum()}")
-      print(f"Number of None/ NaN in dest_node: {df_demand['dest_node'].isna().sum()}")
+      print(f"Number of None/ NaN in orig_node: {df_demand['orig'].isna().sum()}")
+      print(f"Number of None/ NaN in dest_node: {df_demand['dest'].isna().sum()}")
 
       # Step 5: Aggregate and save data.
       # The same pair of orig and dest must be summed up. And the columns should just be orig, dest, and volume.
       # Filter out any rows where orig_node or dest_node might be None/NaN before aggregation
-      df_demand = df_demand.dropna(subset=['orig_node', 'dest_node'])
+      df_demand = df_demand.dropna(subset=['orig', 'dest'])
 
       # Save mapping info for validation plot before aggregation
-      mapping_info = df_demand[['h_geocode', 'w_geocode', 'orig_node', 'dest_node']].copy()
+      mapping_info = df_demand[['h_geocode', 'w_geocode', 'orig', 'dest']].copy()
 
       # Rename S000 column to volume for consistency with standard format
       df_demand = df_demand.rename(columns={'S000': 'volume'})
 
       # Now aggregate by summing the volume for duplicate OD pairs
-      df_demand = df_demand.groupby(['orig_node', 'dest_node']).agg({'volume': 'sum'}).reset_index()
+      df_demand = df_demand.groupby(['orig', 'dest']).agg({'volume': 'sum'}).reset_index()
       print(f"\nAfter aggregation:\n{df_demand.head()}")
 
       # Apply the peak hour factor
-      df_demand['volume'] = round(df_demand['volume'] * PEAK_HOUR_FACTOR, 2)
+      df_demand['volume'] = np.ceil(df_demand['volume'] * PEAK_HOUR_FACTOR * ( 1 + OTHER_TRIPS_FACTOR)).astype(int)
 
       output_csv = './bloomington/bloomington_demand_standard.csv'
       df_demand.to_csv(output_csv, index=False)
@@ -450,128 +461,34 @@ class Helpers:
       print(f"Sample node data:\n{nodes_df.head()}")
       print(f"Sample link data:\n{links_df.head()}")
 
-
-      fig, ax = plt.subplots(figsize=(16, 14), dpi=300)
-
-      # Plot network nodes
-      nodes_plotted = 0
-      for _, node in nodes_df.iterrows():
-          ax.scatter(node['x'], node['y'], c='blue', s=80, edgecolor='black', zorder=3, alpha=0.9)
-          ax.text(node['x'] + 50, node['y'] + 50, str(node['name']),
-                 fontsize=7, fontweight='normal', zorder=4, horizontalalignment='left')
-          nodes_plotted += 1
-
-      print(f"Plotted {nodes_plotted} network nodes")
-
-      # Plot network links (edges)
-      links_plotted = 0
-      for _, link in links_df.iterrows():
-          start_node = str(link['start'])
-          end_node = str(link['end'])
-          start_pos = nodes_df[nodes_df['name'] == start_node]
-          end_pos = nodes_df[nodes_df['name'] == end_node]
-
-          if not start_pos.empty and not end_pos.empty:
-              x1, y1 = start_pos.iloc[0]['x'], start_pos.iloc[0]['y']
-              x2, y2 = end_pos.iloc[0]['x'], end_pos.iloc[0]['y']
-              ax.plot([x1, x2], [y1, y2], 'k-', alpha=0.3, linewidth=1)
-              links_plotted += 1
-
-      print(f"\nPlotted {links_plotted} network links")
-
-      ax.set_title('Bloomington Network: Base Nodes and Links')
-      ax.set_xlabel('Easting (m)')
-      ax.set_ylabel('Northing (m)')
-      ax.grid(True, alpha=0.3)
-      plt.tight_layout()
-      plt.savefig('./bloomington/base_network.png', dpi=300, bbox_inches='tight')
+      # Create the publication-ready plot
+      fig, ax = plot_bloomington_base(nodes_df, links_df, plot_node_ids=False)
+      plt.savefig('./bloomington/base_network.png', bbox_inches='tight',
+                 facecolor='white', edgecolor='none')
       print("Saved base network plot to './bloomington/base_network.png'")
 
-      # --- Step 1: Determine the role of each unique centroid ---
-      centroid_roles = {}
-      for _, row in mapping_info.iterrows():
-          h_geocode = str(row['h_geocode'])
-          w_geocode = str(row['w_geocode'])
-          
-          # Ensure geocode is in the dictionary and update its role
-          if h_geocode not in centroid_roles:
-              centroid_roles[h_geocode] = {'is_origin': False, 'is_dest': False}
-          if w_geocode not in centroid_roles:
-              centroid_roles[w_geocode] = {'is_origin': False, 'is_dest': False}
-          
-          centroid_roles[h_geocode]['is_origin'] = True
-          centroid_roles[w_geocode]['is_dest'] = True
-
-      # --- Step 2: Prepare lists for vectorized plotting based on determined roles ---
-      # Create fast lookups for positions
-      node_pos_lookup = {str(row['name']): (row['x'], row['y']) for _, row in nodes_df.iterrows()}
-      centroid_pos_lookup = {str(row['GEOID20']): (row['centroid'].x, row['centroid'].y) for _, row in gdf_monroe.iterrows()}
-
-      plot_x, plot_y, plot_colors = [], [], []
-      line_segments = []
-      mapped_nodes = set()
-
-      # Assign a final color to each unique centroid
-      for geocode, roles in centroid_roles.items():
-          pos = centroid_pos_lookup.get(geocode)
-          if pos:  # Only plot centroids that are within our shrunken area of interest
-              plot_x.append(pos[0])
-              plot_y.append(pos[1])
-              if roles['is_origin'] and roles['is_dest']:
-                  plot_colors.append('orange') # Mixed role
-              elif roles['is_origin']:
-                  plot_colors.append('red') # Origin only
-              else: # Destination only
-                  plot_colors.append('green')
-
-      # The line segment logic remains the same; it's independent of centroid color
-      for _, row in mapping_info.iterrows():
-          h_geocode = str(row['h_geocode'])
-          w_geocode = str(row['w_geocode'])
-          orig_node_id = str(row['orig_node'])
-          dest_node_id = str(row['dest_node'])
-
-          h_pos = centroid_pos_lookup.get(h_geocode)
-          w_pos = centroid_pos_lookup.get(w_geocode)
-          orig_node_pos = node_pos_lookup.get(orig_node_id)
-          dest_node_pos = node_pos_lookup.get(dest_node_id)
-
-          if h_pos and orig_node_pos:
-              line_segments.append([h_pos, orig_node_pos])
-              mapped_nodes.add(orig_node_id)
-          if w_pos and dest_node_pos:
-              line_segments.append([w_pos, dest_node_pos])
-              mapped_nodes.add(dest_node_id)
-
-      total_centroids = len(plot_x)
-      print(f"\nFound {total_centroids} unique mapped centroids to plot")
       
-      # --- Step 3: Perform the actual plotting in a vectorized way ---
-
-      # Plot all centroids at once with their predetermined colors
-      ax.scatter(plot_x, plot_y, c=plot_colors, s=20, alpha=0.7, zorder=2)
-
-      # Create a LineCollection for all mapping lines and add it to the plot
-      if line_segments:
-          lc = LineCollection(line_segments, colors='k', linestyles='--', linewidths=0.8, alpha=0.4, zorder=1)
-          ax.add_collection(lc)
-
-      # --- Step 4: Finalize and save the plot with an updated legend ---
+      mapped_nodes, total_centroids = plot_validation_mapping(
+          ax=ax, 
+          nodes_df=nodes_df, 
+          gdf_monroe=gdf_monroe, 
+          mapping_info=mapping_info,
+          mode='contour' # 'contour', 'lines', or 'blocks'
+      )
+      
       ax.set_title(f'Bloomington Network: Centroid-to-Node Mapping ({len(mapped_nodes)} nodes, {total_centroids} centroids)')
-      
-      # Manually create legend elements for clarity and control
-      legend_elements = [
-          Patch(facecolor='blue', edgecolor='black', label='Network Nodes'),
-          Patch(color='red', alpha=0.7, label='Origin-Only Centroids'),
-          Patch(color='green', alpha=0.7, label='Destination-Only Centroids'),
-          Patch(color='orange', alpha=0.7, label='Mixed (Origin & Dest.) Centroids'),
-          plt.Line2D([0], [0], color='k', linestyle='--', linewidth=0.8, alpha=0.4, label='Mapping Connections')
-      ]
-      ax.legend(handles=legend_elements, loc='upper right')
-
       plt.tight_layout()
-      plt.savefig('./bloomington/validation_mapping.png', dpi=300, bbox_inches='tight')
-      print("Saved validation plot to './bloomington/validation_mapping.png'")
+      plt.savefig('./bloomington/validation_mapping.png', bbox_inches='tight')
+      print(f"Saved validation plot to './bloomington/validation_mapping.png'")
+
+      # Step 7: Demand visualization
+      fig_demand, (ax1, ax2) = plot_demand_viz('./bloomington/bloomington_nodes_standard.csv', './bloomington/bloomington_links_standard.csv', output_csv)
+      plt.savefig('./bloomington/demand_visualization.png', bbox_inches='tight')
+      print("Saved demand visualization to './bloomington/demand_visualization.png'")
+
+      fig_unified, (ax1, ax2, ax3) = plot_unified('./bloomington/bloomington_nodes_standard.csv', './bloomington/bloomington_links_standard.csv', output_csv)
+      plt.savefig('./bloomington/unified_visualization.png', bbox_inches='tight')
+      print("Saved unified visualization to './bloomington/unified_visualization.png'")
 
 
 ### Bloomington Network ###

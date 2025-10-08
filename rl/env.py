@@ -77,13 +77,14 @@ class TransitEnv(gym.Env):
         # Cache demand DataFrame to avoid reading CSV every step
         self.demand_df_cached = df_demand
 
-        # Compute adjacency matrix (assuming directed graph):
+        # Compute adjacency matrix (assuming undirected graph since roads are bidirectional):
         # Use dict with sets for faster lookups during training
         adj_temp = defaultdict(set)
         for _, row in df_links.iterrows():
             # Force to strings to match node identifiers
             x, y = str(row["start"]), str(row["end"])
             adj_temp[x].add(y)
+            adj_temp[y].add(x)  # Add reverse direction for undirected graph
         
         # Convert to dict for better performance
         self.adj = {node: neighbors for node, neighbors in adj_temp.items()}
@@ -132,7 +133,8 @@ class TransitEnv(gym.Env):
 
                 # Now edge attributes: Normalize to [0,1] and add
                 length_norm = (length - self.min_length) / (self.max_length - self.min_length) 
-                speed_norm = (row['free_flow_speed'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) 
+                # In bloomington, all links have the same free_flow_speed.
+                speed_norm = (row['free_flow_speed'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) if self.max_free_flow_speed != self.min_free_flow_speed else 1.0
                 edge_attr_list.append([length_norm, speed_norm]) # Add the normalized edge attributes
 
         self.edge_index = np.array(edge_index_list).T.astype(np.int64) # Transpose, shape (2, E)
@@ -624,6 +626,16 @@ class TransitEnv(gym.Env):
                 free_flow_speed=row['free_flow_speed']
             )
 
+            # Add reverse link for undirected behavior (since these are not one-way roads)
+            reverse_name = f"{row['name']}_reverse"
+            world.addLink(
+                name=reverse_name,
+                start_node=row['end'],
+                end_node=row['start'],
+                length=row['length'],
+                free_flow_speed=row['free_flow_speed']
+            )
+
         # Required for adding bus passenger demand via world.adddemand(..., mode="bus_passenger")
         world.set_bus_handler(BusHandler)
 
@@ -764,7 +776,7 @@ class TransitEnv(gym.Env):
                 name=bus_name, # unique name for each bus
                 mode="bus"
             )
-            
+
             service_frequency_route = self._get_service_frequency(route)
             print(f"\nService frequency for route {route_idx}: {service_frequency_route}\n")
 
