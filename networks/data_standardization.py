@@ -449,6 +449,35 @@ class Helpers:
       df_demand.to_csv(output_csv, index=False)
       print(f"Saved aggregated demand to: {output_csv}")
 
+      # Print demand statistics
+      print("\n" + "="*60)
+      print("DEMAND STATISTICS (vehicles/hour)")
+      print("="*60)
+      
+      # Calculate trip generation (outgoing) and attraction (incoming)
+      trip_generation = df_demand.groupby('orig')['volume'].sum()
+      trip_attraction = df_demand.groupby('dest')['volume'].sum()
+      
+      # Find highest origin demand
+      max_origin_node = trip_generation.idxmax()
+      max_origin_value = trip_generation.max()
+      print(f"\nHighest Origin Demand:")
+      print(f"  Node: {max_origin_node}")
+      print(f"  Volume: {max_origin_value} vehicles/hour")
+      
+      # Find highest destination demand
+      max_dest_node = trip_attraction.idxmax()
+      max_dest_value = trip_attraction.max()
+      print(f"\nHighest Destination Demand:")
+      print(f"  Node: {max_dest_node}")
+      print(f"  Volume: {max_dest_value} vehicles/hour")
+      
+      # Total demand
+      total_demand = df_demand['volume'].sum()
+      print(f"\nTotal Network Demand: {total_demand} vehicles/hour")
+      print(f"Number of O-D pairs: {len(df_demand)}")
+      print("="*60 + "\n")
+
       ######
       # Step 6: Validation plot - Show centroid to node mapping
       # Create a validation plot showing how census block centroids map to network nodes

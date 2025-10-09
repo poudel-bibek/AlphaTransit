@@ -93,3 +93,9 @@ networks/bloomington/tl_2022_18_tabblock20/*
 
 ./networks/bloomington/blocks_centroids_grid.png
 networks/bloomington/blocks_centroids_grid.png
+
+./tmp/
+tmp/
+
+./tmp/*
+tmp/*

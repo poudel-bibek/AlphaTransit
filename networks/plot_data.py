@@ -157,10 +157,12 @@ def plot_unified(nodes_csv: str, links_csv: str, demand_csv: str, include_labels
         ax.scatter(nodes_df['x'], nodes_df['y'], s=node_sizes, c=base_color, alpha=1.0, 
                   edgecolor='#FFFFFF', linewidth=1.5, zorder=6)
         ctx.add_basemap(ax, crs='EPSG:32616', source=ctx.providers.OpenStreetMap.Mapnik, alpha=1.0, zoom=14, zorder=1)
-        ax.set_title(title, fontsize=fs+2, fontweight='bold', pad=15)
+        ax.set_title(title, fontsize=fs+4, fontweight='bold', pad=15)
     
     # Format all axes
     for ax in [ax1, ax2, ax3]:
+        if ax == ax1:
+            ax.set_title("Network", fontsize=fs+4, fontweight='bold', pad=15)
         ax.set_axisbelow(True)
         ax.set_facecolor('none')
         
@@ -208,6 +210,7 @@ def plot_unified(nodes_csv: str, links_csv: str, demand_csv: str, include_labels
                fontweight='bold', ha='center', va='top')
     
     plt.tight_layout()
+    plt.subplots_adjust(wspace=0.05)  
     return fig, (ax1, ax2, ax3)
 
 
