@@ -90,7 +90,7 @@ from matplotlib.ticker import FuncFormatter
 from scipy.spatial import ConvexHull
 
 # Import plotting functions
-from plot_data import plot_demand_viz, plot_unified, plot_bloomington_base, plot_validation_mapping
+from plot_data import plot_demand_viz, plot_unified, plot_unified_2, plot_bloomington_base, plot_validation_mapping
 
 class Helpers: 
    def __init__(self):
@@ -518,6 +518,16 @@ class Helpers:
       fig_unified, (ax1, ax2, ax3) = plot_unified('./bloomington/bloomington_nodes_standard.csv', './bloomington/bloomington_links_standard.csv', output_csv)
       plt.savefig('./bloomington/unified_visualization.png', bbox_inches='tight')
       print("Saved unified visualization to './bloomington/unified_visualization.png'")
+
+      # Create new unified plot with combined origins/destinations and routes
+      fig_unified_2, (ax1_2, ax2_2, ax3_2) = plot_unified_2(
+          './bloomington/bloomington_nodes_standard.csv',
+          './bloomington/bloomington_links_standard.csv',
+          output_csv,
+          routes_json='./bloomington/bloomington_existing_routes.json'
+      )
+      plt.savefig('./bloomington/unified_visualization_2.png', bbox_inches='tight')
+      print("Saved unified visualization 2 (with routes) to './bloomington/unified_visualization_2.png'")
 
 
 ### Bloomington Network ###
