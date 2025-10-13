@@ -269,7 +269,7 @@ class Helpers:
 
       # If adding a free_flow_speed column
       if 'free_flow_speed' not in df_links.columns:
-          df_links['free_flow_speed'] = 13.89  # Default m/s (50 km/h); adjust as needed
+          df_links['free_flow_speed'] = 16.67  # Default m/s (60 km/h); adjust as needed
 
       output_links = links_csv.replace('.csv', '_standard.csv')
       df_links.to_csv(output_links, index=False)
@@ -529,18 +529,18 @@ class Helpers:
       plt.savefig('./bloomington/unified_visualization_2.png', bbox_inches='tight')
       print("Saved unified visualization 2 (with routes) to './bloomington/unified_visualization_2.png'")
 
+if __name__ == "__main__":
+   ### Bloomington Network ###
+   bloomington = Helpers()
+   bloomington_nodes_csv = "./bloomington/bloomington_nodes.csv"
+   bloomington_links_csv = "./bloomington/bloomington_links.csv"
+   bloomington_demand_lodes_csv = "./bloomington/in_od_main_JT00_2022.csv"
+   bloomington.convert_bloomington(nodes_csv=bloomington_nodes_csv, links_csv=bloomington_links_csv, demand_lodes_csv=bloomington_demand_lodes_csv)
 
-### Bloomington Network ###
-bloomington = Helpers()
-bloomington_nodes_csv = "./bloomington/bloomington_nodes.csv"
-bloomington_links_csv = "./bloomington/bloomington_links.csv"
-bloomington_demand_lodes_csv = "./bloomington/in_od_main_JT00_2022.csv"
-bloomington.convert_bloomington(nodes_csv=bloomington_nodes_csv, links_csv=bloomington_links_csv, demand_lodes_csv=bloomington_demand_lodes_csv)
 
-
-### Sioux Falls Network ###
-# sioux_falls = Helpers()
-# sioux_falls_nodes_csv = "./sioux_falls/sioux_falls_nodes.csv"
-# sioux_falls_links_tntp = "./sioux_falls/sioux_falls_net.tntp"
-# sioux_falls_demand_csv = "./sioux_falls/sioux_falls_demand.csv"
-# sioux_falls.convert_sioux_falls(nodes_csv=sioux_falls_nodes_csv, demand_csv=sioux_falls_demand_csv, links_tntp=sioux_falls_links_tntp)
+   ### Sioux Falls Network ###
+   # sioux_falls = Helpers()
+   # sioux_falls_nodes_csv = "./sioux_falls/sioux_falls_nodes.csv"
+   # sioux_falls_links_tntp = "./sioux_falls/sioux_falls_net.tntp"
+   # sioux_falls_demand_csv = "./sioux_falls/sioux_falls_demand.csv"
+   # sioux_falls.convert_sioux_falls(nodes_csv=sioux_falls_nodes_csv, demand_csv=sioux_falls_demand_csv, links_tntp=sioux_falls_links_tntp)

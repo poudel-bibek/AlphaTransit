@@ -39,6 +39,8 @@ class TransitEnv(gym.Env):
         self.BUS_CAPACITY = self.config.get("bus_capacity")
         self.STOP_DURATION = self.config.get("stop_duration")
         self.alpha = self.config.get("alpha")
+        self.arrival_window = self.config.get("arrival_window")
+        self.unserved_as_cars = self.config.get("unserved_as_cars") 
         self.comfort_threshold = self.config.get("comfort_threshold")
         self.radius = self.config.get("radius")
         self.random_path_init = self.config.get("random_path_init")
@@ -365,7 +367,9 @@ class TransitEnv(gym.Env):
         
         all_nodes = list(self.demand_df_cached["orig"].unique())
         if avoid_completed_routes:
-            choice_nodes = [node for node in all_nodes if node not in self.all_routes]
+            # Flatten self.all_routes into a set of nodes already used
+            completed_nodes = set(node for route in self.all_routes for node in route)
+            choice_nodes = [node for node in all_nodes if node not in completed_nodes]
         else:
             choice_nodes = all_nodes
         
@@ -398,8 +402,8 @@ class TransitEnv(gym.Env):
         - alpha=1.0 means 100% of SERVED demand goes to bus
 
         - Dealing with demand that is not served by the route (UNSERVED demand):
-            - Option 1: Ignore it i.e., keep it unserved. (if unserved_as_cars is True; default)
-            - Option 2: Allocate it to cars. (if unserved_as_cars is False)
+            - Option 1: Allocate it to cars. (if unserved_as_cars is True)
+            - Option 2: Ignore it i.e., keep it unserved. (if unserved_as_cars is False; default)
             - Notes: 
                 - Some nodes (associated O-D pairs) may not be served because of 1) partial route construction 2) no coverage even at full route construction.
 
@@ -433,25 +437,39 @@ class TransitEnv(gym.Env):
                 orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
                 total_volume = volume_per_hour * (self.horizon / 3600) # multiply by "how many hours" in horizon
                 # print(f"Orig: {orig}, Dest: {dest}, Volume: {volume_per_hour}, Total Volume: {total_volume}")
-                if volume_per_hour <= 0 or orig == dest: 
+                if volume_per_hour <= 0 or orig == dest:
                     continue
-                
+
                 is_served = self._is_od_served(orig, dest)
-                bus_volume = total_volume * self.alpha if is_served else 0
-                car_volume = total_volume - bus_volume if unserved_as_cars else 0
-                
+                bus_volume_float = total_volume * self.alpha if is_served else 0
+                car_volume_float = total_volume - bus_volume_float if unserved_as_cars else 0
+
+                # Use Poisson sampling to convert fractional volumes to integers while preserving expected totals
+                # This prevents systematic loss from flooring small per-OD volumes to zero
+                bus_passengers = np.random.poisson(bus_volume_float) if bus_volume_float > 0 else 0
+                car_passengers = np.random.poisson(car_volume_float) if car_volume_float > 0 else 0
+
+                # Alternative: Use ceiling to convert fractional volumes to integers while avoiding systematic loss
+                # This prevents small per-OD volumes from being floored to zero
+                # np.random.poisson() for statistically correct sampling, but ceiling is simpler and deterministic
+                # bus_passengers = int(np.ceil(bus_volume_float)) if bus_volume_float > 0 else 0
+                # car_passengers = int(np.ceil(car_volume_float)) if car_volume_float > 0 else 0
+
                 total_demand += total_volume
-                bus_demand += bus_volume
-                car_demand += car_volume
-                
-                # Spread car volume over horizon
-                world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
-                                volume=car_volume, mode="vehicle")
-                
-                # Spread bus volume if served
-                if bus_volume > 0:
-                    world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
-                                    volume=bus_volume, mode="bus_passenger")
+                bus_demand += bus_volume_float  # Keep float for logging/analytics
+                car_demand += car_volume_float  # Keep float for logging/analytics
+
+                # Spread passengers over horizon the first X% of simulation horizon
+                # Car
+                arrival_window = int(self.horizon * self.arrival_window)
+                if car_passengers > 0:
+                    world.adddemand(orig=orig, dest=dest, t_start=0, t_end=arrival_window,
+                                    volume=car_passengers, mode="vehicle")
+
+                # Spread bus passengers if served
+                if bus_passengers > 0:
+                    world.adddemand(orig=orig, dest=dest, t_start=0, t_end=arrival_window,
+                                    volume=bus_passengers, mode="bus_passenger")
 
         # Not used right now for the sake of data standardization.
         # elif method == "flow":
@@ -673,7 +691,7 @@ class TransitEnv(gym.Env):
             - If Q_k,max = 200 pph, C_k = 40, and delta_max = 0.8, then: f_k = ceil(6.25) = 7 buses/hour
             - Notes:
                 - We are not simply looking at the O-D pairs, but instead at the trips in each segment because of various O-D pairs.
-                - TODO: We are currently NOT considering contributions to segments due to potential transfers. Seemingly difficult because of the way transit graph is built.
+                - We are also considering contributions to segments due to potential transfers. Seemingly difficult because of the way transit graph is built.
         """
 
         if self.service_frequency_mode == "fixed":
@@ -685,46 +703,73 @@ class TransitEnv(gym.Env):
             route_indices = {node: idx for idx, node in enumerate(route)}
             segment_loads = np.zeros(len(route) - 1, dtype=np.float64)
             
-            # # We are going to be looking at transers as well.
-            # transit_graph = self.world.bus_handler.transit_graph # Has the transit graph been built before this function is called?
-
-            # 2. Iterate through all potential trips to calculate passenger load on each segment.
+            # 2. Calculate per-hour passenger load for each segment
+            # This is the core of the "max load principle" - frequency based on peak segment demand
             for _, row in self.demand_df_cached.iterrows():
                 orig, dest = str(row["orig"]), str(row["dest"])
-                
-                # Consider only trips where both start and end are on the current route.
-                if orig in route_indices and dest in route_indices:
-                    orig_idx = route_indices[orig]
-                    dest_idx = route_indices[dest]
 
-                    # Skip trips that don't traverse any segments.
-                    if orig_idx == dest_idx:
-                        continue
-                    
-                    # Calculate the number of bus passengers for this trip.
-                    # This demand has been converted to hourly ( during data standardization) 
-                    passenger_volume = float(row["volume"]) * float(self.alpha) # Since only the volume * alpha is considered for bus demand
+                # Check if this route serves this O-D pair (direct or via transfers)
+                if orig in route_indices or dest in route_indices:
+                    # passenger_volume is already in passengers per hour
+                    passenger_volume = float(row["volume"]) * float(self.alpha)
                     if passenger_volume <= 0:
                         continue
-                    
-                    # Add this trip's passenger volume to all traversed segments.
-                    # This correctly handles bidirectional travel along the linear route.
-                    start_idx = min(orig_idx, dest_idx)
-                    end_idx = max(orig_idx, dest_idx)
-                    # Accumulate demand on every traversed segment between the OD pair.
-                    segment_loads[start_idx:end_idx] += passenger_volume
+
+                    # If both O and D are on route, calculate exact segments (direct trips)
+                    if orig in route_indices and dest in route_indices:
+                        orig_idx = route_indices[orig]
+                        dest_idx = route_indices[dest]
+
+                        # Add this trip's passenger volume to all traversed segments.
+                        start_idx = min(orig_idx, dest_idx)
+                        end_idx = max(orig_idx, dest_idx)
+                        segment_loads[start_idx:end_idx] += passenger_volume
+                    else:
+                        # For transfer trips, concentrate demand on the transfer node
+                        # Find the exact node where transfer occurs and add all demand to connected segments
+                        transfer_node = None
+
+                        if orig in route_indices:
+                            # Passenger boards at origin node on this route (transfer off later)
+                            transfer_node = orig
+                        elif dest in route_indices:
+                            # Passenger alights at destination node on this route (transferred on earlier)
+                            transfer_node = dest
+
+                        # At this point, transfer_node is guaranteed to be set (either orig or dest is on route)
+                        transfer_idx = route_indices[transfer_node]
+                        # Add ALL transfer demand to the segments connected to this transfer node
+                        num_segments = len(segment_loads)
+                        if num_segments > 0:
+                            # Find the segment(s) affected by this transfer node
+                            if transfer_idx == 0:
+                                # Start node - affects first segment
+                                segment_loads[0] += passenger_volume
+                            elif transfer_idx == len(route) - 1:
+                                # End node - affects last segment
+                                segment_loads[num_segments - 1] += passenger_volume
+                            else:
+                                # Middle node - affects both adjacent segments
+                                segment_loads[transfer_idx - 1] += passenger_volume / 2
+                                segment_loads[transfer_idx] += passenger_volume / 2
+
+            print(f"DEBUG: Route {route[:3]}... max_load={segment_loads.max():.1f} pph across {len(segment_loads)} segments")
 
             # Identify the bottleneck load; if no load exists default to single-bus service.
-            max_segment_load = float(segment_loads.max()) 
+            max_segment_load = float(segment_loads.max())
             if max_segment_load <= 0:
                 return 1
-            
+
             # Compute the comfortable capacity per departure and ensure the threshold is well defined.
             comfort_capacity = float(self.comfort_threshold) * float(self.BUS_CAPACITY)
 
-            # Scale frequency to meet the comfort headroom and clip to at least once per hour.
+            # Calculate frequency based on max load principle
+            # frequency = ceil(max_passengers_per_hour / (comfort_threshold * capacity))
             frequency = int(np.ceil(max_segment_load / comfort_capacity))
-            return max(1, frequency)
+            frequency = max(1, frequency)  # Minimum 1 bus per hour
+
+            print(f"DEBUG: Route {route[:3]}... max_load={max_segment_load:.1f} pph, capacity={comfort_capacity:.1f}, frequency={frequency}")
+            return frequency
             
     def _apply_action(self) -> Dict[str, bool]:
         """
@@ -800,7 +845,7 @@ class TransitEnv(gym.Env):
         self.world.bus_handler.build_transit_graph()
         
         # Add demand AFTER buses and transit graph are ready
-        self.world = self._allocate_demand_by_service(self.world)
+        self.world = self._allocate_demand_by_service(self.world, unserved_as_cars=self.unserved_as_cars)
         
         return {
             'route_completed': route_completed,
@@ -874,13 +919,18 @@ class TransitEnv(gym.Env):
 
         # Handle COMPLETED trips (from passenger_stats, not buses)
         # These logs will automatically include wait and travel time across multiple legs.
+        trips_with_transfers = 0
         for p_stats in handler.passenger_stats:
-            wait_time = p_stats['total_wait_time']  
+            wait_time = p_stats['total_wait_time']
             all_passengers_total_wait_time += wait_time
 
-            wait_time_dstr.append(wait_time) 
+            wait_time_dstr.append(wait_time)
             movement_time_dstr.append(p_stats['total_in_vehicle_time'])
             travel_time_dstr.append(p_stats['total_travel_time'])
+
+            # Count trips that require transfers (not the total number of transfers)
+            if p_stats.get('num_transfers', 0) > 0:
+                trips_with_transfers += 1
             
         # Handle PARTIAL/ONGOING trips.
         # looking at passengers who are currently on a bus. Use journey_log from new BusHandler structure.
@@ -932,16 +982,21 @@ class TransitEnv(gym.Env):
         # 7. Onboarded passengers
         total_onboarded_count = completed_count + on_going_count_sim_end
 
-        return {'avg_bus_speed_mps': avg_bus_speed_mps, 
-                'avg_bus_utilization_pct': avg_bus_utilization_pct, 
+        # 8. Transfer rate calculation (% of completed trips requiring transfers)
+        transfer_rate_pct = 100 * (trips_with_transfers / completed_count) if completed_count > 0 else 0.0
+
+        return {'avg_bus_speed_mps': avg_bus_speed_mps,
+                'avg_bus_utilization_pct': avg_bus_utilization_pct,
                 'travel_time_dstr': travel_time_dstr,
                 'waiting_time_dstr': wait_time_dstr,
                 'movement_time_dstr': movement_time_dstr, # movement time
-                'waiting_count_sim_end': waiting_count_sim_end, 
+                'waiting_count_sim_end': waiting_count_sim_end,
                 'total_waiting_time_sim_end': total_waiting_time_sim_end,
                 'completed_count': completed_count,
                 'total_onboarded_count': total_onboarded_count,
-                'total_wait_time': all_passengers_total_wait_time}
+                'total_wait_time': all_passengers_total_wait_time,
+                'transfer_rate': transfer_rate_pct,
+                'fleet_size': len(all_buses)} # Total number of buses deployed
 
     def _get_initial_metrics(self) -> Dict[str, float]:
         """
@@ -1111,8 +1166,10 @@ class TransitEnv(gym.Env):
             'route_length': initial_metrics['route_length'], # Route length (meters)
             'bus_utilization': final_metrics['avg_bus_utilization_pct'], # Average bus utilization (percentage)
             'average_bus_speed': final_metrics['avg_bus_speed_mps'], # Average bus speed (meters/second)
+            'fleet_size': final_metrics['fleet_size'], # Total number of buses deployed (count)
             'service_rate': service_rate_pct, # Percentage of demand fulfilled (completed/wanting)
             'onboard_rate': onboard_rate_pct, # Percentage of demand that boarded buses (onboarded/wanting)
+            'transfer_rate': final_metrics['transfer_rate'], # Percentage of trips requiring transfers
             'route_efficiency': route_efficiency_passengers_per_km, # Passengers completed per km of route (passengers/km)
             'node_coverage': node_coverage_pct, # Percentage of nodes covered by routes (0-100%)
         }
@@ -1129,6 +1186,7 @@ class TransitEnv(gym.Env):
             print(f"   Route Length:             {metrics['route_length']/1000:.2f} km")
             print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.1f} km/h)")
             print(f"   Bus Utilization:          {metrics['bus_utilization']:.1f}%")
+            print(f"   Fleet Size:               {metrics['fleet_size']} buses")
             
             # Passenger Counts
             print("\nPASSENGER COUNTS:")
@@ -1156,6 +1214,7 @@ class TransitEnv(gym.Env):
             print("\nPERFORMANCE SUMMARY:")
             print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['completed_trip_passengers_count']} / {metrics['wanting_to_onboard']})")
             print(f"   Boarding Success:         {onboard_rate_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
+            print(f"   Transfer Rate:            {metrics['transfer_rate']:.1f}% ")
             print(f"   Node Coverage:            {node_coverage_pct:.1f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
             print(f"   Route Efficiency:         {route_efficiency_passengers_per_km:.2f} passengers/km")
             

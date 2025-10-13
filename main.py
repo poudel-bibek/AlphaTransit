@@ -273,6 +273,7 @@ def train(config: Dict[str, Any]) -> None:
             "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
             "episode/demand_coverage_actual": sim_result['demand_coverage_actual'],
             "episode/route_overlap_ratio": sim_result['route_overlap_ratio'],
+            "episode/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
             "episode/node_coverage": sim_result['node_coverage'], # Percentage of nodes covered by routes
             # performance related
             "episode/onboard_rate": sim_result['onboard_rate'],
@@ -353,6 +354,7 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
             "eval/demand_coverage_potential": sim_result['demand_coverage_potential'],
             "eval/demand_coverage_actual": sim_result['demand_coverage_actual'],
             "eval/route_overlap_ratio": sim_result['route_overlap_ratio'],
+            "eval/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
             "eval/node_coverage": sim_result['node_coverage'],
 
             "eval/onboard_rate": sim_result['onboard_rate'],
@@ -438,8 +440,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
     parser.add_argument("--alpha", type=float, default=1.0, help="Modal split parameter for served O-D pairs (proportion taking bus)")
+    parser.add_argument("--unserved_as_cars", type=bool, default=True, help="Allocate demand that is not served by buses to cars (True) or ignore it (False)")
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
+    parser.add_argument("--arrival_window", type=float, default=0.7, help="Ratio of simulation horizon for demand arrival window (0.0-1.0)")
     parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
     
     # Constraints:

@@ -204,7 +204,7 @@ def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
 def average_sim_results(results_list):
     """
     Compute average of simulation results across multiple runs.
-    Handles numerical values generically; skips non-numerical (e.g., lists).
+    Handles numerical values generically; concatenates and summarizes distribution lists.
     """
     if not results_list:
         return {}
@@ -219,29 +219,78 @@ def average_sim_results(results_list):
             val = res['sim_result'].get(key)
             if isinstance(val, (int, float)):
                 values.append(val)
-        
+
         if values:
             averaged[key] = np.mean(values)
-    
+
+    # Handle distribution metrics (lists) by concatenating and computing combined statistics
+    distribution_keys = ['waiting_time_dstr', 'movement_time_dstr', 'travel_time_dstr']
+
+    for dist_key in distribution_keys:
+        all_values = []
+        for res in results_list:
+            dist_list = res['sim_result'].get(dist_key, [])
+            if isinstance(dist_list, list):
+                all_values.extend(dist_list)
+
+        if all_values:
+            dist_array = np.array(all_values)
+            # Add combined statistics for this distribution
+            averaged[f'{dist_key}_combined_mean'] = np.mean(dist_array)
+            averaged[f'{dist_key}_combined_std'] = np.std(dist_array)
+            averaged[f'{dist_key}_combined_min'] = np.min(dist_array)
+            averaged[f'{dist_key}_combined_max'] = np.max(dist_array)
+            averaged[f'{dist_key}_total_passengers'] = len(dist_array)
+
     return averaged
 
 def print_results(results_list, averaged):
     """
     """
-    # Match the exact metric names from RL eval logging
+    
     eval_metrics = {
-        'episode_final_reward': 'reward',
-        'episode_length': 'count',
-        'service_rate': '%',
+        # Waiting metrics (all times in seconds for consistency)
+        'total_wait_time': 'seconds',
+        'wait_time_sim_end': 'seconds',
+        'sim_end_waiting_passengers_count': 'count',
+
+        # Travel metrics (all times in seconds for consistency)
+        'wanting_to_onboard': 'count',
+        'total_onboarded_count': 'count',
+        'completed_trip_passengers_count': 'count',
+        'movement_time': 'seconds',
+        'total_travel_time': 'seconds',
+
+        # Per passenger averages
+        'avg_wait_time': 'seconds',
+        'avg_movement_time': 'seconds',
+        'avg_travel_time': 'seconds',
+
+        # Data collected (raw distributions in seconds)
+        'waiting_time_dstr': 'distribution',
+        'movement_time_dstr': 'distribution',
+        'travel_time_dstr': 'distribution',
+
+        # Reward components
         'demand_coverage_potential': '%',
         'demand_coverage_actual': '%',
         'route_overlap_ratio': 'ratio',
-        'node_coverage': '%',
+
+        # Route metrics
+        'route_length': 'meters',
+        'bus_utilization': '%',
+        'average_bus_speed': 'm/s',
+        'fleet_size': 'count',
+        'service_rate': '%',
         'onboard_rate': '%',
+        'transfer_rate': '%',
+        'route_efficiency': 'passengers/km',
+        'node_coverage': '%',
+
+        # Additional metrics for compatibility (reward commented out for baselines)
+        # 'episode_final_reward': 'reward',  # Not applicable for heuristic baselines
+        'episode_length': 'count',
         'completed_trips': 'count',  # maps to completed_trip_passengers_count
-        'avg_wait_time': 'seconds',
-        'avg_travel_time': 'seconds',
-        'bus_utilization': '%'
     }
 
     print("\n=== Individual Run Results ===")
@@ -273,14 +322,30 @@ def print_results(results_list, averaged):
             avg_str = f"{avg_val:.2f}" if isinstance(avg_val, float) else f"{avg_val}"
             unit_str = f" ({eval_metrics[key]})"
             print(f"  {key:<{max_key_len}} : ({calc_str}) / {len(values)} = {avg_str}{unit_str}")
+
+    # Print combined distribution statistics
+    distribution_keys = ['waiting_time_dstr', 'movement_time_dstr', 'travel_time_dstr']
+    for dist_key in distribution_keys:
+        combined_stats = [k for k in averaged.keys() if k.startswith(f'{dist_key}_combined')]
+        if combined_stats:
+            print(f"\n  === Combined {dist_key.replace('_', ' ').title()} Statistics ===")
+            for stat_key in combined_stats:
+                stat_name = stat_key.replace(f'{dist_key}_combined_', '').replace('_', ' ').title()
+                stat_value = averaged[stat_key]
+                if 'passengers' in stat_key:
+                    print(f"  {stat_name:<{max_key_len-2}} : {stat_value}")
+                else:
+                    print(f"  {stat_name:<{max_key_len-2}} : {stat_value:.2f} seconds")
     
     # Print LaTeX row
     print("\n")
-    completed = int(averaged.get('completed_trip_passengers_count', 0))
-    service = averaged.get('service_rate', 0.0)
-    wait = averaged.get('avg_wait_time', 0.0)
-    efficiency = averaged.get('route_efficiency', 0.0)
-    print(f"& ${completed}$ & ${service:.2f}$ & ${wait:.2f}$ & ${efficiency:.2f}$")
+    service = averaged['service_rate']
+    onboard = averaged['onboard_rate']
+    wait = averaged['avg_wait_time'] / 60 # Minutes
+    transfer = averaged['transfer_rate']
+    travel = averaged['avg_travel_time'] / 60 # Minutes
+    completed = int(averaged['completed_trip_passengers_count'])
+    print(f"& ${service:.2f}$ & ${onboard:.2f}$ & ${wait:.2f}$ & ${transfer:.2f}$ & ${travel:.2f}$ & ${completed}$")
 
 def execute_runs(baseline, num_runs, base_seed):
     """
