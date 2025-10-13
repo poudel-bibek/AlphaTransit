@@ -34,6 +34,7 @@ Additional notes (ignore)
 """
 
 import os
+import json
 import numpy as np
 import random
 import torch
@@ -138,13 +139,14 @@ def create_fancy_animations(env, config, baseline_save_dir):
         all_vehicles_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type', 'unknown')}_anim_all_vehicles.gif")
         env.world.analyzer.network_fancy(
             animation_speed_inverse=10,
+            figsize=11,
             sample_ratio=1.0,
             interval=5,
             trace_length=5,
-            network_font_size=14,
+            network_font_size=11,
             antialiasing=False,
             file_name=all_vehicles_anim_path,
-            save_as_mp4=False
+            save_as_mp4=True
         )
         print(f"All vehicles animation saved to: {all_vehicles_anim_path}")
         
@@ -556,3 +558,77 @@ class RealWorldBaseline:
         self.num_runs = num_runs
         self.base_seed = base_seed
         self.main_save_dir = create_main_save_dir(config)
+    
+    def run(self):
+        return execute_runs(self, self.num_runs, self.base_seed)
+
+    def construct_path(self, state):
+        """
+        Algorithm:
+        - In this baseline, we use the existing routes in the real-world i.e., no path construction is done.
+        - We simply return the existing routes.
+        - For fair comparison with RL agent i.e., when number of routes to construct is less than the total existing routes,
+          we select a subset of routes based on "best_coverage" strategy i.e., Select routes with highest demand coverage potential
+        """
+        with open(self.env.network_dir / f"{self.env.config.get('network')}_existing_routes.json", "r") as f:
+            all_routes = json.load(f)
+
+        num_routes = self.env.config.get("num_routes", len(all_routes))
+        total_existing = len(all_routes)
+
+        print(f"Total existing routes: {total_existing}, Requested routes: {num_routes}")
+
+        if num_routes == total_existing:
+            # Use all routes if requested number is equal to available
+            selected_routes = all_routes
+            print(f"Using all {total_existing} existing routes")
+        elif num_routes < total_existing:
+            # Select subset based on best coverage
+            selected_routes = self._select_best_coverage_subset(all_routes, num_routes)
+        else:
+            raise ValueError(f"Requested number of routes ({num_routes}) is greater than total existing routes ({total_existing})")
+
+        print(f"Selected {len(selected_routes)} routes.")
+        for i, route in enumerate(selected_routes):
+            print(f"  Route {i+1}: {len(route['nodes'])} nodes - {route.get('name', 'Unnamed')}")
+
+        # Convert dict to lists and int to str
+        return [[str(node) for node in route['nodes']] for route in selected_routes]
+
+    def _select_best_coverage_subset(self, all_routes, num_routes):
+        """
+        Select routes that cover the most demand using the best coverage strategy.
+
+        Formula:
+        For each route: 
+            score = route_length × average_node_demand
+
+        - route_length = number of nodes in the route (len(route['nodes']))
+        - average_node_demand = (sum of (demand_out + demand_in) for all nodes in route) / route_length
+
+        Routes are ranked by this score in descending order, and the top num_routes are selected.
+        """
+        route_scores = []
+        for route in all_routes:
+            nodes = route['nodes']
+            # score based on route length and average node demand
+            route_length = len(nodes)
+            # Get average demand for nodes in this route
+            avg_demand = sum(self._get_node_demand(node) for node in nodes) / len(nodes)
+            # Combine length and demand coverage
+            score = route_length * avg_demand
+            route_scores.append((score, route))
+
+        # Sort by score and select top routes
+        route_scores.sort(key=lambda x: x[0], reverse=True)
+        return [route for _, route in route_scores[:num_routes]]
+
+    def _get_node_demand(self, node_id):
+        """
+        Get total demand (in + out) for a node as a proxy for its importance.
+        """
+        node_idx = self.env.node_to_idx.get(str(node_id))
+        if node_idx is not None:
+            return self.env.demand_out[node_idx] + self.env.demand_in[node_idx]
+        else:
+            raise ValueError(f"Node {node_id} not found in the network")

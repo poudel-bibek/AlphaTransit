@@ -81,7 +81,7 @@ def plot_network_and_demand(world, output_loc: str) -> None:
     """
 
     sns.set_theme(style="white", context="talk")
-    fig, ax = plt.subplots(1, 1, figsize=(11, 8))
+    fig, ax = plt.subplots(1, 1, figsize=(13.2, 9.6))
 
     # Normalize coordinates using helper function
     node_to_norm_x, node_to_norm_y = normalize_coordinates(world)
@@ -129,13 +129,13 @@ def plot_network_and_demand(world, output_loc: str) -> None:
     plt.close(fig)
 
 
-def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str, plot_demand: bool = False) -> None:
+def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str, plot_demand: bool = False, show_full_routes: bool = False, show_node_labels: bool = False) -> None:
     """
     Plot network + OD demand + multiple routes.
     """
 
     sns.set_theme(style="white", context="talk")
-    fig, ax = plt.subplots(1, 1, figsize=(11, 8))
+    fig, ax = plt.subplots(1, 1, figsize=(13.2, 9.6), dpi=300)
 
     # Normalize coordinates using helper function
     node_to_norm_x, node_to_norm_y = normalize_coordinates(world)
@@ -159,39 +159,58 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
                         fc="#2E86AB", ec="#2E86AB", alpha=0.2, lw=0.8, zorder=0)
 
     # Plot network links and nodes
+    edge_lengths_norm = []
     for link in world.LINKS:
         start_norm_x = node_to_norm_x[link.start_node]
         start_norm_y = node_to_norm_y[link.start_node]
         end_norm_x = node_to_norm_x[link.end_node]
         end_norm_y = node_to_norm_y[link.end_node]
+        dx_base = end_norm_x - start_norm_x
+        dy_base = end_norm_y - start_norm_y
+        edge_lengths_norm.append((dx_base**2 + dy_base**2) ** 0.5)
         ax.plot([start_norm_x, end_norm_x], [start_norm_y, end_norm_y],
-               c="#000000", lw=1.5, zorder=1)
+               c="#000000", lw=1.0, zorder=1)
 
     # Create scatter plot coordinates from normalized mappings
     node_xs_norm = [node_to_norm_x[n] for n in world.NODES]
     node_ys_norm = [node_to_norm_y[n] for n in world.NODES]
 
-    # Define route colors
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+    # Define route colors - 20 distinct, highly discernible colors
+    colors = [
+        # Blues (3 distinct colors)
+        "#1f77b4", "#4e79a7", "#2e5f8f",
+        # Yellows/Oranges (5 distinct colors)
+        "#ff7f0e", "#ffbb78", "#ff8c00", "#e67e22", "#ffd700",
+        # Greens (3 distinct colors)
+        "#2ca02c", "#98df8a", "#1e7e34",
+        # Reds (3 distinct colors)
+        "#d62728", "#ff9896", "#b22222",
+        # Teals/Cyans (2 distinct colors)
+        "#17becf", "#00ced1",
+        # Magentas/Pinks (2 distinct colors)
+        "#e377c2", "#f39c12",
+        # Browns (1 color)
+        "#8c564b",
+        # Gray (1 color)
+        "#7f7f7f"
+    ]
 
     # Default black edges
     edge_colors = ["#000000"] * len(world.NODES)
     node_list = list(world.NODES)
 
-    # Color starting node borders
-    for i, route in enumerate(routes):
-        if route:
-            start_name = route[0]
-            start_node = world.get_node(start_name)
-            if start_node in node_list:
-                idx = node_list.index(start_node)
-                edge_colors[idx] = colors[i % len(colors)]
+    # Note: Starting node coloring removed for cleaner visualization
 
-    ax.scatter(node_xs_norm, node_ys_norm, s=320, c="white", edgecolors=edge_colors, linewidths=2.0, zorder=2)
+    if show_node_labels:
+        # Show nodes with labels (current behavior)
+        ax.scatter(node_xs_norm, node_ys_norm, s=256, c="white", edgecolors=edge_colors, linewidths=1.5, zorder=3)
 
-    # Add node labels
-    for n in world.NODES:
-        ax.text(node_to_norm_x[n], node_to_norm_y[n], str(n.name), ha="center", va="center", fontsize=10, color="#000000", zorder=4)
+        # Add node labels
+        for n in world.NODES:
+            ax.text(node_to_norm_x[n], node_to_norm_y[n], str(n.name), ha="center", va="center", fontsize=6, color="#000000", zorder=4)
+    else:
+        # Show smaller nodes without labels (reduce by 20%)
+        ax.scatter(node_xs_norm, node_ys_norm, s=82, c="white", edgecolors=edge_colors, linewidths=1.0, zorder=3)
 
     # Two-pass route plotting system
     # Pass 1: Identify routes per link (bi-directional)
@@ -205,7 +224,20 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
             end = world.get_node(route[j+1])
             link_to_routes[(start, end)].append(i)
 
-    # Pass 2: Plot routes with perpendicular offsets
+    # Compute a dynamic base offset in normalized units (small fraction of median edge length)
+    if len(edge_lengths_norm) > 0:
+        sorted_lengths = sorted(edge_lengths_norm)
+        mid = len(sorted_lengths) // 2
+        if len(sorted_lengths) % 2 == 1:
+            median_len = sorted_lengths[mid]
+        else:
+            median_len = 0.5 * (sorted_lengths[mid - 1] + sorted_lengths[mid])
+        # Keep spacing small and consistent across networks, clamped to reasonable range
+        base_offset = max(0.003, min(0.01, 0.02 * median_len))
+    else:
+        base_offset = 0.004
+
+    # Pass 2: Plot routes with perpendicular symmetric offsets around base edge
     for i, route in enumerate(routes):
         if len(route) < 2:
             continue
@@ -224,51 +256,57 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
             # Assign local offset index (0 to num_routes-1)
             local_index = sorted(all_routes_on_link).index(i)
 
-            # Calculate direction vector
-            dx = node_to_norm_x[end] - node_to_norm_x[start]
-            dy = node_to_norm_y[end] - node_to_norm_y[start]
-            length = (dx**2 + dy**2)**0.5
+            # Calculate direction vector and standardize orientation based on (x,y) coordinates
+            x1, y1 = node_to_norm_x[start], node_to_norm_y[start]
+            x2, y2 = node_to_norm_x[end], node_to_norm_y[end]
+            dx = x2 - x1
+            dy = y2 - y1
+            length = (dx**2 + dy**2) ** 0.5
 
-            # Standardize direction for consistent side: always from "lower" to "higher" node name
-            if start.name > end.name:
-                # Reverse direction for calculation
-                dx = -dx
-                dy = -dy
+            # Guard against zero-length links
+            if length == 0:
+                continue
 
-            # Perpendicular unit vector (rotate 90 degrees) - consistent direction
-            perp_dx = -dy / length
-            perp_dy = dx / length
+            # Canonical orientation: from lexicographically smaller (x,y) to larger (x,y)
+            if (x1 > x2) or (x1 == x2 and y1 > y2):
+                std_dx, std_dy = -dx, -dy
+            else:
+                std_dx, std_dy = dx, dy
 
-            # Offset magnitude - always non-zero, increasing for multiple
-            base_mag = 0.0065
-            offset_mag = base_mag * (local_index + 1)  # Always positive offset, no zero
+            # Perpendicular unit vector from standardized direction
+            perp_dx = -std_dy / length
+            perp_dy = std_dx / length
 
-            offset_x_start = offset_mag * perp_dx
-            offset_y_start = offset_mag * perp_dy
-            offset_x_end = offset_mag * perp_dx
-            offset_y_end = offset_mag * perp_dy
+            # Symmetric offset index around the base edge (spreads to both sides)
+            centered_index = local_index - (num_routes - 1) / 2.0
+            # Avoid a route exactly on the base black line for visibility (odd counts)
+            if num_routes % 2 == 1 and abs(centered_index) < 1e-12:
+                centered_index = 0.5 if (i % 2 == 0) else -0.5
+            offset_mag = base_offset * centered_index
 
-            # If we reversed, apply to correct points
-            if start.name > end.name:
-                offset_x_start, offset_x_end = offset_x_end, offset_x_start
-                offset_y_start, offset_y_end = offset_y_end, offset_y_start
+            # Apply same perpendicular offset to both endpoints
+            offset_x = offset_mag * perp_dx
+            offset_y = offset_mag * perp_dy
 
-            ax.plot([node_to_norm_x[start] + offset_x_start, node_to_norm_x[end] + offset_x_end],
-                    [node_to_norm_y[start] + offset_y_start, node_to_norm_y[end] + offset_y_end],
-                    color=color, linewidth=1.5, alpha=0.9, zorder=1)
+            ax.plot([node_to_norm_x[start] + offset_x, node_to_norm_x[end] + offset_x],
+                    [node_to_norm_y[start] + offset_y, node_to_norm_y[end] + offset_y],
+                    color=color, linewidth=1.0, alpha=0.95, zorder=2)
 
     # Add route information as a legend
     handles = []
     labels = []
     for i, route in enumerate(routes):
         color = colors[i % len(colors)]
-        route_text = f"Route {i}: {' → '.join(route)}"
+        if show_full_routes:
+            route_text = f"Route {i}: {' → '.join(route)}"
+        else:
+            route_text = f"Route {i}"
         handle = plt.Line2D([0], [0], color=color, linewidth=2, label=route_text)
         handles.append(handle)
         labels.append(route_text)
 
-    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.01), ncol=1,
-                fontsize=10, frameon=False, handlelength=2.5)
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.88, 0.5), ncol=1,
+                fontsize=8, frameon=False, handlelength=2.0)
 
     ax.set_title(f"{world.name}: Routes", fontsize=16, pad=4)
     ax.set_aspect("equal")

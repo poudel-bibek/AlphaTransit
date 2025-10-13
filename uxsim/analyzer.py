@@ -2,7 +2,7 @@
 Analyzer for a UXsim simulation result.
 This module is automatically loaded when you import the `uxsim` module.
 """
-
+import imageio
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -1212,7 +1212,20 @@ class Analyzer:
             os.remove(f)
 
     @catch_exceptions_and_warn()
-    def network_fancy(s, animation_speed_inverse=10, figsize=6, sample_ratio=0.3, interval=5, network_font_size=0, trace_length=3, speed_coef=2, file_name=None, antialiasing=True, save_as_mp4=False, bus_only=False):
+    def network_fancy(s, 
+                    animation_speed_inverse=10, 
+                    figsize=6, 
+                    node_size=12,
+                    sample_ratio=0.3, 
+                    interval=5, 
+                    network_font_size=0, 
+                    trace_length=3, 
+                    speed_coef=2, 
+                    file_name=None, 
+                    antialiasing=True, 
+                    save_as_mp4=False, 
+                    bus_only=False):
+
         """
         Generates a visually appealing animation of vehicles' trajectories across the entire transportation network over time.
 
@@ -1222,6 +1235,8 @@ class Analyzer:
             The inverse of the animation speed. A higher value will result in a slower animation. Default is 10.
         figsize : int or tuple of int, optional
             The size of the figures in the animation. Default is 6.
+        node_size : int, optional
+            The size of the nodes in the animation. Default is 12.
         sample_ratio : float, optional
             The fraction of vehicles to be visualized. Default is 0.3.
         interval : int, optional
@@ -1374,7 +1389,7 @@ class Analyzer:
                     has_reverse = any(link.start_node.name == l.end_node.name and link.end_node.name == l.start_node.name for link in s.W.LINKS)
                     # Thicker lines for bidirectional roads - make difference more pronounced
                     base_width = max(2, int(l.number_of_lanes * scale))
-                    line_width = base_width * 3 if has_reverse else base_width
+                    line_width = base_width * 2 if has_reverse else base_width
                     draw.line([(x1, flip(y1)), (x2, flip(y2))], fill=(200,200,200), width=line_width, joint="curve")
                     
             # Draw nodes with their IDs
@@ -1382,7 +1397,7 @@ class Analyzer:
                 for n in s.W.NODES:
                     x, y = n.x*coef-minx, n.y*coef-miny
                     # Draw node as larger circle for better visibility
-                    node_size = 12 * scale
+                    node_size = node_size * scale
                     draw.ellipse((x-node_size, flip(y)-node_size, x+node_size, flip(y)+node_size), 
                                fill=(100,100,255), outline=(50,50,150), width=1)
                     # Draw node ID with white text for better contrast
@@ -1407,21 +1422,21 @@ class Analyzer:
             font = ImageFont.truetype(s.font_file_like, int(30))
             draw.text((img.size[0]/2,20), f"t = {t :>8} (s)", font=font, fill="black", anchor="mm")
             
-            # Add legend for link thickness with actual drawn lines
-            if network_font_size > 0:
-                # Draw actual lines to show thickness difference
-                legend_y1 = 65
-                legend_y2 = 100
-                legend_x_start = 20
-                legend_x_end = 60
+            # # Add legend for link thickness with actual drawn lines
+            # if network_font_size > 0:
+            #     # Draw actual lines to show thickness difference
+            #     legend_y1 = 65
+            #     legend_y2 = 100
+            #     legend_x_start = 20
+            #     legend_x_end = 60
                 
-                # Unidirectional line (thin)
-                draw.line([(legend_x_start, legend_y1), (legend_x_end, legend_y1)], fill=(200,200,200), width=2*scale)
-                # draw.text((legend_x_end + 10, legend_y1), "Unidirectional", font=font, fill="black", anchor="lm")
+            #     # Unidirectional line (thin)
+            #     draw.line([(legend_x_start, legend_y1), (legend_x_end, legend_y1)], fill=(200,200,200), width=2*scale)
+            #     # draw.text((legend_x_end + 10, legend_y1), "Unidirectional", font=font, fill="black", anchor="lm")
                 
-                # Bidirectional line (thick)
-                draw.line([(legend_x_start, legend_y2), (legend_x_end, legend_y2)], fill=(200,200,200), width=4*scale)
-                # draw.text((legend_x_end + 10, legend_y2), "Bidirectional", font=font, fill="black", anchor="lm")
+            #     # Bidirectional line (thick)
+            #     draw.line([(legend_x_start, legend_y2), (legend_x_end, legend_y2)], fill=(200,200,200), width=4*scale)
+            #     # draw.text((legend_x_end + 10, legend_y2), "Bidirectional", font=font, fill="black", anchor="lm")
 
             if antialiasing:
                 img = img.resize((int((maxx-minx)/scale), int((maxy-miny)/scale)), resample=Resampling.LANCZOS)
@@ -1441,8 +1456,7 @@ class Analyzer:
 
         # Save as MP4 if requested
         if save_as_mp4:
-            import imageio
-            
+        
             # Convert PIL images to numpy arrays for imageio
             frames = []
             for img in pics:

@@ -13,7 +13,7 @@ from rl.models import GATV2ActorCritic
 from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
 from rl.env_utils import plot_network_and_demand
-from rl.baselines import RandomBaseline, GreedyDemandCoverage, GreedyShortestPath, GreedyRewardMaximization
+from rl.baselines import RandomBaseline, GreedyDemandCoverage, GreedyShortestPath, GreedyRewardMaximization, RealWorldBaseline
 
 class CachedPyGConverter:
     """
@@ -431,7 +431,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
-    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy_reward_max, greedy_demand_cover, greedy_shortest_path")
+    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy_reward_max, greedy_demand_cover, greedy_shortest_path, real_world")
     parser.add_argument("--num_baseline_runs", type=int, default=5, help="Number of runs (over which we average the results) for the baseline")
 
     # Learning environment specific: 
@@ -443,7 +443,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
     
     # Constraints:
-    parser.add_argument("--num_routes", type=int, default=3, help="Number of routes")
+    parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
     parser.add_argument("--max_route_length", type=int, default=10, help="Maximum path length")
     parser.add_argument("--min_route_length", type=int, default=1, help="Minimum path length")
 
@@ -514,6 +514,7 @@ def main() -> None:
             "greedy_demand_cover": GreedyDemandCoverage,
             "greedy_shortest_path": GreedyShortestPath,
             "greedy_reward_max": GreedyRewardMaximization,
+            "real_world": RealWorldBaseline,
         }
         
         if config["baseline_type"] not in baseline_classes:
@@ -525,3 +526,13 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+"""
+Scripts: 
+python main.py --mode=baseline --baseline_type=greedy_demand_cover
+python main.py --mode=baseline --baseline_type=random
+python main.py --mode=baseline --baseline_type=greedy_shortest_path
+python main.py --mode=baseline --baseline_type=greedy_reward_max
+python main.py --mode=baseline --baseline_type=real_world
+
+"""

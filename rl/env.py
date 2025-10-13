@@ -667,11 +667,11 @@ class TransitEnv(gym.Env):
         -------
         - "fixed": Returns a constant, predefined service frequency.
         
-        - "max_load": Calculates frequency based on the peak passenger load on the busiest segment of the route. 
-            - The formula used is: ceil(Q_max / (comfort_threshold * capacity)) with Q_max as peak segment demand.
+        - "max_load": Calculates frequency based on the peak passenger load on the busiest segment of the route.
+            - The formula used is: ceil(Q_max / (comfort_threshold * capacity)) with Q_max as peak segment demand (per hour and not over the entire horizon).
             - i.e., How often buses should run on a route to handle the peak passenger demand while keeping buses comfortable
             - If Q_k,max = 200 pph, C_k = 40, and delta_max = 0.8, then: f_k = ceil(6.25) = 7 buses/hour
-            - Notes: 
+            - Notes:
                 - We are not simply looking at the O-D pairs, but instead at the trips in each segment because of various O-D pairs.
                 - TODO: We are currently NOT considering contributions to segments due to potential transfers. Seemingly difficult because of the way transit graph is built.
         """
@@ -721,8 +721,6 @@ class TransitEnv(gym.Env):
             
             # Compute the comfortable capacity per departure and ensure the threshold is well defined.
             comfort_capacity = float(self.comfort_threshold) * float(self.BUS_CAPACITY)
-            if comfort_capacity <= 0:
-                raise ValueError("Comfort-adjusted capacity must be positive.")
 
             # Scale frequency to meet the comfort headroom and clip to at least once per hour.
             frequency = int(np.ceil(max_segment_load / comfort_capacity))

@@ -259,7 +259,7 @@ def plot_unified_2(nodes_csv: str, links_csv: str, demand_csv: str, routes_json:
             ax1.plot([x1, x2], [y1, y2], color='#87CEEB', alpha=0.4, linewidth=3, zorder=4)
             ax1.plot([x1, x2], [y1, y2], color='#0000CD', alpha=1.0, linewidth=1.5, zorder=5)
 
-    ax1.scatter(nodes_df['x'], nodes_df['y'], c='#FF6B6B', s=80, edgecolor='#FFFFFF', linewidth=1.5, zorder=6, alpha=1.0)
+    ax1.scatter(nodes_df['x'], nodes_df['y'], c='#c9080b', s=110, edgecolor='#FFFFFF', linewidth=2, zorder=6, alpha=1.0)  # Neon magenta with yellow borders for prominence
     ctx.add_basemap(ax1, crs='EPSG:32616', source=ctx.providers.OpenStreetMap.Mapnik, alpha=1.0, zoom=14, zorder=1)
 
     # Plot (b) Single Layer Origin-Destination Contour Map
