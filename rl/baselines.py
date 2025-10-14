@@ -251,31 +251,48 @@ def print_results(results_list, averaged):
     """
     
     eval_metrics = {
-        # Waiting metrics (all times in seconds for consistency)
-        'total_wait_time': 'seconds',
-        'wait_time_sim_end': 'seconds',
+        # Waiting metrics (seconds)
+        'total_wait_completed': 'seconds',
+        'total_wait_ongoing': 'seconds',
+        'total_wait_unserved': 'seconds',
         'sim_end_waiting_passengers_count': 'count',
 
-        # Travel metrics (all times in seconds for consistency)
-        'wanting_to_onboard': 'count',
-        'total_onboarded_count': 'count',
-        'completed_trip_passengers_count': 'count',
-        'movement_time': 'seconds',
-        'total_travel_time': 'seconds',
+        # Movement / travel metrics (seconds)
+        'total_movement_completed': 'seconds',
+        'total_movement_ongoing': 'seconds',
+        'total_movement_served': 'seconds',
+        'total_travel_completed': 'seconds',
+        'total_travel_ongoing': 'seconds',
+        'total_travel_served': 'seconds',
 
-        # Per passenger averages
-        'avg_wait_time': 'seconds',
-        'avg_movement_time': 'seconds',
-        'avg_travel_time': 'seconds',
+        # Per-passenger averages (seconds)
+        'avg_wait_time_completed': 'seconds',
+        'avg_wait_time_ongoing': 'seconds',
+        'avg_wait_time_served': 'seconds',
+        'avg_movement_time_completed': 'seconds',
+        'avg_movement_time_ongoing': 'seconds',
+        'avg_movement_time_served': 'seconds',
+        'avg_travel_time_completed': 'seconds',
+        'avg_travel_time_ongoing': 'seconds',
+        'avg_travel_time_served': 'seconds',
 
-        # Data collected (raw distributions in seconds)
+        # Distributions (raw seconds)
         'waiting_time_dstr': 'distribution',
         'movement_time_dstr': 'distribution',
         'travel_time_dstr': 'distribution',
 
-        # Reward components
+        # Passenger counts
+        'completed_passengers': 'count',
+        'ongoing_passengers': 'count',
+        'total_onboarded_count': 'count',
+        'wanting_to_onboard': 'count',
+
+        # Reward / demand components
         'demand_coverage_potential': '%',
         'demand_coverage_actual': '%',
+        'service_rate': '%',
+        'onboard_rate': '%',
+        'transfer_rate': '%',
         'route_overlap_ratio': 'ratio',
 
         # Route metrics
@@ -283,16 +300,12 @@ def print_results(results_list, averaged):
         'bus_utilization': '%',
         'average_bus_speed': 'm/s',
         'fleet_size': 'count',
-        'service_rate': '%',
-        'onboard_rate': '%',
-        'transfer_rate': '%',
         'route_efficiency': 'passengers/km',
         'node_coverage': '%',
 
-        # Additional metrics for compatibility (reward commented out for baselines)
-        # 'episode_final_reward': 'reward',  # Not applicable for heuristic baselines
+        # Additional metrics for compatibility
         'episode_length': 'count',
-        'completed_trips': 'count',  # maps to completed_trip_passengers_count
+        'completed_trips': 'count',  # maps to completed_passengers
     }
 
     print("\n=== Individual Run Results ===")
@@ -301,29 +314,69 @@ def print_results(results_list, averaged):
 
     for i, res in enumerate(results_list, 1):
         print(f"Run {i}:")
+
+        served_passengers = res['sim_result'].get('completed_passengers') + res['sim_result'].get('ongoing_passengers')
+        combined_wait_served = res['sim_result'].get('total_wait_completed') + res['sim_result'].get('total_wait_ongoing')
+        combined_travel_served = res['sim_result'].get('total_travel_completed') + res['sim_result'].get('total_travel_ongoing')
+        
         for key in eval_metrics.keys():
             val = res['sim_result'].get(key)
-            if val is not None and isinstance(val, (int, float)):
+            if val is None:
+                continue
+
+            # Scalars (int/float)
+            if isinstance(val, (int, float)):
                 val_str = f"{val:.2f}" if isinstance(val, float) else f"{val}"
                 unit_str = f" ({eval_metrics[key]})"
                 print(f"  {key:<{max_key_len}} : {val_str}{unit_str}")
+                continue
+
+            # Lists (distributions)
+            if isinstance(val, (list, tuple)):
+                length = len(val)
+                unit_str = f" ({eval_metrics[key]})"
+                print(f"  {key:<{max_key_len}} : n={length}{unit_str}")
+                continue
+
+        print(f"  avg_wait_time_served         : {combined_wait_served/served_passengers:.2f} (seconds)")
+        print(f"  avg_travel_time_served       : {combined_travel_served/served_passengers:.2f} (seconds)")
         print("---")
 
     print("\n=== Averaged Results ===")
+    combined_wait_served_sum = 0.0
+    combined_travel_served_sum = 0.0
+    combined_served_passengers_sum = 0
+
     for key in eval_metrics.keys():
         values = []
         for res in results_list:
             val = res['sim_result'].get(key)
-            if val is not None and isinstance(val, (int, float)):
-                values.append(val)
+            if val is None or not isinstance(val, (int, float)):
+                continue
+            values.append(val)
 
         if values:
             str_values = [f"{v:.2f}" if isinstance(v, float) else f"{v}" for v in values]
             calc_str = " + ".join(str_values)
-            avg_val = averaged.get(key, 0.0)
+            avg_val = averaged.get(key)
             avg_str = f"{avg_val:.2f}" if isinstance(avg_val, float) else f"{avg_val}"
             unit_str = f" ({eval_metrics[key]})"
             print(f"  {key:<{max_key_len}} : ({calc_str}) / {len(values)} = {avg_str}{unit_str}")
+
+            if key == 'total_wait_completed' or key == 'total_wait_ongoing':
+                combined_wait_served_sum += sum(values)
+            if key == 'total_travel_completed' or key == 'total_travel_ongoing':
+                combined_travel_served_sum += sum(values)
+            if key == 'completed_passengers' or key == 'ongoing_passengers':
+                combined_served_passengers_sum += int(sum(values))
+
+    route_eff = averaged.get('route_efficiency')
+    fleet_size = averaged.get('fleet_size')
+    bus_util = averaged.get('bus_utilization')
+    service_rate = averaged.get('service_rate')
+    transfer_rate = averaged.get('transfer_rate')
+    combined_avg_wait_minutes = (combined_wait_served_sum/combined_served_passengers_sum)/60 
+    combined_avg_travel_minutes = (combined_travel_served_sum/combined_served_passengers_sum)/60 
 
     # Print combined distribution statistics
     distribution_keys = ['waiting_time_dstr', 'movement_time_dstr', 'travel_time_dstr']
@@ -341,14 +394,7 @@ def print_results(results_list, averaged):
     
     # Print LaTeX row
     print("\n")
-    service = averaged['service_rate']
-    wait = averaged['avg_wait_time'] / 60 # Minutes
-    transfer = averaged['transfer_rate']
-    travel = averaged['avg_travel_time'] / 60 # Minutes
-    route_eff = averaged['route_efficiency']
-    fleet_size = averaged['fleet_size']
-    bus_util = averaged['bus_utilization']
-    print(f"& {service:.2f} & {wait:.2f} & {transfer:.2f} & {travel:.2f} & {route_eff:.2f} & {fleet_size:.0f} & {bus_util:.0f}")
+    print(f"& {service_rate:.2f} & {combined_avg_wait_minutes:.2f} & {transfer_rate:.2f} & {combined_avg_travel_minutes:.2f} & {route_eff:.2f} & {fleet_size:.0f} & {bus_util:.0f}")
 
 def execute_runs(baseline, num_runs, base_seed):
     """

@@ -931,28 +931,41 @@ class TransitEnv(gym.Env):
         avg_bus_utilization_pct = (utilization_sum / buses_with_data * 100) if buses_with_data > 0 else 0.0  # Use buses_with_data instead of len(all_buses)
 
         # 3. Travel time distributions (wait time, in-vehicle time (movement time), total travel time)
-        wait_time_dstr = []
-        movement_time_dstr = []
-        travel_time_dstr = [] # wait time + in-vehicle time
-        all_passengers_total_wait_time = 0.0
+        wait_time_dstr = []  # All passengers (completed, onboard, still waiting)
+        movement_time_dstr = []  # Completed + onboard
+        travel_time_dstr = []  # Completed + onboard (wait + in-vehicle)
+
+        # Totals for passengers who finished their trip
+        completed_wait_time_total = 0.0
+        completed_movement_time_total = 0.0
+        completed_travel_time_total = 0.0
+
+        # Totals for passengers currently on buses (partial journeys)
+        ongoing_wait_time_total = 0.0
+        ongoing_movement_time_total = 0.0
+        ongoing_travel_time_total = 0.0
 
         # Handle COMPLETED trips (from passenger_stats, not buses)
         # These logs will automatically include wait and travel time across multiple legs.
         trips_with_transfers = 0
         for p_stats in handler.passenger_stats:
             wait_time = p_stats['total_wait_time']
-            all_passengers_total_wait_time += wait_time
+            movement_time = p_stats['total_in_vehicle_time']
+            travel_time = p_stats['total_travel_time']
+
+            completed_wait_time_total += wait_time
+            completed_movement_time_total += movement_time
+            completed_travel_time_total += travel_time
 
             wait_time_dstr.append(wait_time)
-            movement_time_dstr.append(p_stats['total_in_vehicle_time'])
-            travel_time_dstr.append(p_stats['total_travel_time'])
+            movement_time_dstr.append(movement_time)
+            travel_time_dstr.append(travel_time)
 
             # Count trips that require transfers (not the total number of transfers)
             if p_stats.get('num_transfers', 0) > 0:
                 trips_with_transfers += 1
             
-        # Handle PARTIAL/ONGOING trips.
-        # looking at passengers who are currently on a bus. Use journey_log from new BusHandler structure.
+        # Handle PARTIAL/ONGOING trips (riders currently on buses at simulation end)
         on_going_count_sim_end = 0
         for bus in all_buses:
             for passenger in bus.passengers:
@@ -972,7 +985,9 @@ class TransitEnv(gym.Env):
                     current_ride_time = self.world.TIME - current_ride['start']
                     total_movement_time = completed_movement_time + current_ride_time
                     
-                    all_passengers_total_wait_time += wait_time
+                    ongoing_wait_time_total += wait_time
+                    ongoing_movement_time_total += total_movement_time
+                    ongoing_travel_time_total += wait_time + total_movement_time
                     wait_time_dstr.append(wait_time)
                     movement_time_dstr.append(total_movement_time)  # Now includes all legs
                     travel_time_dstr.append(wait_time + total_movement_time)
@@ -1004,18 +1019,31 @@ class TransitEnv(gym.Env):
         # 8. Transfer rate calculation (% of completed trips requiring transfers)
         transfer_rate_pct = 100 * (trips_with_transfers / completed_count) if completed_count > 0 else 0.0
 
-        return {'avg_bus_speed_mps': avg_bus_speed_mps,
-                'avg_bus_utilization_pct': avg_bus_utilization_pct,
-                'travel_time_dstr': travel_time_dstr,
-                'waiting_time_dstr': wait_time_dstr,
-                'movement_time_dstr': movement_time_dstr, # movement time
-                'waiting_count_sim_end': waiting_count_sim_end,
-                'total_waiting_time_sim_end': total_waiting_time_sim_end,
-                'completed_count': completed_count,
-                'total_onboarded_count': total_onboarded_count,
-                'total_wait_time': all_passengers_total_wait_time,
-                'transfer_rate': transfer_rate_pct,
-                'fleet_size': len(all_buses)} # Total number of buses deployed
+        return {
+            'avg_bus_speed_mps': avg_bus_speed_mps,
+            'avg_bus_utilization_pct': avg_bus_utilization_pct,
+            # Distributions (seconds)
+            'waiting_time_dstr': wait_time_dstr,
+            'movement_time_dstr': movement_time_dstr,
+            'travel_time_dstr': travel_time_dstr,
+            # Snapshot stats
+            'waiting_count_sim_end': waiting_count_sim_end,
+            'total_waiting_time_sim_end': total_waiting_time_sim_end,
+            'completed_count': completed_count,
+            'ongoing_count': on_going_count_sim_end,
+            'total_onboarded_count': total_onboarded_count,
+            # Completed passenger totals (seconds)
+            'total_wait_time_completed': completed_wait_time_total,
+            'total_movement_time_completed': completed_movement_time_total,
+            'total_travel_time_completed': completed_travel_time_total,
+            # Ongoing passenger totals (seconds)
+            'total_wait_time_ongoing': ongoing_wait_time_total,
+            'total_movement_time_ongoing': ongoing_movement_time_total,
+            'total_travel_time_ongoing': ongoing_travel_time_total,
+            # Misc
+            'transfer_rate': transfer_rate_pct,
+            'fleet_size': len(all_buses)
+        }
 
     def _get_initial_metrics(self) -> Dict[str, float]:
         """
@@ -1120,19 +1148,29 @@ class TransitEnv(gym.Env):
         final_metrics = self._get_final_metrics(handler)
 
         # Calculations 
-        total_wait_time_minutes = (1/60) * final_metrics['total_wait_time'] # How much time did the passengers who completed the trips, or who are currently traveling, spent waiting for the bus to arrive.
+        total_wait_time_minutes = (1/60) * final_metrics['total_wait_time_completed'] # How much time did passengers who completed trips spend waiting for the bus to arrive.
         wait_time_sim_end_minutes = (1/60) * final_metrics['total_waiting_time_sim_end'] # At the end of the simulation, how much time did the passengers who are still waiting at stops, spent waiting for the bus to arrive.
-        movement_time_minutes = (1/60) * sum(final_metrics['movement_time_dstr']) # For trip completion how much time was spent in-vehicle for passengers who completed the trip + still in the bus at the end of sim.
-        total_travel_time_minutes = (1/60) * sum(final_metrics['travel_time_dstr']) # Movement time + waiting time for passengers who completed the trip + still in the bus at the end of sim .
+        movement_time_minutes = (1/60) * final_metrics['total_movement_time_completed'] # For trip completion how much time was spent in-vehicle for passengers who completed the trip.
+        total_travel_time_minutes = (1/60) * final_metrics['total_travel_time_completed'] # Movement time + waiting time for passengers who completed the trip.
+
+        ongoing_wait_time_minutes = (1/60) * final_metrics['total_wait_time_ongoing']
+        ongoing_movement_time_minutes = (1/60) * final_metrics['total_movement_time_ongoing']
+        ongoing_travel_time_minutes = (1/60) * final_metrics['total_travel_time_ongoing']
         
         # Service rate calculation (used in both metrics dict and print statements)
         service_rate_pct = 100 * (final_metrics['completed_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0 # What % of demand was fulfilled.
         
-        # Per-passenger averages 
-        total_combined_wait_time = total_wait_time_minutes + wait_time_sim_end_minutes
-        avg_wait_time_minutes = total_combined_wait_time / len(final_metrics['waiting_time_dstr']) if len(final_metrics['waiting_time_dstr']) > 0 else 0.0
-        avg_movement_time_minutes = movement_time_minutes / len(final_metrics['movement_time_dstr']) if len(final_metrics['movement_time_dstr']) > 0 else 0.0
-        avg_travel_time_minutes = sum(final_metrics['travel_time_dstr']) / len(final_metrics['travel_time_dstr']) / 60 if len(final_metrics['travel_time_dstr']) > 0 else 0.0
+        completed_passengers = final_metrics['completed_count']
+
+        ongoing_passengers = final_metrics['ongoing_count']
+
+        avg_wait_time_minutes = total_wait_time_minutes / completed_passengers if completed_passengers > 0 else 0.0
+        avg_movement_time_minutes = movement_time_minutes / completed_passengers if completed_passengers > 0 else 0.0
+        avg_travel_time_minutes = total_travel_time_minutes / completed_passengers if completed_passengers > 0 else 0.0
+
+        avg_wait_time_minutes_ongoing = ongoing_wait_time_minutes / ongoing_passengers if ongoing_passengers > 0 else 0.0
+        avg_movement_time_minutes_ongoing = ongoing_movement_time_minutes / ongoing_passengers if ongoing_passengers > 0 else 0.0
+        avg_travel_time_minutes_ongoing = ongoing_travel_time_minutes / ongoing_passengers if ongoing_passengers > 0 else 0.0
         
         # Onboarding rate calculation
         onboard_rate_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0
@@ -1154,43 +1192,50 @@ class TransitEnv(gym.Env):
         node_coverage_pct = 100 * (len(all_routes_nodes) / self.n_nodes) if self.n_nodes > 0 else 0.0
 
         metrics = {
-            # Waiting metrics (all times in seconds for consistency).
-            'total_wait_time': final_metrics['total_wait_time'], # Total wait time for completed/traveling passengers (seconds)
-            'wait_time_sim_end': final_metrics['total_waiting_time_sim_end'], # Wait time for passengers still waiting at sim end (seconds)
-            'sim_end_waiting_passengers_count': final_metrics['waiting_count_sim_end'], # Count of passengers still waiting at sim end
+            # Waiting metrics (seconds)
+            'total_wait_completed': final_metrics['total_wait_time_completed'],  # Total wait time accrued by passengers who completed their journeys
+            'total_wait_ongoing': final_metrics['total_wait_time_ongoing'],      # Wait time because of transfers for riders still onboard at horizon
+            'total_wait_unserved': final_metrics['total_waiting_time_sim_end'],  # Queueing time for passengers left waiting at stops
+            'waiting_time_dstr': final_metrics['waiting_time_dstr'],             # Per-passenger wait time samples (completed + onboard + waiting)
+            'sim_end_waiting_passengers_count': final_metrics['waiting_count_sim_end'],  # Number of passengers still queued when simulation ended
 
-            # Travel metrics (all times in seconds for consistency).
-            'wanting_to_onboard': initial_metrics['wanting_to_onboard'], # Count of passengers whose O-D is served by route
-            'total_onboarded_count': final_metrics['total_onboarded_count'], # Count of passengers who boarded buses
-            'completed_trip_passengers_count': final_metrics['completed_count'], # Count of passengers who completed trips
-            'movement_time': sum(final_metrics['movement_time_dstr']), # Total in-vehicle time for completed/traveling passengers (seconds)
-            'total_travel_time': sum(final_metrics['travel_time_dstr']), # Total travel time for completed/traveling passengers (seconds)
-            
-            # per passenger averages
-            'avg_wait_time': avg_wait_time_minutes * 60, # Average wait time per passenger (seconds)
-            'avg_movement_time': avg_movement_time_minutes * 60, # Average in-vehicle time per passenger (seconds)
-            
-            # Data collected (raw distributions in seconds).
-            'waiting_time_dstr': final_metrics['waiting_time_dstr'], # Waiting time distribution for all passengers (seconds)
-            'movement_time_dstr': final_metrics['movement_time_dstr'], # In-vehicle time distribution for completed/traveling passengers (seconds)
-            'travel_time_dstr': final_metrics['travel_time_dstr'], # Total travel time distribution for completed/traveling passengers (seconds)
-            
-            # Reward components
-            'demand_coverage_potential': demand_coverage_potential_pct, # Percentage of demand that wants to board buses (wanting/total)
-            'demand_coverage_actual': demand_coverage_actual_pct, # Percentage of demand that boarded buses (onboarded/total)
-            'avg_travel_time': avg_travel_time_minutes * 60, # Average travel time per passenger (seconds)
-            'route_overlap_ratio': route_overlap_ratio, # Ratio of overlapped segments [0-1]
+            # Movement / travel metrics (seconds)
+            'total_movement_completed': final_metrics['total_movement_time_completed'],   # In-vehicle time for completed passengers
+            'total_movement_ongoing': final_metrics['total_movement_time_ongoing'],       # In-vehicle time accrued so far for riders still onboard
+            'movement_time_dstr': final_metrics['movement_time_dstr'],                    # Movement time samples (completed + onboard)
+            'total_travel_completed': final_metrics['total_travel_time_completed'],       # Wait + movement for completed passengers
+            'total_travel_ongoing': final_metrics['total_travel_time_ongoing'],           # Wait + movement accrued for onboard passengers
+            'travel_time_dstr': final_metrics['travel_time_dstr'],                        # Travel time samples (completed + onboard)
 
-            # Route metrics.
-            'route_length': initial_metrics['route_length'], # Route length (meters)
-            'bus_utilization': final_metrics['avg_bus_utilization_pct'], # Average bus utilization (percentage)
-            'average_bus_speed': final_metrics['avg_bus_speed_mps'], # Average bus speed (meters/second)
-            'fleet_size': final_metrics['fleet_size'], # Total number of buses deployed (count)
-            'service_rate': service_rate_pct, # Percentage of demand fulfilled (completed/wanting)
-            'onboard_rate': onboard_rate_pct, # Percentage of demand that boarded buses (onboarded/wanting)
-            'transfer_rate': final_metrics['transfer_rate'], # Percentage of trips requiring transfers
-            'route_efficiency': route_efficiency_passengers_per_km, # Passengers completed per km of route (passengers/km)
-            'node_coverage': node_coverage_pct, # Percentage of nodes covered by routes (0-100%)
+            # Per-passenger averages (seconds)
+            'avg_wait_time_completed': avg_wait_time_minutes * 60,                # Average wait for completed passengers
+            'avg_wait_time_ongoing': avg_wait_time_minutes_ongoing * 60,          # Average wait (so far) for onboard passengers
+            'avg_movement_time_completed': avg_movement_time_minutes * 60,        # Average in-vehicle time for completed passengers
+            'avg_movement_time_ongoing': avg_movement_time_minutes_ongoing * 60,  # Average in-vehicle time (so far) for onboard passengers
+            'avg_travel_time_completed': avg_travel_time_minutes * 60,            # Average total travel for completed passengers
+            'avg_travel_time_ongoing': avg_travel_time_minutes_ongoing * 60,      # Average total travel (so far) for onboard passengers
+
+            # Passenger counts
+            'completed_passengers': final_metrics['completed_count'],             # Count of passengers who finished their journey
+            'ongoing_passengers': final_metrics['ongoing_count'],                 # Count of passengers still on buses
+            'total_onboarded_count': final_metrics['total_onboarded_count'],      # Completed + onboard passengers (excludes still-waiting)
+            'wanting_to_onboard': initial_metrics['wanting_to_onboard'],          # Demand actually served by the transit network (potential riders)
+
+            # Demand / reward components
+            'demand_coverage_potential': demand_coverage_potential_pct,           # % of total demand lying on transit network
+            'demand_coverage_actual': demand_coverage_actual_pct,                 # % of total demand that actually boarded
+            'service_rate': service_rate_pct,                                     # Completed / wanting-to-onboard
+            'onboard_rate': onboard_rate_pct,                                     # Onboarded / wanting-to-onboard
+            'transfer_rate': final_metrics['transfer_rate'],                      # % of completed trips requiring transfers
+            'route_overlap_ratio': route_overlap_ratio,                           # Average segment overlap ratio across routes
+
+            # Route/network metrics
+            'route_length': initial_metrics['route_length'],                      # Total meters covered by designed routes
+            'bus_utilization': final_metrics['avg_bus_utilization_pct'],          # Average bus load factor (percentage)
+            'average_bus_speed': final_metrics['avg_bus_speed_mps'],              # Mean bus speed (m/s)
+            'fleet_size': final_metrics['fleet_size'],                            # Number of buses deployed
+            'route_efficiency': route_efficiency_passengers_per_km,               # Completed passengers per km of route
+            'node_coverage': node_coverage_pct,                                   # % of network nodes covered by any route
         }
 
         if print_metrics:
@@ -1211,27 +1256,33 @@ class TransitEnv(gym.Env):
             print("\nPASSENGER COUNTS:")
             print(f"   Wanting to Onboard:       {metrics['wanting_to_onboard']:,} passengers")
             print(f"   Total Onboarded:          {metrics['total_onboarded_count']:,} passengers")
-            print(f"   Completed Trips:          {metrics['completed_trip_passengers_count']:,} passengers")
+            print(f"   Completed Trips:          {metrics['completed_passengers']:,} passengers")
+            print(f"   Onboard at End:           {metrics['ongoing_passengers']:,} passengers")
             print(f"   Still Waiting at End:     {metrics['sim_end_waiting_passengers_count']:,} passengers")
             
             # Time Metrics - Aggregated
             print("\nAGGREGATE TIME METRICS:")
             print(f"   Simulation Duration:      {until_t:,} seconds")
-            print(f"   Total Wait Time:          {total_combined_wait_time:.1f} minutes")
-            print(f"   │  ├─ Completed/Traveling: {total_wait_time_minutes:.1f} minutes")
-            print(f"   │  └─ Still Waiting:       {wait_time_sim_end_minutes:.1f} minutes")
-            print(f"   Total Movement Time:      {movement_time_minutes:.1f} minutes (in-vehicle only)")
-            print(f"   Total Travel Time:        {total_travel_time_minutes:.1f} minutes (wait + movement)")
+            print(f"   Total Wait Time (completed):   {total_wait_time_minutes:.1f} minutes")
+            print(f"   Total Wait Time (ongoing):     {ongoing_wait_time_minutes:.1f} minutes")
+            print(f"   │  └─ Still Waiting:           {wait_time_sim_end_minutes:.1f} minutes")
+            print(f"   Total Movement Time (completed): {movement_time_minutes:.1f} minutes")
+            print(f"   Total Movement Time (ongoing):   {ongoing_movement_time_minutes:.1f} minutes")
+            print(f"   Total Travel Time (completed):   {total_travel_time_minutes:.1f} minutes")
+            print(f"   Total Travel Time (ongoing):     {ongoing_travel_time_minutes:.1f} minutes")
             
             # Time Metrics - Per Passenger Averages
             print("\nPER-PASSENGER AVERAGES:")
-            print(f"   Average Wait Time:        {avg_wait_time_minutes:.1f} minutes")
-            print(f"   Average Movement Time:    {avg_movement_time_minutes:.1f} minutes")
-            print(f"   Average Travel Time:      {avg_travel_time_minutes:.1f} minutes")
+            print(f"   Average Wait Time (completed):     {avg_wait_time_minutes:.1f} minutes")
+            print(f"   Average Wait Time (ongoing riders): {avg_wait_time_minutes_ongoing:.1f} minutes")
+            print(f"   Average Movement Time (completed): {avg_movement_time_minutes:.1f} minutes")
+            print(f"   Average Movement Time (ongoing riders): {avg_movement_time_minutes_ongoing:.1f} minutes")
+            print(f"   Average Travel Time (completed):   {avg_travel_time_minutes:.1f} minutes")
+            print(f"   Average Travel Time (ongoing riders): {avg_travel_time_minutes_ongoing:.1f} minutes")
             
             # Performance Summary
             print("\nPERFORMANCE SUMMARY:")
-            print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['completed_trip_passengers_count']} / {metrics['wanting_to_onboard']})")
+            print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
             print(f"   Boarding Success:         {onboard_rate_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
             print(f"   Transfer Rate:            {metrics['transfer_rate']:.1f}% ")
             print(f"   Node Coverage:            {node_coverage_pct:.1f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")

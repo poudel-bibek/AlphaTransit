@@ -2201,11 +2201,13 @@ class World:
                 raise ValueError("BusHandler must be set before adding bus passenger demand. Use W.set_bus_handler(BusHandler) first.")
             
             from .BusHandler import BusPassengerRequest
-            
+
             passenger_count = 0
+            passenger_unit = 1.0  # Passengers are handled individually (unlike vehicle platoons)
+
             for t in range(int(t_start/W.DELTAT), int(t_end/W.DELTAT)):
                 f += flow*W.DELTAT
-                while f >= W.DELTAN:
+                while f >= passenger_unit:
                     # Create bus passenger request
                     passenger_count += 1
                     passenger = BusPassengerRequest(
@@ -2216,10 +2218,10 @@ class World:
                         name=f"passenger_{passenger_count}",
                         attribute=attribute
                     )
-                    
+
                     # Add passenger to pending list - they'll be moved to stops when departure time arrives
                     W.bus_handler.add_pending_passenger(passenger)
-                    f -= W.DELTAN
+                    f -= passenger_unit
         else:
             # Default behavior: create vehicles
             for t in range(int(t_start/W.DELTAT), int(t_end/W.DELTAT)):
