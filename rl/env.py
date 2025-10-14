@@ -402,9 +402,10 @@ class TransitEnv(gym.Env):
         - alpha=1.0 means 100% of SERVED demand goes to bus
 
         - Dealing with demand that is not served by the route (UNSERVED demand):
-            - Option 1: Allocate it to cars. (if unserved_as_cars is True)
-            - Option 2: Ignore it i.e., keep it unserved. (if unserved_as_cars is False; default)
-            - Notes: 
+            - If alpha < 1.0: Allocate unserved demand to cars if unserved_as_cars=True, otherwise ignore it
+            - If alpha = 1.0: Always ignore unserved demand (no cars created for unserved O-D pairs)
+            - Notes:
+                - When alpha=1.0, unserved demand is ignored regardless of unserved_as_cars setting
                 - Some nodes (associated O-D pairs) may not be served because of 1) partial route construction 2) no coverage even at full route construction.
 
         --------------
@@ -442,7 +443,7 @@ class TransitEnv(gym.Env):
 
                 is_served = self._is_od_served(orig, dest)
                 bus_volume_float = total_volume * self.alpha if is_served else 0
-                car_volume_float = total_volume - bus_volume_float if unserved_as_cars else 0
+                car_volume_float = total_volume - bus_volume_float if (unserved_as_cars and self.alpha < 1.0) else 0
 
                 # Use Poisson sampling to convert fractional volumes to integers while preserving expected totals
                 # This prevents systematic loss from flooring small per-OD volumes to zero
@@ -675,7 +676,7 @@ class TransitEnv(gym.Env):
                 world.adddemand(orig=orig, dest=dest, t_start=0, t_end=self.horizon,
                                volume=total_volume, mode="vehicle")
 
-    def _get_service_frequency(self, route: List[str]) -> int:
+    def _get_service_frequency(self, route: List[str], all_routes: List[List[str]] = None) -> int:
         """
         Calculates the bus service frequency for a given route based on the selected mode.
 
@@ -684,14 +685,23 @@ class TransitEnv(gym.Env):
         Modes:
         -------
         - "fixed": Returns a constant, predefined service frequency.
-        
-        - "max_load": Calculates frequency based on the peak passenger load on the busiest segment of the route.
-            - The formula used is: ceil(Q_max / (comfort_threshold * capacity)) with Q_max as peak segment demand (per hour and not over the entire horizon).
-            - i.e., How often buses should run on a route to handle the peak passenger demand while keeping buses comfortable
-            - If Q_k,max = 200 pph, C_k = 40, and delta_max = 0.8, then: f_k = ceil(6.25) = 7 buses/hour
+
+        - "max_load": Calculates frequency based on the peak passenger load on the busiest segment of the route (normalized for route overlaps).
+            - The formula used is: ceil(Q_max_norm / (comfort_threshold * capacity)) where Q_max_norm is the normalized peak segment demand (per hour and not over the entire horizon).
+            - i.e., How often buses should run on a route to handle the peak passenger demand while keeping buses comfortable, accounting for load sharing between overlapping routes
+            - If Q_k,max_unnormalized = 200 pph, C_k = 40, and delta_max = 0.8, and 2 routes serve the busiest segment, then:
+              Q_k,max_normalized = 200 / 2 = 100 pph, f_k = ceil(100 / (0.8 * 40)) = ceil(3.125) = 4 buses/hour
+            - Normalization process:
+                1. Calculate which segments are served by how many routes across all routes
+                2. For each segment in the current route, divide its load by the number of routes serving that segment
+
             - Notes:
-                - We are not simply looking at the O-D pairs, but instead at the trips in each segment because of various O-D pairs.
-                - We are also considering contributions to segments due to potential transfers. Seemingly difficult because of the way transit graph is built.
+                - Uses graph-based pathfinding to accurately model passenger journeys, including transfers across multiple routes
+                - For each O-D pair served by the transit network, finds the actual path passengers take using shortest path
+                - Distributes passenger load across ALL segments they traverse on each route. Eg. if a passenger travels segments B->C->D->E on a route, their load is added to all segments (B-C, C-D, D-E), not just transfer points
+                - The problem with a naive approach (without normalization) is that a segment may end up having a large load (due to multiple route overlaps) and the bus frequency is set to this very high value (due to this large load).
+                - But that max load will be served by a number of routes overlapping on that segment. So, frequency should be normalized by the number of routes serving that segment.
+                - i.e., Normalization prevents overestimation of frequency when multiple routes serve the same segments, ensuring fair load distribution.
         """
 
         if self.service_frequency_mode == "fixed":
@@ -699,76 +709,81 @@ class TransitEnv(gym.Env):
 
         elif self.service_frequency_mode == "max_load":
 
-            # 1. Create a quick lookup for node positions on the route.
+            # 1. Build a complete transit graph from all known routes for accurate pathfinding
+            temp_transit_graph = nx.Graph()
+            if all_routes:
+                for r in all_routes:
+                    if len(r) > 1:
+                        nx.add_path(temp_transit_graph, r)
+
+            # 2. Create a quick lookup for node positions on the current route
             route_indices = {node: idx for idx, node in enumerate(route)}
             segment_loads = np.zeros(len(route) - 1, dtype=np.float64)
-            
-            # 2. Calculate per-hour passenger load for each segment
-            # This is the core of the "max load principle" - frequency based on peak segment demand
+
+            # 3. Calculate segment coverage across all routes for normalization
+            if all_routes is not None:
+                all_routes_segments = {}  # segment -> count of routes that serve it
+
+                # Calculate segments for all routes including current route
+                all_routes_with_current = all_routes + [route]
+                for r in all_routes_with_current:
+                    r_indices = {node: idx for idx, node in enumerate(r)}
+                    for i in range(len(r) - 1):
+                        seg_key = (min(r[i], r[i+1]), max(r[i], r[i+1]))  # Normalize segment order
+                        all_routes_segments[seg_key] = all_routes_segments.get(seg_key, 0) + 1
+
+                # Convert to segment index mapping for current route
+                route_segments_coverage = {}
+                for i in range(len(route) - 1):
+                    seg_key = (min(route[i], route[i+1]), max(route[i], route[i+1]))
+                    route_segments_coverage[i] = all_routes_segments.get(seg_key, 1)
+
+            # 4. Calculate per-hour passenger load for each segment using accurate pathfinding
             for _, row in self.demand_df_cached.iterrows():
                 orig, dest = str(row["orig"]), str(row["dest"])
 
-                # Check if this route serves this O-D pair (direct or via transfers)
-                if orig in route_indices or dest in route_indices:
-                    # passenger_volume is already in passengers per hour
+                # Check if this O-D pair can be served by the current transit network
+                if (orig in temp_transit_graph and dest in temp_transit_graph and
+                    nx.has_path(temp_transit_graph, orig, dest)):
+
                     passenger_volume = float(row["volume"]) * float(self.alpha)
                     if passenger_volume <= 0:
                         continue
 
-                    # If both O and D are on route, calculate exact segments (direct trips)
-                    if orig in route_indices and dest in route_indices:
-                        orig_idx = route_indices[orig]
-                        dest_idx = route_indices[dest]
+                    # Use graph-based pathfinding to find the actual path this passenger will take
+                    full_path = nx.shortest_path(temp_transit_graph, orig, dest)
 
-                        # Add this trip's passenger volume to all traversed segments.
-                        start_idx = min(orig_idx, dest_idx)
-                        end_idx = max(orig_idx, dest_idx)
-                        segment_loads[start_idx:end_idx] += passenger_volume
-                    else:
-                        # For transfer trips, concentrate demand on the transfer node
-                        # Find the exact node where transfer occurs and add all demand to connected segments
-                        transfer_node = None
+                    # Check if this route is part of the passenger's journey
+                    route_in_path = any(node in route_indices for node in full_path)
 
-                        if orig in route_indices:
-                            # Passenger boards at origin node on this route (transfer off later)
-                            transfer_node = orig
-                        elif dest in route_indices:
-                            # Passenger alights at destination node on this route (transferred on earlier)
-                            transfer_node = dest
+                    if route_in_path:
+                        # Extract the portion of the path that uses this specific route
+                        route_path_portion = []
+                        for node in full_path:
+                            if node in route_indices:
+                                route_path_portion.append(node)
 
-                        # At this point, transfer_node is guaranteed to be set (either orig or dest is on route)
-                        transfer_idx = route_indices[transfer_node]
-                        # Add ALL transfer demand to the segments connected to this transfer node
-                        num_segments = len(segment_loads)
-                        if num_segments > 0:
-                            # Find the segment(s) affected by this transfer node
-                            if transfer_idx == 0:
-                                # Start node - affects first segment
-                                segment_loads[0] += passenger_volume
-                            elif transfer_idx == len(route) - 1:
-                                # End node - affects last segment
-                                segment_loads[num_segments - 1] += passenger_volume
-                            else:
-                                # Middle node - affects both adjacent segments
-                                segment_loads[transfer_idx - 1] += passenger_volume / 2
-                                segment_loads[transfer_idx] += passenger_volume / 2
+                        # If passenger travels on this route, determine which segments they use
+                        if len(route_path_portion) > 1:
+                            # Convert route nodes to indices and find segments traversed
+                            route_indices_in_path = [route_indices[node] for node in route_path_portion]
+                            min_idx = min(route_indices_in_path)
+                            max_idx = max(route_indices_in_path)
 
-            print(f"DEBUG: Route {route[:3]}... max_load={segment_loads.max():.1f} pph across {len(segment_loads)} segments")
-
-            # Identify the bottleneck load; if no load exists default to single-bus service.
-            max_segment_load = float(segment_loads.max())
-            if max_segment_load <= 0:
-                return 1
+                            # Add passenger load to all segments they traverse on this route
+                            for seg_idx in range(min_idx, max_idx):
+                                normalization_factor = route_segments_coverage.get(seg_idx, 1)
+                                segment_loads[seg_idx] += passenger_volume / normalization_factor
 
             # Compute the comfortable capacity per departure and ensure the threshold is well defined.
-            comfort_capacity = float(self.comfort_threshold) * float(self.BUS_CAPACITY)
+            comfort_capacity = float(self.comfort_threshold * self.BUS_CAPACITY)
 
             # Calculate frequency based on max load principle
-            # frequency = ceil(max_passengers_per_hour / (comfort_threshold * capacity))
+            max_segment_load = segment_loads.max()  # Identify the bottleneck load
+            print(f"DEBUG: Route {route[:3]}... max_load={max_segment_load:.1f} pph, capacity={comfort_capacity:.1f}")
             frequency = int(np.ceil(max_segment_load / comfort_capacity))
             frequency = max(1, frequency)  # Minimum 1 bus per hour
 
-            print(f"DEBUG: Route {route[:3]}... max_load={max_segment_load:.1f} pph, capacity={comfort_capacity:.1f}, frequency={frequency}")
             return frequency
             
     def _apply_action(self) -> Dict[str, bool]:
@@ -820,8 +835,11 @@ class TransitEnv(gym.Env):
                 mode="bus"
             )
 
-            service_frequency_route = self._get_service_frequency(route)
+            # Pass all routes including current for normalization
+            all_routes_for_freq = self.all_routes + [self.current_route] if self.current_route and len(self.current_route) > 1 else self.all_routes
+            service_frequency_route = self._get_service_frequency(route, all_routes_for_freq)
             print(f"\nService frequency for route {route_idx}: {service_frequency_route}\n")
+            print(f"DEBUG: service_frequency_route type: {type(service_frequency_route)}, value: {service_frequency_route}")
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
             buses = bus.set_bus_route(
@@ -871,6 +889,7 @@ class TransitEnv(gym.Env):
 
         # 1. Average bus speed: 
         # Per-bus (Total distance traveled/ total operating time),operating time depends on the time bus was spawned.
+        # Per-bus average speed when actually moving (excludes time spent stopped at bus stops)
         bus_speeds = []
         all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
         for bus in all_buses:

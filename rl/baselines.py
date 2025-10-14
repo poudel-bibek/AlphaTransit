@@ -75,7 +75,9 @@ def initialize_route(env, route_index, use_random=None, avoid_completed_routes=T
 
     # Filter nodes to avoid completed routes (same as RL env)
     if avoid_completed_routes:
-        choice_nodes = [node for node in all_nodes if node not in env.all_routes]
+        # Flatten self.all_routes into a set of used nodes (just as in RL env.py @file_context_0)
+        completed_nodes = set(node for route in env.all_routes for node in route)
+        choice_nodes = [node for node in all_nodes if node not in completed_nodes]
     else:
         choice_nodes = all_nodes
 
@@ -340,12 +342,13 @@ def print_results(results_list, averaged):
     # Print LaTeX row
     print("\n")
     service = averaged['service_rate']
-    onboard = averaged['onboard_rate']
     wait = averaged['avg_wait_time'] / 60 # Minutes
     transfer = averaged['transfer_rate']
     travel = averaged['avg_travel_time'] / 60 # Minutes
-    completed = int(averaged['completed_trip_passengers_count'])
-    print(f"& ${service:.2f}$ & ${onboard:.2f}$ & ${wait:.2f}$ & ${transfer:.2f}$ & ${travel:.2f}$ & ${completed}$")
+    route_eff = averaged['route_efficiency']
+    fleet_size = averaged['fleet_size']
+    bus_util = averaged['bus_utilization']
+    print(f"& {service:.2f} & {wait:.2f} & {transfer:.2f} & {travel:.2f} & {route_eff:.2f} & {fleet_size:.0f} & {bus_util:.0f}")
 
 def execute_runs(baseline, num_runs, base_seed):
     """

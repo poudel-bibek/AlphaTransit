@@ -1444,10 +1444,13 @@ class Vehicle:
             # - If service_frequency = 6: headway = 600s (buses every 10 minutes)
             headway_seconds = 3600 / service_frequency
             
-            # Calculate how many buses we need to spawn during the simulation horizon
+            # Spawn buses spread throughout the first hour only
+            # The same set of buses keep circulating throughout the simulation horizon.
             # For a 1-hour simulation with service_frequency=6, this gives us 6 buses
-            # For a 2-hour simulation with service_frequency=6, this gives us 12 buses
-            num_buses_to_spawn = int(sim_horizon / headway_seconds)
+            # For a 2-hour simulation with service_frequency=6, the same six buses keep circulating.
+            # Previously: num_buses_to_spawn = int(sim_horizon / headway_seconds) # This was causing unrealistic fleet sizes
+            
+            num_buses_to_spawn = service_frequency
             print(f"Creating {num_buses_to_spawn} buses for service_frequency={service_frequency}, sim_horizon={sim_horizon}s")
             
             # Create additional buses (skip the first one since we already have it)
