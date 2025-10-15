@@ -3,8 +3,54 @@ matplotlib.use("Agg")
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
+import random
 from collections import defaultdict
-from typing import Dict, Optional, Any, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple, Sequence
+
+
+def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str]:
+    """
+    Select a route starting node according to the initialization strategy.
+    - For Bloomington transit, the transit center node is 96.
+    Args:
+        env: TransitEnv instance supplying demand data and configuration flags.
+        avoid_completed_routes: Whether to avoid nodes already used in completed routes.
+
+    Returns:
+        A single-element list containing the chosen starting node name (as string).
+    """
+    
+    # Gather candidate nodes from demand dataframe
+    all_nodes = list(env.demand_df_cached["orig"].unique())
+    if avoid_completed_routes:
+        # Flatten self.all_routes into a set of used nodes 
+        completed_nodes = set(node for route in env.all_routes for node in route)
+        choice_nodes = [node for node in all_nodes if node not in completed_nodes]
+    else:
+        choice_nodes = all_nodes
+
+    strategy = env.path_init 
+    if strategy not in {"random", "highest_demand", "transit_center"}:
+        raise ValueError(f"Invalid path initialization strategy: {strategy}")
+
+    elif strategy == "random":
+        choice = random.choice(choice_nodes)
+        print(f"Initializing route randomly at node: {choice}")
+        return [choice]
+
+    elif strategy == "highest_demand":
+        # Rank all nodes by highest demand emanating from them (total volume leaving each node)
+        demand_df_grouped = env.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
+        demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
+        for _, row in demand_df_ranked.iterrows():
+            candidate_node = row["orig"]
+            if candidate_node in choice_nodes:
+                print(f"Initializing route at highest available demand node: {candidate_node}")
+                return [candidate_node]
+
+    elif strategy == "transit_center":
+        print(f"Initializing route at transit center node: 96")
+        return [96] # NOTE: This is a hardcoded value for Bloomington transit.
 
 def normalize_coordinates(world):
     """

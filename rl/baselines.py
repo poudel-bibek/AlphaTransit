@@ -39,7 +39,7 @@ import numpy as np
 import random
 import torch
 from datetime import datetime
-from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path
+from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, initialize_route
 
 
 def set_global_seeds(seed: int) -> None:
@@ -52,52 +52,6 @@ def set_global_seeds(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-def initialize_route(env, route_index, use_random=None, avoid_completed_routes=True):
-    """
-    Initialize a route exactly like the RL environment.
-
-    Args:
-        env: TransitEnv instance
-        route_index: Index of route being initialized (0, 1, 2, ...)
-        use_random: Whether to use random initialization. If None, uses env.random_path_init
-        avoid_completed_routes: Whether to avoid starting from nodes in completed routes
-
-    Returns:
-        List containing the starting node for the route
-    """
-    # Use same logic as RL env initialization
-    all_nodes = list(env.demand_df_cached["orig"].unique())
-
-    # Determine if we should use random initialization
-    if use_random is None:
-        use_random = env.random_path_init
-
-    # Filter nodes to avoid completed routes (same as RL env)
-    if avoid_completed_routes:
-        # Flatten self.all_routes into a set of used nodes (just as in RL env.py @file_context_0)
-        completed_nodes = set(node for route in env.all_routes for node in route)
-        choice_nodes = [node for node in all_nodes if node not in completed_nodes]
-    else:
-        choice_nodes = all_nodes
-
-    if use_random:
-        choice = random.choice(choice_nodes)
-        print(f"Initializing route {route_index} randomly at node: {choice}")
-        return [choice]
-
-    else:
-        # Rank all nodes by highest demand emanating from them (total volume leaving each node)
-        demand_df_grouped = env.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
-        demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
-
-        # Choose the highest ranking node from available choice_nodes
-        for _, row in demand_df_ranked.iterrows():
-            candidate_node = row["orig"]
-            if candidate_node in choice_nodes:
-                choice = candidate_node
-                print(f"Initializing route {route_index} at highest available demand node: {choice}")
-                return [choice]
 
 def create_main_save_dir(config):
     """
@@ -148,7 +102,7 @@ def create_fancy_animations(env, config, baseline_save_dir):
             network_font_size=11,
             antialiasing=False,
             file_name=all_vehicles_anim_path,
-            save_as_mp4=True
+            save_as_mp4=False
         )
         print(f"All vehicles animation saved to: {all_vehicles_anim_path}")
         
@@ -260,21 +214,16 @@ def print_results(results_list, averaged):
         # Movement / travel metrics (seconds)
         'total_movement_completed': 'seconds',
         'total_movement_ongoing': 'seconds',
-        'total_movement_served': 'seconds',
         'total_travel_completed': 'seconds',
         'total_travel_ongoing': 'seconds',
-        'total_travel_served': 'seconds',
 
         # Per-passenger averages (seconds)
         'avg_wait_time_completed': 'seconds',
         'avg_wait_time_ongoing': 'seconds',
-        'avg_wait_time_served': 'seconds',
         'avg_movement_time_completed': 'seconds',
         'avg_movement_time_ongoing': 'seconds',
-        'avg_movement_time_served': 'seconds',
         'avg_travel_time_completed': 'seconds',
         'avg_travel_time_ongoing': 'seconds',
-        'avg_travel_time_served': 'seconds',
 
         # Distributions (raw seconds)
         'waiting_time_dstr': 'distribution',
@@ -291,7 +240,7 @@ def print_results(results_list, averaged):
         'demand_coverage_potential': '%',
         'demand_coverage_actual': '%',
         'service_rate': '%',
-        'onboard_rate': '%',
+        'completed_rate': '%',
         'transfer_rate': '%',
         'route_overlap_ratio': 'ratio',
 
@@ -428,7 +377,7 @@ def execute_runs(baseline, num_runs, base_seed):
 # Heuristic Baselines: 
 #####################################
 
-class RandomBaseline:
+class RandomWalk:
     """
     Random Neighbor Baseline.
     """
@@ -459,7 +408,7 @@ class RandomBaseline:
             print(f"\n=== Building Route {current_route_index + 1} ===")
 
             # Initialize current route (exactly like RL env initialization)
-            current_route = initialize_route(self.env, current_route_index)
+            current_route = initialize_route(self.env)
 
             while len(current_route) < self.env.MAX_ROUTE_LENGTH:
                 # Get current frontier
@@ -480,13 +429,17 @@ class RandomBaseline:
 
             # Add completed route to all_routes
             all_routes.append(current_route)
+            self.env.all_routes = all_routes
             print(f"Route {current_route_index + 1} completed: {current_route}")
             current_route_index += 1
 
         print(f"\nAll routes completed: {all_routes}")
         return all_routes
 
-class GreedyDemandCoverage:
+class DemandCoverage:
+    """
+    Build route by greedily selecting the nodes that maximize the immediate demand coverage.
+    """
     def __init__(self, env, config, num_runs, base_seed):
         self.env = env
         self.config = config
@@ -545,7 +498,10 @@ class GreedyDemandCoverage:
             print(f"\nRoute so far: {current_path}\n")
         return current_path
 
-class GreedyShortestPath:
+class ShortestPath:
+    """
+    Greedily select the node that is closest to the current path.
+    """
     def __init__(self, env, config, num_runs, base_seed):
         self.env = env
         self.config = config
@@ -598,11 +554,12 @@ class GreedyShortestPath:
             print(f"\nRoute so far: {current_path}\n")
         return current_path
 
-class GreedyRewardMaximization:
+class RewardMaximization:
+    """
+    Greedily select the node that maximizes the immediate (short-term) reward.
+    """
     def __init__(self, env, config, num_runs, base_seed):
-        """
-        A baseline for myopic short-term reward maximization.
-        """
+
         self.env = env
         self.config = config
         self.world = env.build_world(config.get("network"))
@@ -664,7 +621,10 @@ class GreedyRewardMaximization:
 # Real-world Baseline: 
 #####################################
 
-class RealWorldBaseline:
+class RealWorld:
+    """
+    Use the existing routes in the real-world.
+    """
     def __init__(self, env, config, num_runs, base_seed):
         self.env = env
         self.config = config

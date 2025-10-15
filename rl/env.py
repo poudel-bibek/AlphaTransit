@@ -9,7 +9,7 @@ from pathlib import Path
 
 from collections import defaultdict
 from uxsim.BusHandler import BusHandler
-from rl.env_utils import plot_network_demand_and_path
+from rl.env_utils import plot_network_demand_and_path, initialize_route
 from typing import Any, Dict, Optional, Tuple, List 
 
 class TransitEnv(gym.Env):
@@ -39,11 +39,11 @@ class TransitEnv(gym.Env):
         self.BUS_CAPACITY = self.config.get("bus_capacity")
         self.STOP_DURATION = self.config.get("stop_duration")
         self.alpha = self.config.get("alpha")
-        self.arrival_window = self.config.get("arrival_window")
+        self.demand_warmup = self.config.get("demand_warmup")
         self.unserved_as_cars = self.config.get("unserved_as_cars") 
         self.comfort_threshold = self.config.get("comfort_threshold")
         self.radius = self.config.get("radius")
-        self.random_path_init = self.config.get("random_path_init")
+        self.path_init = self.config.get("path_init")
         
         # Constraints:
         self.NUM_ROUTES = self.config.get("num_routes")
@@ -357,40 +357,6 @@ class TransitEnv(gym.Env):
         """
         return gym.spaces.Discrete(self.n_nodes)
     
-    def _initialize_current_route(self, use_random: bool = False, avoid_completed_routes: bool = True) -> list:
-        """
-        Initialize route design at: 
-        - The highest demand node i.e., node from which highest demand emanates.
-        - Random node.
-        Option to avoid starting from nodes that are already present in the completed routes.
-        """
-        
-        all_nodes = list(self.demand_df_cached["orig"].unique())
-        if avoid_completed_routes:
-            # Flatten self.all_routes into a set of nodes already used
-            completed_nodes = set(node for route in self.all_routes for node in route)
-            choice_nodes = [node for node in all_nodes if node not in completed_nodes]
-        else:
-            choice_nodes = all_nodes
-        
-        if use_random:
-            choice = random.choice(choice_nodes)
-            print(f"Initializing route randomly at node: {choice}")
-            return [choice]
-            
-        else: 
-            # Rank all nodes by highest demand emanating from them (total volume leaving each node)
-            demand_df_grouped = self.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
-            demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
-            
-            # Choose the highest ranking node from available choice_nodes
-            for _, row in demand_df_ranked.iterrows():
-                candidate_node = row["orig"]
-                if candidate_node in choice_nodes:
-                    choice = candidate_node
-                    print(f"Initializing route at highest available demand node: {choice}")
-                    return [choice]
-
     def _allocate_demand_by_service(self, world: World, method: str = "volume", unserved_as_cars: bool = False) -> None:
         """
         Assigns mode-specific demands based on the current bus route:
@@ -460,16 +426,17 @@ class TransitEnv(gym.Env):
                 bus_demand += bus_volume_float  # Keep float for logging/analytics
                 car_demand += car_volume_float  # Keep float for logging/analytics
 
-                # Spread passengers over horizon the first X% of simulation horizon
-                # Car
-                arrival_window = int(self.horizon * self.arrival_window)
+                warmup_steps = int(self.horizon * self.demand_warmup)
+                arrival_window_start = warmup_steps
+                arrival_window_end = self.horizon - warmup_steps
+
                 if car_passengers > 0:
-                    world.adddemand(orig=orig, dest=dest, t_start=0, t_end=arrival_window,
+                    world.adddemand(orig=orig, dest=dest, t_start=arrival_window_start, t_end=arrival_window_end,
                                     volume=car_passengers, mode="vehicle")
 
                 # Spread bus passengers if served
                 if bus_passengers > 0:
-                    world.adddemand(orig=orig, dest=dest, t_start=0, t_end=arrival_window,
+                    world.adddemand(orig=orig, dest=dest, t_start=arrival_window_start, t_end=arrival_window_end,
                                     volume=bus_passengers, mode="bus_passenger")
 
         # Not used right now for the sake of data standardization.
@@ -599,7 +566,7 @@ class TransitEnv(gym.Env):
 
         self.all_routes = []           # Reset completed routes
         self.current_route_index = 0   # Start with first route
-        self.current_route = self._initialize_current_route(use_random=self.random_path_init)
+        self.current_route = initialize_route(self)
         state = self._get_state() # initial state
         return state, {}
     
@@ -716,70 +683,62 @@ class TransitEnv(gym.Env):
                     if len(r) > 1:
                         nx.add_path(temp_transit_graph, r)
 
-            # 2. Create a quick lookup for node positions on the current route
-            route_indices = {node: idx for idx, node in enumerate(route)}
-            segment_loads = np.zeros(len(route) - 1, dtype=np.float64)
+            # 2. Include current route only if it isn't already part of all_routes
+            routes_considered = list(all_routes) if all_routes else []
+            if route not in routes_considered:
+                routes_considered.append(route)
 
-            # 3. Calculate segment coverage across all routes for normalization
-            if all_routes is not None:
-                all_routes_segments = {}  # segment -> count of routes that serve it
+            # Calculate number of routes covering each segment for all routes including current route
+            all_routes_segments = defaultdict(int)  # segment -> count of routes that serve it
+            for r in routes_considered:
+                for src, dst in zip(r, r[1:]):
+                    seg_key = tuple(sorted((src, dst)))  # Normalize segment direction i.e., consider both (1,2) and (2,1) as the same segment
+                    all_routes_segments[seg_key] += 1
 
-                # Calculate segments for all routes including current route
-                all_routes_with_current = all_routes + [route]
-                for r in all_routes_with_current:
-                    r_indices = {node: idx for idx, node in enumerate(r)}
-                    for i in range(len(r) - 1):
-                        seg_key = (min(r[i], r[i+1]), max(r[i], r[i+1]))  # Normalize segment order
-                        all_routes_segments[seg_key] = all_routes_segments.get(seg_key, 0) + 1
-
-                # Convert to segment index mapping for current route
-                route_segments_coverage = {}
-                for i in range(len(route) - 1):
-                    seg_key = (min(route[i], route[i+1]), max(route[i], route[i+1]))
-                    route_segments_coverage[i] = all_routes_segments.get(seg_key, 1)
+            # 3. Create a data structure to store the passenger load for each segment
+            all_routes_segments_loads = defaultdict(float)
+            for r in routes_considered:
+                for src, dst in zip(r, r[1:]):
+                    seg_key = tuple(sorted((src, dst)))
+                    all_routes_segments_loads[seg_key] = 0
 
             # 4. Calculate per-hour passenger load for each segment using accurate pathfinding
             for _, row in self.demand_df_cached.iterrows():
                 orig, dest = str(row["orig"]), str(row["dest"])
 
                 # Check if this O-D pair can be served by the current transit network
-                if (orig in temp_transit_graph and dest in temp_transit_graph and
-                    nx.has_path(temp_transit_graph, orig, dest)):
+                if (orig in temp_transit_graph and dest in temp_transit_graph and nx.has_path(temp_transit_graph, orig, dest)):
 
                     passenger_volume = float(row["volume"]) * float(self.alpha)
                     if passenger_volume <= 0:
                         continue
 
                     # Use graph-based pathfinding to find the actual path this passenger will take
-                    full_path = nx.shortest_path(temp_transit_graph, orig, dest)
+                    full_path = nx.shortest_path(temp_transit_graph, orig, dest) # Returns node names
+                    # print(f"DEBUG: full_path: {full_path}, route: {route}")
 
-                    # Check if this route is part of the passenger's journey
-                    route_in_path = any(node in route_indices for node in full_path)
+                    # Although we are returning the FOS for this route. We need to first update the effect of load on all route segments.
+                    if len(full_path) > 1:
+                        for src, dst in zip(full_path, full_path[1:]):
+                            seg_key = tuple(sorted((src, dst)))
+                            all_routes_segments_loads[seg_key] += passenger_volume
+                    
+            # 5. Now get the normalized max load for this route
+            if len(route) > 1:
+                segment_loads_this_route = []
+                for src, dst in zip(route, route[1:]):
+                    seg_key = tuple(sorted((src, dst)))
+                    normalization_factor = all_routes_segments.get(seg_key)
+                    segment_loads_this_route.append(all_routes_segments_loads[seg_key] / normalization_factor)
 
-                    if route_in_path:
-                        # Extract the portion of the path that uses this specific route
-                        route_path_portion = []
-                        for node in full_path:
-                            if node in route_indices:
-                                route_path_portion.append(node)
-
-                        # If passenger travels on this route, determine which segments they use
-                        if len(route_path_portion) > 1:
-                            # Convert route nodes to indices and find segments traversed
-                            route_indices_in_path = [route_indices[node] for node in route_path_portion]
-                            min_idx = min(route_indices_in_path)
-                            max_idx = max(route_indices_in_path)
-
-                            # Add passenger load to all segments they traverse on this route
-                            for seg_idx in range(min_idx, max_idx):
-                                normalization_factor = route_segments_coverage.get(seg_idx, 1)
-                                segment_loads[seg_idx] += passenger_volume / normalization_factor
+                max_segment_load = max(segment_loads_this_route)
+            else:
+                max_segment_load = 0
 
             # Compute the comfortable capacity per departure and ensure the threshold is well defined.
             comfort_capacity = float(self.comfort_threshold * self.BUS_CAPACITY)
 
             # Calculate frequency based on max load principle
-            max_segment_load = segment_loads.max()  # Identify the bottleneck load
             print(f"DEBUG: Route {route[:3]}... max_load={max_segment_load:.1f} pph, capacity={comfort_capacity:.1f}")
             frequency = int(np.ceil(max_segment_load / comfort_capacity))
             frequency = max(1, frequency)  # Minimum 1 bus per hour
@@ -982,17 +941,19 @@ class TransitEnv(gym.Env):
                 current_ride = next((log for log in reversed(passenger.journey_log) if log['type'] == 'ride' and log['end'] is None), None)
                 
                 if current_ride:
-                    current_ride_time = self.world.TIME - current_ride['start']
-                    total_movement_time = completed_movement_time + current_ride_time
-                    
                     ongoing_wait_time_total += wait_time
+
+                    current_ride_time = self.world.TIME - current_ride['start']
+                    total_movement_time = completed_movement_time + current_ride_time # Because they may have previous legs.
                     ongoing_movement_time_total += total_movement_time
+
                     ongoing_travel_time_total += wait_time + total_movement_time
+
                     wait_time_dstr.append(wait_time)
                     movement_time_dstr.append(total_movement_time)  # Now includes all legs
                     travel_time_dstr.append(wait_time + total_movement_time)
+
                     on_going_count_sim_end += 1
-                
 
         # Handle STILL-WAITING (not onboarded) i.e., passengers whose departure time has arrived but are still waiting for the bus 
         # They only have wait time and have no in-vehicle time; no point in adding travel time)
@@ -1157,11 +1118,10 @@ class TransitEnv(gym.Env):
         ongoing_movement_time_minutes = (1/60) * final_metrics['total_movement_time_ongoing']
         ongoing_travel_time_minutes = (1/60) * final_metrics['total_travel_time_ongoing']
         
-        # Service rate calculation (used in both metrics dict and print statements)
-        service_rate_pct = 100 * (final_metrics['completed_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0 # What % of demand was fulfilled.
+        # Completed rate calculation 
+        completed_rate_pct = 100 * (final_metrics['completed_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0 # What % of demand was fulfilled.
         
         completed_passengers = final_metrics['completed_count']
-
         ongoing_passengers = final_metrics['ongoing_count']
 
         avg_wait_time_minutes = total_wait_time_minutes / completed_passengers if completed_passengers > 0 else 0.0
@@ -1172,8 +1132,8 @@ class TransitEnv(gym.Env):
         avg_movement_time_minutes_ongoing = ongoing_movement_time_minutes / ongoing_passengers if ongoing_passengers > 0 else 0.0
         avg_travel_time_minutes_ongoing = ongoing_travel_time_minutes / ongoing_passengers if ongoing_passengers > 0 else 0.0
         
-        # Onboarding rate calculation
-        onboard_rate_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0
+        # Service rate calculation (used in both metrics dict and print statements)
+        service_rate_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0
         
         # Route efficiency calculation (passengers completed per km of route)
         route_efficiency_passengers_per_km = 1000 * (final_metrics['completed_count'] / initial_metrics['route_length']) if initial_metrics['route_length'] > 0 else 0.0
@@ -1216,8 +1176,8 @@ class TransitEnv(gym.Env):
             'avg_travel_time_ongoing': avg_travel_time_minutes_ongoing * 60,      # Average total travel (so far) for onboard passengers
 
             # Passenger counts
-            'completed_passengers': final_metrics['completed_count'],             # Count of passengers who finished their journey
-            'ongoing_passengers': final_metrics['ongoing_count'],                 # Count of passengers still on buses
+            'completed_passengers': completed_passengers,             # Count of passengers who finished their journey
+            'ongoing_passengers': ongoing_passengers,                 # Count of passengers still on buses
             'total_onboarded_count': final_metrics['total_onboarded_count'],      # Completed + onboard passengers (excludes still-waiting)
             'wanting_to_onboard': initial_metrics['wanting_to_onboard'],          # Demand actually served by the transit network (potential riders)
 
@@ -1225,7 +1185,7 @@ class TransitEnv(gym.Env):
             'demand_coverage_potential': demand_coverage_potential_pct,           # % of total demand lying on transit network
             'demand_coverage_actual': demand_coverage_actual_pct,                 # % of total demand that actually boarded
             'service_rate': service_rate_pct,                                     # Completed / wanting-to-onboard
-            'onboard_rate': onboard_rate_pct,                                     # Onboarded / wanting-to-onboard
+            'completed_rate': completed_rate_pct,                                 # Completed / wanting-to-onboard
             'transfer_rate': final_metrics['transfer_rate'],                      # % of completed trips requiring transfers
             'route_overlap_ratio': route_overlap_ratio,                           # Average segment overlap ratio across routes
 
@@ -1282,8 +1242,8 @@ class TransitEnv(gym.Env):
             
             # Performance Summary
             print("\nPERFORMANCE SUMMARY:")
-            print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
-            print(f"   Boarding Success:         {onboard_rate_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
+            print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
+            print(f"   Completion Success:       {completed_rate_pct:.1f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
             print(f"   Transfer Rate:            {metrics['transfer_rate']:.1f}% ")
             print(f"   Node Coverage:            {node_coverage_pct:.1f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
             print(f"   Route Efficiency:         {route_efficiency_passengers_per_km:.2f} passengers/km")
@@ -1480,7 +1440,7 @@ class TransitEnv(gym.Env):
         if action_signals['route_completed'] or action_signals['route_forced_end']:
             self.current_route_index += 1
             if self.current_route_index < self.NUM_ROUTES:
-                self.current_route = self._initialize_current_route(use_random=self.random_path_init)
+                self.current_route = initialize_route(self)
                 print(f"Starting route {self.current_route_index}: {self.current_route}")
             else:
                 print("All routes processed!")

@@ -13,7 +13,7 @@ from rl.models import GATV2ActorCritic
 from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
 from rl.env_utils import plot_network_and_demand
-from rl.baselines import RandomBaseline, GreedyDemandCoverage, GreedyShortestPath, GreedyRewardMaximization, RealWorldBaseline
+from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 
 class CachedPyGConverter:
     """
@@ -427,7 +427,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
-    parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster.
+    parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
@@ -439,16 +439,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
-    parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
+    parser.add_argument("--alpha", type=float, default=1.0, help="Modal split parameter for served O-D pairs (proportion taking bus)")
     parser.add_argument("--unserved_as_cars", type=bool, default=True, help="Allocate demand that is not served by buses to cars (True) or ignore it (False). When alpha=1.0, unserved demand is always ignored.")
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
-    parser.add_argument("--arrival_window", type=float, default=0.7, help="Ratio of simulation horizon for demand arrival window (0.0-1.0)")
-    parser.add_argument("--random_path_init", type=bool, default=True, help="Initialize path randomly (default: True)")
+    parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end with no demand (0.0-0.5)")
+    parser.add_argument("--path_init", type=str, default="random", help="Initialize path using various schemes (possible: random, highest demand node, transit center)")
     
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
-    parser.add_argument("--max_route_length", type=int, default=10, help="Maximum path length")
+    parser.add_argument("--max_route_length", type=int, default=14, help="Maximum path length")
     parser.add_argument("--min_route_length", type=int, default=1, help="Minimum path length")
 
     # PPO params: 
@@ -514,11 +514,11 @@ def main() -> None:
         env = TransitEnv(config)
         
         baseline_classes = {
-            "random": RandomBaseline,
-            "greedy_demand_cover": GreedyDemandCoverage,
-            "greedy_shortest_path": GreedyShortestPath,
-            "greedy_reward_max": GreedyRewardMaximization,
-            "real_world": RealWorldBaseline,
+            "random": RandomWalk,
+            "greedy_demand_cover": DemandCoverage,
+            "greedy_shortest_path": ShortestPath,
+            "greedy_reward_max": RewardMaximization,
+            "real_world": RealWorld,
         }
         
         if config["baseline_type"] not in baseline_classes:
