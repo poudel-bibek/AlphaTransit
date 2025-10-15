@@ -103,3 +103,6 @@ tmp/*
 ./outbloomington
 ./outtest
 ./outsioux_falls
+
+./results_comparison.png
+results_comparison.png

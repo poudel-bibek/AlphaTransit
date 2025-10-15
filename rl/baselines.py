@@ -39,6 +39,7 @@ import numpy as np
 import random
 import torch
 from datetime import datetime
+from collections import defaultdict
 from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, initialize_route
 
 def set_global_seeds(seed: int) -> None:
@@ -101,24 +102,10 @@ def create_fancy_animations(env, config, baseline_save_dir):
             network_font_size=11,
             antialiasing=False,
             file_name=all_vehicles_anim_path,
-            save_as_mp4=False
+            save_as_mp4=False,
+            # bus_only=True
         )
         print(f"All vehicles animation saved to: {all_vehicles_anim_path}")
-        
-        # # Create fancy animation with buses only
-        # bus_only_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type', 'unknown')}_anim_bus_only.gif")
-        # env.world.analyzer.network_fancy(
-        #     animation_speed_inverse=10,
-        #     sample_ratio=1.0,
-        #     interval=5,
-        #     trace_length=5,
-        #     network_font_size=14,
-        #     antialiasing=False,
-        #     file_name=bus_only_anim_path,
-        #     save_as_mp4=False,
-        #     bus_only=True
-        # )
-        # print(f"Bus-only animation saved to: {bus_only_anim_path}")
         
     except Exception as e:
         print(f"Warning: Could not create fancy animations: {e}")
@@ -156,53 +143,81 @@ def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
         'sim_result': sim_result
     }
 
+def summarize_results(results_list):
+    """
+    Aggregate per-run metrics, scalars, and distributions.
+    """
+    scalar_series = defaultdict(list)
+    distribution_series = defaultdict(list)
+    per_run_stats = []
+
+    for res in results_list:
+        sim = res['sim_result']
+
+        for key, value in sim.items():
+            if isinstance(value, (int, float)):
+                scalar_series[key].append(float(value))
+            elif isinstance(value, (list, tuple)):
+                distribution_series[key].extend(value)
+
+        completed = float(sim['completed_passengers'])
+        ongoing = float(sim['ongoing_passengers'])
+        served = completed + ongoing
+        wait_seconds = float(sim['total_wait_completed']) + float(sim['total_wait_ongoing'])
+        travel_seconds = float(sim['total_travel_completed']) + float(sim['total_travel_ongoing'])
+
+        wait_minutes = (wait_seconds / served) / 60.0 if served > 0 else 0.0
+        travel_minutes = (travel_seconds / served) / 60.0 if served > 0 else 0.0
+
+        scalar_series['combined_avg_wait_minutes'].append(wait_minutes)
+        scalar_series['combined_avg_travel_minutes'].append(travel_minutes)
+
+        per_run_stats.append({
+            'served_passengers': served,
+            'combined_wait_seconds': wait_seconds,
+            'combined_travel_seconds': travel_seconds,
+        })
+
+    aggregated = {key: float(np.mean(values)) for key, values in scalar_series.items() if values}
+    aggregated['_scalar_series'] = scalar_series
+    aggregated['_distribution_series'] = distribution_series
+    aggregated['_per_run_stats'] = per_run_stats
+    return aggregated
+
+def write_summary_json(baseline, aggregated):
+    scalar_series = aggregated.get('_scalar_series', {})
+    if not scalar_series:
+        return
+
+    metrics_of_interest = [
+        'service_rate',
+        'transfer_rate',
+        'route_efficiency',
+        'fleet_size',
+        'bus_utilization',
+        'combined_avg_wait_minutes',
+        'combined_avg_travel_minutes',
+    ]
+
+    results_section = {}
+    for metric in metrics_of_interest:
+        values = scalar_series.get(metric)
+        if not values:
+            continue
+        arr = np.array(values, dtype=np.float64)
+        results_section[metric] = { 'avg': float(arr.mean()), 'std': float(arr.std(ddof=0)), 'data': values }
+
+    output_path = os.path.join(baseline.main_save_dir, 'results_summary.json')
+    with open(output_path, 'w') as f:
+        json.dump({ 'num_runs': baseline.num_runs, 'results': results_section }, f, indent=2)
+    print(f"Saved summary statistics to: {output_path}")
+
 def average_sim_results(results_list):
-    """
-    Compute average of simulation results across multiple runs.
-    Handles numerical values generically; concatenates and summarizes distribution lists.
-    """
     if not results_list:
         return {}
+    return summarize_results(results_list)
 
-    # Collect all keys from first result
-    keys = results_list[0]['sim_result'].keys()
-    averaged = {}
-
-    for key in keys:
-        values = []
-        for res in results_list:
-            val = res['sim_result'].get(key)
-            if isinstance(val, (int, float)):
-                values.append(val)
-
-        if values:
-            averaged[key] = np.mean(values)
-
-    # Handle distribution metrics (lists) by concatenating and computing combined statistics
-    distribution_keys = ['waiting_time_dstr', 'movement_time_dstr', 'travel_time_dstr']
-
-    for dist_key in distribution_keys:
-        all_values = []
-        for res in results_list:
-            dist_list = res['sim_result'].get(dist_key, [])
-            if isinstance(dist_list, list):
-                all_values.extend(dist_list)
-
-        if all_values:
-            dist_array = np.array(all_values)
-            # Add combined statistics for this distribution
-            averaged[f'{dist_key}_combined_mean'] = np.mean(dist_array)
-            averaged[f'{dist_key}_combined_std'] = np.std(dist_array)
-            averaged[f'{dist_key}_combined_min'] = np.min(dist_array)
-            averaged[f'{dist_key}_combined_max'] = np.max(dist_array)
-            averaged[f'{dist_key}_total_passengers'] = len(dist_array)
-
-    return averaged
-
-def print_results(results_list, averaged):
-    """
-    """
-    
+def print_results(results_list, aggregated):
     eval_metrics = {
         # Waiting metrics (seconds)
         'total_wait_completed': 'seconds',
@@ -224,7 +239,7 @@ def print_results(results_list, averaged):
         'avg_travel_time_completed': 'seconds',
         'avg_travel_time_ongoing': 'seconds',
 
-        # Distributions (raw seconds)
+        # Distributions (seconds)
         'waiting_time_dstr': 'distribution',
         'movement_time_dstr': 'distribution',
         'travel_time_dstr': 'distribution',
@@ -235,114 +250,89 @@ def print_results(results_list, averaged):
         'total_onboarded_count': 'count',
         'wanting_to_onboard': 'count',
 
-        # Reward / demand components
+        # Demand / reward components
         'demand_coverage_potential': '%',
         'demand_coverage_actual': '%',
         'service_rate': '%',
         'completed_rate': '%',
         'transfer_rate': '%',
-        'route_overlap_ratio': 'ratio',
 
-        # Route metrics
+        # Route/network metrics
+        'route_overlap_ratio': 'ratio',
         'route_length': 'meters',
         'bus_utilization': '%',
         'average_bus_speed': 'm/s',
         'fleet_size': 'count',
         'route_efficiency': 'passengers/km',
         'node_coverage': '%',
-
-        # Additional metrics for compatibility
-        'episode_length': 'count',
-        'completed_trips': 'count',  # maps to completed_passengers
     }
 
+    scalar_series = aggregated.get('_scalar_series', {})
+    per_run_stats = aggregated.get('_per_run_stats', [])
+
     print("\n=== Individual Run Results ===")
-    # Find max key length for alignment
     max_key_len = max(len(key) for key in eval_metrics.keys())
 
     for i, res in enumerate(results_list, 1):
         print(f"Run {i}:")
+        sim = res['sim_result']
+        served = sim['completed_passengers'] + sim['ongoing_passengers']
+        wait_seconds = sim['total_wait_completed'] + sim['total_wait_ongoing']
+        travel_seconds = sim['total_travel_completed'] + sim['total_travel_ongoing']
 
-        served_passengers = res['sim_result'].get('completed_passengers') + res['sim_result'].get('ongoing_passengers')
-        combined_wait_served = res['sim_result'].get('total_wait_completed') + res['sim_result'].get('total_wait_ongoing')
-        combined_travel_served = res['sim_result'].get('total_travel_completed') + res['sim_result'].get('total_travel_ongoing')
-        
-        for key in eval_metrics.keys():
-            val = res['sim_result'].get(key)
-            if val is None:
-                continue
-
-            # Scalars (int/float)
+        for key in eval_metrics:
+            val = sim[key]
             if isinstance(val, (int, float)):
                 val_str = f"{val:.2f}" if isinstance(val, float) else f"{val}"
-                unit_str = f" ({eval_metrics[key]})"
-                print(f"  {key:<{max_key_len}} : {val_str}{unit_str}")
-                continue
+                print(f"  {key:<{max_key_len}} : {val_str} ({eval_metrics[key]})")
+            elif isinstance(val, (list, tuple)):
+                print(f"  {key:<{max_key_len}} : n={len(val)} ({eval_metrics[key]})")
 
-            # Lists (distributions)
-            if isinstance(val, (list, tuple)):
-                length = len(val)
-                unit_str = f" ({eval_metrics[key]})"
-                print(f"  {key:<{max_key_len}} : n={length}{unit_str}")
-                continue
-
-        print(f"  avg_wait_time_served         : {combined_wait_served/served_passengers:.2f} (seconds)")
-        print(f"  avg_travel_time_served       : {combined_travel_served/served_passengers:.2f} (seconds)")
+        if served > 0:
+            print(f"  avg_wait_time_served         : {wait_seconds/served:.2f} (seconds)")
+            print(f"  avg_travel_time_served       : {travel_seconds/served:.2f} (seconds)")
+        else:
+            print("  avg_wait_time_served         : 0.00 (seconds)")
+            print("  avg_travel_time_served       : 0.00 (seconds)")
         print("---")
 
     print("\n=== Averaged Results ===")
-    combined_wait_served_sum = 0.0
-    combined_travel_served_sum = 0.0
-    combined_served_passengers_sum = 0
+    for key, values in scalar_series.items():
+        if key not in eval_metrics or not values:
+            continue
+        str_values = [f"{v:.2f}" for v in values]
+        avg_val = aggregated.get(key)
+        avg_str = f"{avg_val:.2f}" if avg_val is not None else "N/A"
+        print(f"  {key:<{max_key_len}} : ({' + '.join(str_values)}) / {len(values)} = {avg_str} ({eval_metrics[key]})")
 
-    for key in eval_metrics.keys():
-        values = []
-        for res in results_list:
-            val = res['sim_result'].get(key)
-            if val is None or not isinstance(val, (int, float)):
-                continue
-            values.append(val)
+    total_wait_seconds = sum(stat['combined_wait_seconds'] for stat in per_run_stats)
+    total_travel_seconds = sum(stat['combined_travel_seconds'] for stat in per_run_stats)
+    total_served = sum(stat['served_passengers'] for stat in per_run_stats)
 
-        if values:
-            str_values = [f"{v:.2f}" if isinstance(v, float) else f"{v}" for v in values]
-            calc_str = " + ".join(str_values)
-            avg_val = averaged.get(key)
-            avg_str = f"{avg_val:.2f}" if isinstance(avg_val, float) else f"{avg_val}"
-            unit_str = f" ({eval_metrics[key]})"
-            print(f"  {key:<{max_key_len}} : ({calc_str}) / {len(values)} = {avg_str}{unit_str}")
+    combined_avg_wait_minutes = (total_wait_seconds / total_served) / 60 if total_served > 0 else 0.0
+    combined_avg_travel_minutes = (total_travel_seconds / total_served) / 60 if total_served > 0 else 0.0
 
-            if key == 'total_wait_completed' or key == 'total_wait_ongoing':
-                combined_wait_served_sum += sum(values)
-            if key == 'total_travel_completed' or key == 'total_travel_ongoing':
-                combined_travel_served_sum += sum(values)
-            if key == 'completed_passengers' or key == 'ongoing_passengers':
-                combined_served_passengers_sum += int(sum(values))
+    route_eff = aggregated.get('route_efficiency')
+    fleet_size = aggregated.get('fleet_size')
+    bus_util = aggregated.get('bus_utilization')
+    service_rate = aggregated.get('service_rate')
+    transfer_rate = aggregated.get('transfer_rate')
 
-    route_eff = averaged.get('route_efficiency')
-    fleet_size = averaged.get('fleet_size')
-    bus_util = averaged.get('bus_utilization')
-    service_rate = averaged.get('service_rate')
-    transfer_rate = averaged.get('transfer_rate')
-    combined_avg_wait_minutes = (combined_wait_served_sum/combined_served_passengers_sum)/60 
-    combined_avg_travel_minutes = (combined_travel_served_sum/combined_served_passengers_sum)/60 
+    for dist_key in ['waiting_time_dstr', 'movement_time_dstr', 'travel_time_dstr']:
+        combined_stats = [k for k in aggregated.keys() if k.startswith(f'{dist_key}_combined')]
+        if not combined_stats:
+            continue
+        print(f"\n  === Combined {dist_key.replace('_', ' ').title()} Statistics ===")
+        for stat_key in combined_stats:
+            stat_label = stat_key.replace(f'{dist_key}_combined_', '').replace('_', ' ').title()
+            stat_value = aggregated[stat_key]
+            if 'passengers' in stat_key:
+                print(f"  {stat_label:<{max_key_len-2}} : {stat_value}")
+            else:
+                print(f"  {stat_label:<{max_key_len-2}} : {stat_value:.2f} seconds")
 
-    # Print combined distribution statistics
-    distribution_keys = ['waiting_time_dstr', 'movement_time_dstr', 'travel_time_dstr']
-    for dist_key in distribution_keys:
-        combined_stats = [k for k in averaged.keys() if k.startswith(f'{dist_key}_combined')]
-        if combined_stats:
-            print(f"\n  === Combined {dist_key.replace('_', ' ').title()} Statistics ===")
-            for stat_key in combined_stats:
-                stat_name = stat_key.replace(f'{dist_key}_combined_', '').replace('_', ' ').title()
-                stat_value = averaged[stat_key]
-                if 'passengers' in stat_key:
-                    print(f"  {stat_name:<{max_key_len-2}} : {stat_value}")
-                else:
-                    print(f"  {stat_name:<{max_key_len-2}} : {stat_value:.2f} seconds")
-    
-    # Print LaTeX row
     print("\n")
-    print(f"& {service_rate:.2f} & {combined_avg_wait_minutes:.2f} & {transfer_rate:.2f} & {combined_avg_travel_minutes:.2f} & {route_eff:.2f} & {fleet_size:.0f} & {bus_util:.0f}")
+    print(f"& ${service_rate:.2f}$ & ${combined_avg_wait_minutes:.2f}$ & ${transfer_rate:.2f}$ & ${combined_avg_travel_minutes:.2f}$ & ${route_eff:.2f}$ & ${fleet_size:.0f}$ & ${bus_util:.0f}$")
 
 def execute_runs(baseline, num_runs, base_seed):
     """
@@ -368,9 +358,9 @@ def execute_runs(baseline, num_runs, base_seed):
         result = simulate_baseline_routes(baseline.env, baseline.config, routes, img_dir, seed_dir)
         results.append(result)
     
-    averaged = average_sim_results(results)
-    print_results(results, averaged)
-    return results, averaged
+    aggregated = average_sim_results(results)
+    print_results(results, aggregated)
+    return results, aggregated
 
 #####################################
 # Heuristic Baselines: 
@@ -389,7 +379,9 @@ class RandomWalk:
         self.main_save_dir = create_main_save_dir(config)
 
     def run(self):
-        return execute_runs(self, self.num_runs, self.base_seed)
+        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
+        write_summary_json(self, aggregated)
+        return results, aggregated
 
     def construct_path(self, state):
         """
@@ -446,7 +438,9 @@ class DemandCoverage:
         self.main_save_dir = create_main_save_dir(config)
 
     def run(self):
-        return execute_runs(self, self.num_runs, self.base_seed)
+        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
+        write_summary_json(self, aggregated)
+        return results, aggregated
 
     def construct_path(self, state):
         """
@@ -521,7 +515,9 @@ class ShortestPath:
         self.main_save_dir = create_main_save_dir(config)
 
     def run(self):
-        return execute_runs(self, self.num_runs, self.base_seed)
+        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
+        write_summary_json(self, aggregated)
+        return results, aggregated
 
     def construct_path(self, state):
         """
@@ -590,7 +586,9 @@ class RewardMaximization:
         self.main_save_dir = create_main_save_dir(config)
 
     def run(self):
-        return execute_runs(self, self.num_runs, self.base_seed)
+        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
+        write_summary_json(self, aggregated)
+        return results, aggregated
 
     def construct_path(self, state):
         """
@@ -666,7 +664,9 @@ class RealWorld:
         self.main_save_dir = create_main_save_dir(config)
     
     def run(self):
-        return execute_runs(self, self.num_runs, self.base_seed)
+        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
+        write_summary_json(self, aggregated)
+        return results, aggregated
 
     def construct_path(self, state):
         """
