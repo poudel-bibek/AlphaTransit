@@ -41,7 +41,6 @@ import torch
 from datetime import datetime
 from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, initialize_route
 
-
 def set_global_seeds(seed: int) -> None:
     """
     Set seeds for Python, NumPy, and PyTorch.
@@ -401,9 +400,8 @@ class RandomWalk:
         Step 3: Move to next route and repeat
         Step 4: Return all completed routes
         """
-        all_routes = []
+        
         current_route_index = 0
-
         while current_route_index < self.env.NUM_ROUTES:
             print(f"\n=== Building Route {current_route_index + 1} ===")
 
@@ -428,13 +426,12 @@ class RandomWalk:
                 print(f"Route {current_route_index + 1} so far: {current_route}")
 
             # Add completed route to all_routes
-            all_routes.append(current_route)
-            self.env.all_routes = all_routes
+            self.env.all_routes.append(current_route)
             print(f"Route {current_route_index + 1} completed: {current_route}")
-            current_route_index += 1
+            current_route_index += 1        
 
-        print(f"\nAll routes completed: {all_routes}")
-        return all_routes
+        print(f"\nAll routes completed: {self.env.all_routes}")
+        return self.env.all_routes
 
 class DemandCoverage:
     """
@@ -460,44 +457,57 @@ class DemandCoverage:
             - Consider the combined demand (d_out + d_in) for that node and select the one with the highest.
         Step 3: Repeat step 2 until reaching the max path length.
         """
-        current_path = list(self.env.current_path) # Make a copy
-        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
+        current_route_index = 0
+        while current_route_index < self.env.NUM_ROUTES:
+            print(f"\n=== Building Route {current_route_index + 1} ===")
 
-            # Get current frontier
-            frontier = current_path[-1]
+            # Initialize current route (exactly like RL env initialization)
+            current_route = initialize_route(self.env)
 
-            # Get valid neighbors (adjacent and not already in path)
-            path_set = set(current_path)
-            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
-            if not valid_neighbors:
-                break
+            while len(current_route) < self.env.MAX_ROUTE_LENGTH:
 
-            # Convert to indices for demand calculation
-            path_indices = np.array([self.env.node_to_idx[node] for node in current_path])
+                # Get current frontier
+                frontier = current_route[-1]
 
-            # For each valid neighbor, compute incremental demand (d_out_path + d_in_path)
-            best_score = -np.inf
-            best_node = None
+                # Get valid neighbors (adjacent and not already in path)
+                route_set = set(current_route)
+                valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+                # print(f"Frontier: {frontier}, Valid neighbors: {valid_neighbors}")
+                if not valid_neighbors:
+                    break
 
-            for neighbor in valid_neighbors:
-                neigh_idx = self.env.node_to_idx[neighbor]
+                # Convert to indices for demand calculation
+                route_indices = np.array([self.env.node_to_idx[node] for node in current_route])
 
-                # Incremental outgoing: flows from neighbor to current path nodes
-                d_out_inc = self.env.od_matrix[neigh_idx, path_indices].sum()
+                # For each valid neighbor, compute incremental demand (d_out_path + d_in_path)
+                best_score = -np.inf
+                best_node = None
 
-                # Incremental incoming: flows from current path nodes to neighbor
-                d_in_inc = self.env.od_matrix[path_indices, neigh_idx].sum()
+                for neighbor in valid_neighbors:
+                    neigh_idx = self.env.node_to_idx[neighbor]
 
-                score = d_out_inc + d_in_inc
+                    # Incremental outgoing: flows from neighbor to current path nodes
+                    d_out_inc = self.env.od_matrix[neigh_idx, route_indices].sum()
 
-                if score > best_score:
-                    best_score = score
-                    best_node = neighbor
+                    # Incremental incoming: flows from current path nodes to neighbor
+                    d_in_inc = self.env.od_matrix[route_indices, neigh_idx].sum()
 
-            current_path.append(best_node)
-            print(f"\nRoute so far: {current_path}\n")
-        return current_path
+                    score = d_out_inc + d_in_inc
 
+                    if score > best_score:
+                        best_score = score
+                        best_node = neighbor
+
+                current_route.append(best_node)
+                print(f"Route {current_route_index + 1} so far: {current_route}")
+
+            self.env.all_routes.append(current_route)
+            print(f"Route {current_route_index + 1} completed: {current_route}")
+            current_route_index += 1
+
+        print(f"\nAll routes completed: {self.env.all_routes}")
+        return self.env.all_routes
+    
 class ShortestPath:
     """
     Greedily select the node that is closest to the current path.
@@ -525,34 +535,46 @@ class ShortestPath:
         Note:
         - This may not result in overall shortest path but is a greedy selection of shortest path.
         """
-        current_path = list(self.env.current_path)  # Make a copy
-        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
+        current_route_index = 0
+        while current_route_index < self.env.NUM_ROUTES:
+            print(f"\n=== Building Route {current_route_index + 1} ===")
 
-            # Get current frontier
-            frontier = current_path[-1]
+            # Initialize current route (exactly like RL env initialization)
+            current_route = initialize_route(self.env)
 
-            # Get valid neighbors (adjacent and not already in path)
-            path_set = set(current_path)
-            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
-            if not valid_neighbors:
-                print(f"No valid neighbors found for frontier: {frontier}")
-                break
+            while len(current_route) < self.env.MAX_ROUTE_LENGTH:
 
-            # For each valid neighbor, compute the edge length as score
-            best_score = np.inf
-            best_node = None
+                # Get current frontier
+                frontier = current_route[-1]
 
-            for neighbor in valid_neighbors:
-                # Get the edge length between frontier and neighbor
-                edge_length = self.env.link_lengths.get((frontier, neighbor), np.inf)
+                # Get valid neighbors (adjacent and not already in path)
+                route_set = set(current_route)
+                valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+                if not valid_neighbors:
+                    print(f"No valid neighbors found for frontier: {frontier}")
+                    break
 
-                if edge_length < best_score:
-                    best_score = edge_length
-                    best_node = neighbor
+                # For each valid neighbor, compute the edge length as score
+                best_score = np.inf
+                best_node = None
 
-            current_path.append(best_node)
-            print(f"\nRoute so far: {current_path}\n")
-        return current_path
+                for neighbor in valid_neighbors:
+                    # Get the edge length between frontier and neighbor
+                    edge_length = self.env.link_lengths.get((frontier, neighbor), np.inf)
+
+                    if edge_length < best_score:
+                        best_score = edge_length
+                        best_node = neighbor
+
+                current_route.append(best_node)
+                print(f"Route {current_route_index + 1} so far: {current_route}")
+
+            self.env.all_routes.append(current_route)
+            print(f"Route {current_route_index + 1} completed: {current_route}")
+            current_route_index += 1
+
+        print(f"\nAll routes completed: {self.env.all_routes}")
+        return self.env.all_routes
 
 class RewardMaximization:
     """
@@ -580,42 +602,52 @@ class RewardMaximization:
             - Select the node with the highest reward.
         Step 3: Repeat step 2 until reaching the max path length.
         """
-        current_path = list(self.env.current_path)  # Make a copy
-        original_path = self.env.current_path[:]  # Save original path
-        while len(current_path) < self.env.MAX_ROUTE_LENGTH:
+        current_route_index = 0
+        while current_route_index < self.env.NUM_ROUTES:
+            print(f"\n=== Building Route {current_route_index + 1} ===")
 
-            # Get current frontier
-            frontier = current_path[-1]
+            # Initialize current route (exactly like RL env initialization)
+            current_route = initialize_route(self.env)
 
-            # Get valid neighbors (adjacent and not already in path)
-            path_set = set(current_path)
-            valid_neighbors = [n for n in self.env.adj[frontier] if n not in path_set]
-            if not valid_neighbors:
-                print(f"No valid neighbors found for frontier: {frontier}")
-                break
+            while len(current_route) < self.env.MAX_ROUTE_LENGTH:
 
-            best_reward = -np.inf
-            best_node = None
+                # Get current frontier
+                frontier = current_route[-1]
 
-            for neighbor in valid_neighbors:
-                temp_path = current_path + [neighbor]
+                # Get valid neighbors (adjacent and not already in path)
+                route_set = set(current_route)
+                valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+                if not valid_neighbors:
+                    print(f"No valid neighbors found for frontier: {frontier}")
+                    break
 
-                # Temporarily set path and simulate
-                self.env.current_path = temp_path
-                self.env.world = self.env.build_world(self.env.config.get("network"))
-                self.env._apply_action()
-                sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
-                reward = self.env.compute_reward(sim_result)
-                print(f"\nReward obtained from choice of {neighbor} = {reward}\n")
-                if reward > best_reward:
-                    best_reward = reward
-                    best_node = neighbor
+                best_reward = -np.inf
+                best_node = None
 
-            # Restore original path after evaluations
-            self.env.current_path = original_path
-            current_path.append(best_node)
-            print(f"\nRoute so far: {current_path}\n")
-        return current_path
+                for neighbor in valid_neighbors:
+                    temp_route = current_route + [neighbor]
+
+                    # Temporarily set path and simulate
+                    self.env.current_route = temp_route
+                    self.env.world = self.env.build_world(self.env.config.get("network"))
+                    self.env._apply_action()
+                    sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
+                    reward = self.env.compute_reward(sim_result)
+                    print(f"\nReward obtained from choice of {neighbor} = {reward}\n")
+                    if reward > best_reward:
+                        best_reward = reward
+                        best_node = neighbor
+
+                # Restore original path after evaluations
+                current_route.append(best_node)
+                print(f"\nRoute so far: {current_route}\n")
+
+            self.env.all_routes.append(current_route)
+            print(f"Route {current_route_index + 1} completed: {current_route}")
+            current_route_index += 1
+
+        print(f"\nAll routes completed: {self.env.all_routes}")
+        return self.env.all_routes
 
 #####################################
 # Real-world Baseline: 

@@ -433,8 +433,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
-    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random, greedy_reward_max, greedy_demand_cover, greedy_shortest_path, real_world")
-    parser.add_argument("--num_baseline_runs", type=int, default=5, help="Number of runs (over which we average the results) for the baseline")
+    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
+    parser.add_argument("--num_baseline_runs", type=int, default=10, help="Number of runs (over which we average the results) for the baseline")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
@@ -514,10 +514,10 @@ def main() -> None:
         env = TransitEnv(config)
         
         baseline_classes = {
-            "random": RandomWalk,
-            "greedy_demand_cover": DemandCoverage,
-            "greedy_shortest_path": ShortestPath,
-            "greedy_reward_max": RewardMaximization,
+            "random_walk": RandomWalk,
+            "demand_cover": DemandCoverage,
+            "shortest_path": ShortestPath,
+            "reward_max": RewardMaximization,
             "real_world": RealWorld,
         }
         
@@ -533,10 +533,10 @@ if __name__ == "__main__":
 
 """
 Scripts: 
-python main.py --mode=baseline --baseline_type=greedy_demand_cover
-python main.py --mode=baseline --baseline_type=random
-python main.py --mode=baseline --baseline_type=greedy_shortest_path
-python main.py --mode=baseline --baseline_type=greedy_reward_max
+python main.py --mode=baseline --baseline_type=demand_cover
+python main.py --mode=baseline --baseline_type=random_walk
+python main.py --mode=baseline --baseline_type=shortest_path
+python main.py --mode=baseline --baseline_type=reward_max
 python main.py --mode=baseline --baseline_type=real_world
 
 """
