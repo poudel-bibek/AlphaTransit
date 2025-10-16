@@ -80,7 +80,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     ]
 
     # Create a stunning 2-row, 4-col grid layout
-    fig = plt.figure(figsize=(18, 9), dpi=300)  # Larger, more impactful size
+    fig = plt.figure(figsize=(18, 8.5), dpi=300)  # Larger, more impactful size
 
     # Create main grid with better spacing for visual appeal
     gs = fig.add_gridspec(2, 4, hspace=0.35, wspace=0.2)
@@ -146,11 +146,12 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         # Get metric info and create title with unit
         metric_key = ordered_metrics[subplot_idx]
         metric_info = METRIC_INFO[metric_key]
-        title = f"{metric_info['display_name']} ({metric_info['unit']})"
-        ax.set_title(title, fontweight='bold', pad=20, fontsize=fs)
+
+        info = f"{metric_info['display_name']} ({metric_info['unit']})"
+        ax.set_title(info, fontweight='bold', pad=20, fontsize=fs)
         ax.set_xticks(x)
         ax.set_xticklabels(xtick_labels)
-        # ax.set_ylabel("Value")  # omitted, as requested
+        # ax.set_ylabel(info, fontweight='bold', fontsize=fs)  # omitted, as requested
 
         # Set x-axis limits to ensure full range is visible
         ax.set_xlim(0, 1)
