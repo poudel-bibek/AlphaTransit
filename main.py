@@ -276,11 +276,13 @@ def train(config: Dict[str, Any]) -> None:
             "episode/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
             "episode/node_coverage": sim_result['node_coverage'], # Percentage of nodes covered by routes
             # performance related
-            "episode/onboard_rate": sim_result['onboard_rate'],
-            "episode/completed_trips": sim_result['completed_trip_passengers_count'],
-            "episode/avg_wait_time": sim_result['avg_wait_time'],
-            "episode/avg_travel_time": sim_result['avg_travel_time'],
+            "episode/completed_passengers": sim_result['completed_passengers'],
+            "episode/ongoing_passengers": sim_result['ongoing_passengers'],
+            "episode/total_onboarded_count": sim_result['total_onboarded_count'],
+            "episode/wanting_to_onboard": sim_result['wanting_to_onboard'],
             "episode/bus_utilization": sim_result['bus_utilization'],
+            "episode/fleet_size": sim_result['fleet_size'],
+            "episode/route_efficiency": sim_result['route_efficiency'],
             }, step=episode)
         
         # Update PPO when we have enough samples in memory
@@ -357,11 +359,15 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
             "eval/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
             "eval/node_coverage": sim_result['node_coverage'],
 
-            "eval/onboard_rate": sim_result['onboard_rate'],
-            "eval/completed_trips": sim_result['completed_trip_passengers_count'],
-            "eval/avg_wait_time": sim_result['avg_wait_time'],
-            "eval/avg_travel_time": sim_result['avg_travel_time'],
+            "eval/completed_passengers": sim_result['completed_passengers'],
+            "eval/ongoing_passengers": sim_result['ongoing_passengers'],
+            "eval/total_onboarded_count": sim_result['total_onboarded_count'],
+            "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
+            "eval/route_length": sim_result['route_length'],
             "eval/bus_utilization": sim_result['bus_utilization'],
+            "eval/average_bus_speed": sim_result['average_bus_speed'],
+            "eval/fleet_size": sim_result['fleet_size'],
+            "eval/route_efficiency": sim_result['route_efficiency'],
         }, step=episode)
 
 
@@ -408,7 +414,8 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str
         "num_heads": config.get("num_heads", [8, 4, 2]),
         "num_edge_features": config.get("num_edge_features", 2),
         "dropout": config.get("dropout"),
-        "global_dim": config.get("global_dim"),
+        # Global dimension (size of route_progress vector).
+        "global_dim": config.get("num_routes"), 
         "activation": config.get("activation"),
         "model_size": config.get("model_size"),
         "concat": config.get("concat"),
@@ -468,7 +475,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--activation", type=str, default="tanh", help="Activation function")
     parser.add_argument("--concat", type=bool, default=True, help="Concatenate attention heads")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
-    parser.add_argument("--global_dim", type=int, default=3, help="Global dimension (additional feature to the graph-level features)")
     
     # WandB:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
@@ -538,5 +544,6 @@ python main.py --mode=baseline --baseline_type=random_walk
 python main.py --mode=baseline --baseline_type=shortest_path
 python main.py --mode=baseline --baseline_type=reward_max
 python main.py --mode=baseline --baseline_type=real_world
+
 
 """

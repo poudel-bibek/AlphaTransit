@@ -1361,11 +1361,21 @@ class TransitEnv(gym.Env):
         BETA_4 = 15.0      # Forced end penalty
         MAX_TOTAL_TRAVEL_TIME = 3600.0   # 1 hour max expected travel time (seconds)
 
-        demand_coverage_potential = sim_result['demand_coverage_potential'] / 100.0 # Percentage [0-1] 
-        demand_coverage_actual = sim_result['demand_coverage_actual'] / 100.0 # Percentage [0-1] 
-        avg_travel_time = sim_result['avg_travel_time']  # Average total travel time per passenger (seconds)
+        demand_coverage_potential = sim_result['demand_coverage_potential'] / 100.0 # Percentage [0-1]
+        demand_coverage_actual = sim_result['demand_coverage_actual'] / 100.0 # Percentage [0-1]
         route_overlap_ratio = sim_result['route_overlap_ratio']  # Ratio of overlapped segments [0-1]
-        
+
+        # Compute combined average travel time using totals (like baselines.py)
+        total_travel_completed = sim_result.get('total_travel_completed')
+        total_travel_ongoing = sim_result.get('total_travel_ongoing')
+        completed_passengers = sim_result.get('completed_passengers')
+        ongoing_passengers = sim_result.get('ongoing_passengers')
+
+        total_travel_time = total_travel_completed + total_travel_ongoing
+        total_passengers_served = completed_passengers + ongoing_passengers
+
+        avg_travel_time = total_travel_time / total_passengers_served
+
         # Normalize components to [0-1] scale
         demand_coverage_potential_norm = demand_coverage_potential # Already [0-1] from sim_result
         demand_coverage_actual_norm = demand_coverage_actual # Already [0-1] from sim_result
