@@ -238,18 +238,17 @@ class GATV2ActorCritic(nn.Module):
     def gat_layer_init(self, conv: GATv2Conv, std: float = np.sqrt(2), bias_const: float = 0.0) -> GATv2Conv:
         """
         Custom orthogonal initialization for GATv2Conv internal weights.
+        Potential safety issue: Direct access to conv.att (3D tensor) for orthogonal init may be inappropriate for attention weights.
+        Safer alternative: Avoid touching GAT internals at init (use PyG default).
         """
-        # Initialize left and right linear projections
-        nn.init.orthogonal_(conv.lin_l.weight, std)
-        nn.init.constant_(conv.lin_l.bias, bias_const)
-        
-        nn.init.orthogonal_(conv.lin_r.weight, std)
-        nn.init.constant_(conv.lin_r.bias, bias_const)
-        
-        # Initialize attention weights - treat as matrix
-        nn.init.orthogonal_(conv.att, std)
-        nn.init.constant_(conv.bias, bias_const)
-        
+        # Safer approach: Only touch clearly linear 2D weights and biases by name
+        for name, param in conv.named_parameters(recurse=False):
+            if "lin" in name and param.dim() >= 2:
+                print(f"Initializing {name}: shape={param.shape}")
+                nn.init.orthogonal_(param, std)
+            elif "bias" in name and param is not None and param.dim() == 1:
+                print(f"Initializing {name}: shape={param.shape}")
+                nn.init.constant_(param, bias_const)
         return conv
 
     def actor_readout(self, node_features: torch.Tensor, graph_batch: Batch) -> torch.Tensor:

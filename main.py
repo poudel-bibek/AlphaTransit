@@ -394,6 +394,7 @@ def get_config() -> Dict[str, Any]:
     """
     parser = build_arg_parser()
     args = parser.parse_args()
+    
     return vars(args)
 
 def set_global_seeds(seed: int) -> None:
@@ -418,7 +419,7 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str
         "global_dim": config.get("num_routes"), 
         "activation": config.get("activation"),
         "model_size": config.get("model_size"),
-        "concat": config.get("concat"),
+        "concat": config.get("concat_heads"),
     }
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -431,7 +432,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--gpu", type=bool, default=True, help="Use CUDA if available; defaults to True, set to False to force CPU")
+    parser.add_argument("--gpu", action="store_true", help="Use CUDA if available; defaults to True, set to False to force CPU")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
@@ -440,14 +441,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
-    parser.add_argument("--baseline_type", type=str, default="greedy_demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
+    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
     parser.add_argument("--num_baseline_runs", type=int, default=10, help="Number of runs (over which we average the results) for the baseline")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
     parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
-    parser.add_argument("--unserved_as_cars", type=bool, default=True, help="Allocate demand that is not served by buses to cars (True) or ignore it (False). When alpha=1.0, unserved demand is always ignored.")
+    parser.add_argument("--ignore_unserved", action="store_true", help="If this flag is set, demand that is not served by buses is ignored. Otherwise, it is allocated to cars.")
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end with no demand (0.0-0.5)")
@@ -465,21 +466,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vf_clip_param", type=float, default=50.0, help="PPO clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
+    parser.add_argument("--entropy_coef", type=float, default=0.1, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--anneal_lr", type=bool, default=True, help="Anneal learning rate (default: True)")
+    parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate ")
     
     parser.add_argument("--model_size", type=str, default="medium", help="Model size")
     parser.add_argument("--activation", type=str, default="tanh", help="Activation function")
-    parser.add_argument("--concat", type=bool, default=True, help="Concatenate attention heads")
+    parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
     
     # WandB:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
-    parser.add_argument("--wandb_off", type=bool, default=False, help="Disable WandB logging")
+    parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
 
     parser.add_argument("--save_dir", type=str, default="./training_data", help="Directory to save training data")
     parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy that you want to evaluate")
@@ -545,5 +546,6 @@ python main.py --mode=baseline --baseline_type=shortest_path
 python main.py --mode=baseline --baseline_type=reward_max
 python main.py --mode=baseline --baseline_type=real_world
 
+python main.py --gpu --concat_heads
 
 """

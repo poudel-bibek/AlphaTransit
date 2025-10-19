@@ -17,7 +17,7 @@ def build_sweep_config() -> Dict[str, Any]:
         "parameters": {
             "lr": {"values": [0.0005, 0.001, 0.005]}, 
             "batch_size": {"values": [16, 32]},   
-            "entropy_coef": {"values": [0.1, 0.2]}, 
+            "entropy_coef": {"values": [0.05, 0.1, 0.2]}, 
             "update_frequency": {"values": [64, 128, 256]},
             
             # "clip_frac": {"values": [0.1, 0.2, 0.3]},

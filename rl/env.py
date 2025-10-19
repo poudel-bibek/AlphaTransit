@@ -40,7 +40,7 @@ class TransitEnv(gym.Env):
         self.STOP_DURATION = self.config.get("stop_duration")
         self.alpha = self.config.get("alpha")
         self.demand_warmup = self.config.get("demand_warmup")
-        self.unserved_as_cars = self.config.get("unserved_as_cars") 
+        self.unserved_as_cars = False if self.config.get("ignore_unserved") else True
         self.comfort_threshold = self.config.get("comfort_threshold")
         self.radius = self.config.get("radius")
         self.path_init = self.config.get("path_init")
@@ -1374,7 +1374,7 @@ class TransitEnv(gym.Env):
         total_travel_time = total_travel_completed + total_travel_ongoing
         total_passengers_served = completed_passengers + ongoing_passengers
 
-        avg_travel_time = total_travel_time / total_passengers_served
+        avg_travel_time = total_travel_time / total_passengers_served if total_passengers_served > 0 else 0.0
 
         # Normalize components to [0-1] scale
         demand_coverage_potential_norm = demand_coverage_potential # Already [0-1] from sim_result
