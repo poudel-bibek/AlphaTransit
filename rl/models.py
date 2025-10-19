@@ -13,6 +13,11 @@ class GATV2ActorCritic(nn.Module):
     - GATv2 processes graph-structured data (nodes, edges) to produce node embeddings, 
       which are then aggregated into a graph-level features in readout layer, where we have a fixed sized vector.
     - The route_progress is a vector that applies to the whole graph (global feature), which we concatentate after the graph-level features..
+    
+    To enable stacking without issues like vanishing gradients, we adopt a number of things for good "hygiene":
+    1. Residual connections. 
+    2. Layer normalization.
+    3. Dropout.
     """
 
     def __init__( self, num_actions: int, **kwargs) -> None:
@@ -32,63 +37,53 @@ class GATV2ActorCritic(nn.Module):
                 dropout: Dropout probability (float)
                 global_dim: size of route_progress (float array)
                 activation: activation function (str: "elu", "tanh", "leaky_relu", "relu")
-                model_size: choice for model size (str: "small", "medium")
 
         Notes: 
         - No shared MLP layers between actor and critic.
         - A custom layer init is used for GATv2 layers.
-        
-        # TODO: 
-        - Batch norm, layer norm, etc.
+        - 
         """
         super().__init__()
         self.num_actions = num_actions  # n_nodes + 1 (for the NO_VALID_ACTION)
         self.n_nodes = kwargs.get("n_nodes")
         self.num_layers = kwargs.get("num_layers")
-        self.gat_channels = kwargs.get("gat_channels")
-        
+        self.gat_channels = kwargs.get("gat_channels") # [in_dim, h1, ..., hL]
         # Why heads = 1 in the last layer?
         # Multi-head attention is used in the earlier layers to capture different aspects of the graph and the final layer consolidates this info.
-        self.num_heads = kwargs.get("num_heads")
+        self.num_heads = kwargs.get("num_heads") # [heads1, ..., headsL]
         self.num_edge_features = kwargs.get("num_edge_features")
         self.dropout = kwargs.get("dropout")
         self.global_dim = kwargs.get("global_dim") 
-        
-        self.activation = kwargs.get("activation")
-        if self.activation == "elu":
+        self.concat = kwargs.get("concat")
+
+        act = kwargs.get("activation")
+        if act == "elu":
             self.activation = nn.ELU()
-        elif self.activation == "tanh":
+        elif act == "tanh":
             self.activation = nn.Tanh()
-        elif self.activation == "leaky_relu":
+        elif act == "leaky_relu":
             self.activation = nn.LeakyReLU()
-        elif self.activation == "relu":
+        elif act == "relu":
             self.activation = nn.ReLU()
         
         # Only include the hidden dimensions.
-        # model_size = kwargs.get("model_size")
-        # if model_size == "small":
-        #     actor_sizes = [128, 64]
-        #     critic_sizes = [128, 64]
-        # elif model_size == "medium":
-        #     actor_sizes = [256, 128, 64]
-        #     critic_sizes = [256, 128, 64]
+        actor_sizes = [256, 128, 64] # [128, 64] 
+        critic_sizes = [256, 128, 64] # [128, 64] 
 
-        actor_sizes = [128, 64]
-        critic_sizes = [128, 64]
-
-        self.concat = kwargs.get("concat")
-
-        # Build GATv2 layers
-        # For a 2 layer setup:
+        # Build GATv2 layers with residuals, LayerNorm, and dropout.
+        # E.g., For a 2 layer setup:
         # First layer should output [num_nodes, hidden_gat_dims[0]*num_heads[0]] (concat = False)
         # First layer should output [num_nodes, hidden_gat_dims[0]] (concat = True)
         # concat = True by default: the output from different attn heads are concatenated to the output of size hidden_gat_dims[0]*num_heads[0]
         # When concat = False, the output is the average of the attn heads.
         # Concat reduces dimensionality, but loses too much information.
-
         # Second layer should output [num_nodes, hidden_gat_dims[1]*num_heads[1]] (concat = False)
         # Second layer should output [num_nodes, hidden_gat_dims[1]] (concat = True)
+        
         gat_layers = []
+        res_projs = []
+        norms = []
+
         for i in range(self.num_layers):
             if i == 0:
                 # First layer always takes original node features
@@ -101,8 +96,10 @@ class GATV2ActorCritic(nn.Module):
                 else:
                     # Previous layer output: out_channels (averaged across heads)
                     in_dim = self.gat_channels[i]
-
+            
+            # Output dim per head and effective out dim after concat or mean
             out_dim = self.gat_channels[i+1]
+            out_eff = out_dim * self.num_heads[i] if self.concat else out_dim
             
             conv = GATv2Conv(
                 in_channels = in_dim,
@@ -115,39 +112,47 @@ class GATV2ActorCritic(nn.Module):
             conv = self.gat_layer_init(conv)  # Apply custom init
             gat_layers.append(conv)
 
+            # Residual projection if shapes differ.
+            if in_dim != out_eff:
+                res_projs.append(self.layer_init(nn.Linear(in_dim, out_eff)))
+            else: 
+                res_projs.append(nn.Identity())
+            
+            # Layer norm on the residual sum
+            norms.append(nn.LayerNorm(out_eff))
+            
         self.gat_layers = nn.ModuleList(gat_layers)  # Use ModuleList to properly register modules
+        self.res_projs = nn.ModuleList(res_projs)
+        self.norms = nn.ModuleList(norms)
+        self.dropout_layer = nn.Dropout(self.dropout)
 
         # Actor 
-        actor_layers = []
         if self.concat:
             actor_input = self.gat_channels[-1]*self.num_heads[-1]*self.n_nodes + self.global_dim
         else:
             actor_input = self.gat_channels[-1]*self.n_nodes + self.global_dim
-
-        for j in range(len(actor_sizes)):
-            actor_layers.append(self.layer_init(nn.Linear(actor_input, actor_sizes[j])))
-            # Add layer norm, batch norm, dropout, etc.
-            # actor_layers.append(nn.LayerNorm(actor_sizes[j]))
+        
+        actor_layers = []
+        for hs in actor_sizes:
+            actor_layers.append(self.layer_init(nn.Linear(actor_input, hs)))
             actor_layers.append(self.activation)
-            actor_input = actor_sizes[j]
+            actor_input = hs
 
         # Actor output layer with smaller gain (make actor start with close to uniform distribution i.e. not too confident on any particular action)
         actor_layers.append(self.layer_init(nn.Linear(actor_sizes[-1], self.num_actions), std=0.01))
         self.actor_net = nn.Sequential(*actor_layers)  # Changed from self.actor
 
         # Critic 
-        critic_layers = []
         if self.concat:
             critic_input = self.gat_channels[-1] * self.num_heads[-1] + self.global_dim
         else:
             critic_input = self.gat_channels[-1] + self.global_dim
-            
-        for k in range(len(critic_sizes)):
-            critic_layers.append(self.layer_init(nn.Linear(critic_input, critic_sizes[k])))
-            # Add layer norm, batch norm, dropout, etc.
-            # critic_layers.append(nn.LayerNorm(critic_sizes[k]))
+        
+        critic_layers = []
+        for hs in critic_sizes:
+            critic_layers.append(self.layer_init(nn.Linear(critic_input, hs)))
             critic_layers.append(self.activation)
-            critic_input = critic_sizes[k]
+            critic_input = hs
 
         # Critic output layer with gain 1 (slightly smaller than sqrt(2))
         critic_layers.append(self.layer_init(nn.Linear(critic_sizes[-1], 1), std=1.0))
@@ -190,17 +195,19 @@ class GATV2ActorCritic(nn.Module):
         x = graph_batch.x  # Node features
         edge_index = graph_batch.edge_index
         edge_attr = graph_batch.edge_attr
-        batch = graph_batch.batch
-        
+
         # print(f"[DEBUG] Node features before GAT layers: {x.shape}")
         # Pass through GAT layers
         for i, conv in enumerate(self.gat_layers):
+            identity = x 
             x = conv(x, edge_index, edge_attr=edge_attr)  # Inject edge features at each GATv2 layer
             # print(f"[DEBUG] After GAT layer {i}, node features:\n{x.shape}")
             # Apply activation except for last layer
             if i < len(self.gat_layers) - 1:
                 x = self.activation(x)
-
+            x = self.dropout_layer(x)
+            x = x + self.res_projs[i](identity)
+            x = self.norms[i](x)
         return x
 
     def _compute_dist_and_value(self, 

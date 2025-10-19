@@ -125,21 +125,32 @@ class TransitEnv(gym.Env):
         edge_index_list = []
         edge_attr_list = []
         self.link_lengths = {}
+        seen = set()
+
         for _, row in df_links.iterrows():
             x, y = str(row['start']), str(row['end'])
             if x in self.node_to_idx and y in self.node_to_idx:
                 i, j = self.node_to_idx[x], self.node_to_idx[y]
-                edge_index_list.append([i, j]) # Add the i, j indices of the edge
 
-                length = row['length']
+                length = float(row['length'])
                 self.link_lengths[(x, y)] = length # We need to add un-normalized route lengths.
                 self.link_lengths[(y, x)] = length # Store in both directions for easy lookup
 
-                # Now edge attributes: Normalize to [0,1] and add
-                length_norm = (length - self.min_length) / (self.max_length - self.min_length) 
-                # In bloomington, all links have the same free_flow_speed.
-                speed_norm = (row['free_flow_speed'] - self.min_free_flow_speed) / (self.max_free_flow_speed - self.min_free_flow_speed) if self.max_free_flow_speed != self.min_free_flow_speed else 1.0
-                edge_attr_list.append([length_norm, speed_norm]) # Add the normalized edge attributes
+                length_norm = (length - self.min_length) / (self.max_length - self.min_length)
+
+                speed_norm = ((row['free_flow_speed'] - self.min_free_flow_speed) / 
+                             (self.max_free_flow_speed - self.min_free_flow_speed)
+                              if self.max_free_flow_speed != self.min_free_flow_speed else 1.0
+                              ) # In bloomington, all links have the same free_flow_speed.
+
+                attr = [length_norm, speed_norm] # attributes for the edge
+
+                # Add bi-directional edges in the edge index. 
+                for a, b in ((i, j), (j, i)):
+                    if a not in seen:
+                        edge_index_list.append([a, b]) # Add the i, j indices of the edge
+                        edge_attr_list.append(attr) # Add the normalized edge attributes
+                        seen.add((a, b))
 
         self.edge_index = np.array(edge_index_list).T.astype(np.int64) # Transpose, shape (2, E)
         self.edge_features = np.array(edge_attr_list, dtype=np.float32) # Shape (E, 3)
@@ -415,14 +426,15 @@ class TransitEnv(gym.Env):
 
                 # Use Poisson sampling to convert fractional volumes to integers while preserving expected totals
                 # This prevents systematic loss from flooring small per-OD volumes to zero
-                bus_passengers = np.random.poisson(bus_volume_float) if bus_volume_float > 0 else 0
-                car_passengers = np.random.poisson(car_volume_float) if car_volume_float > 0 else 0
+                # bus_passengers = np.random.poisson(bus_volume_float) if bus_volume_float > 0 else 0
+                # car_passengers = np.random.poisson(car_volume_float) if car_volume_float > 0 else 0
 
                 # Alternative: Use ceiling to convert fractional volumes to integers while avoiding systematic loss
                 # This prevents small per-OD volumes from being floored to zero
                 # np.random.poisson() for statistically correct sampling, but ceiling is simpler and deterministic
-                # bus_passengers = int(np.ceil(bus_volume_float)) if bus_volume_float > 0 else 0
-                # car_passengers = int(np.ceil(car_volume_float)) if car_volume_float > 0 else 0
+                # Additionally, poisson can introduce additional variance (same partial route at step t and t+1 can have different number of passsengers and hence different set of results) that is not desirable.
+                bus_passengers = int(np.ceil(bus_volume_float)) if bus_volume_float > 0 else 0
+                car_passengers = int(np.ceil(car_volume_float)) if car_volume_float > 0 else 0
 
                 total_demand += total_volume
                 bus_demand += bus_volume_float  # Keep float for logging/analytics
@@ -1395,11 +1407,19 @@ class TransitEnv(gym.Env):
         total_reward = (demand_coverage_component + service_rate_component - travel_time_penalty - overlap_penalty - forced_end_penalty)
         
         print(f"Total reward: {total_reward:.2f}")
-        print(f"\tDemand coverage component: +{demand_coverage_component:.2f} (β₀={BETA_0} × {demand_coverage_potential:.1f}%)")
-        print(f"\tService rate component: +{service_rate_component:.2f} (β₁={BETA_1} × {demand_coverage_actual:.1f}%/{demand_coverage_potential:.1f}%)")
-        print(f"\tTravel time penalty: -{travel_time_penalty:.2f} (β₁={BETA_1} × {avg_travel_time:.0f}s)")
-        print(f"\tOverlap penalty: -{overlap_penalty:.2f} (β₂={BETA_3} × {route_overlap_ratio:.3f})")
-        print(f"\tForced end penalty: -{forced_end_penalty:.2f} (β₃={BETA_4} × early_termination_ratio)")
+        print(f"\tDemand coverage component: +{demand_coverage_component:.2f} "
+            f"(β0={BETA_0} × {demand_coverage_potential*100:.1f}%)")
+        print(f"\tService rate component: +{service_rate_component:.2f} "
+            f"(β1={BETA_1} × {demand_coverage_actual*100:.1f}% / {demand_coverage_potential*100:.1f}%)")
+        print(f"\tTravel time penalty: -{travel_time_penalty:.2f} "
+            f"(β2={BETA_2} × {avg_travel_time:.0f}s / 3600)")
+        print(f"\tOverlap penalty: -{overlap_penalty:.2f} "
+            f"(β3={BETA_3} × {route_overlap_ratio:.3f})")
+            
+        if sim_result['route_forced_end']:
+            print(f"\tForced end penalty: -{forced_end_penalty:.2f} "
+                f"(β4={BETA_4} × {early_termination_ratio:.3f})")
+
         
         return total_reward    
 

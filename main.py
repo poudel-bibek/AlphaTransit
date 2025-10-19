@@ -425,15 +425,14 @@ def set_global_seeds(seed: int) -> None:
 
 def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str, Any]:
     return {
-        "num_layers": config.get("num_layers", 3),
-        "gat_channels": config.get("gat_channels", [node_feature_dim, 16, 16, 16]),
-        "num_heads": config.get("num_heads", [8, 4, 2]),
+        "num_layers": config.get("num_layers", 4),
+        "gat_channels": config.get("gat_channels", [node_feature_dim, 16, 16, 16, 16]),
+        "num_heads": config.get("num_heads", [8, 4, 2, 1]),
         "num_edge_features": config.get("num_edge_features", 2),
         "dropout": config.get("dropout"),
         # Global dimension (size of route_progress vector).
         "global_dim": config.get("num_routes"), 
         "activation": config.get("activation"),
-        "model_size": config.get("model_size"),
         "concat": config.get("concat_heads"),
         "n_nodes": config.get("n_nodes"),
     }
@@ -448,7 +447,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--gpu", action="store_true", help="Use CUDA if available; defaults to True, set to False to force CPU")
+    parser.add_argument("--gpu", action="store_true", help="Use CUDA if available. Pass --gpu to enable.")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
@@ -482,13 +481,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vf_clip_param", type=float, default=50.0, help="PPO clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--entropy_coef", type=float, default=0.1, help="Entropy coefficient")
+    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate ")
     
-    parser.add_argument("--model_size", type=str, default="medium", help="Model size")
     parser.add_argument("--activation", type=str, default="tanh", help="Activation function")
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
