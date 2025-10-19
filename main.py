@@ -174,6 +174,7 @@ def train(config: Dict[str, Any]) -> None:
     print(f"\tMax demand: {env.max_demand}, Min demand: {env.min_demand}")
 
     # Set policy hyper-param defaults
+    config["n_nodes"] = env.n_nodes
     policy_kwargs = get_policy_kwargs(config, node_feature_dim)
 
     # Only node features are supplied at GATv2 init, edge features are injected at each attention layer.
@@ -208,16 +209,28 @@ def train(config: Dict[str, Any]) -> None:
             print("\nEpisode data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
             
-            batch = Batch.from_data_list([data])  # Data already on device
-            valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
+            batch = Batch.from_data_list([data])  # Data already on device]
+            
+            # 1. Build a valid list
+            valid_list = env._get_valid_indices()
+            
+            # 2. Decide which ids are allowed this step
+            mask_ids = valid_list if len(valid_list) > 0 else[env.NO_VALID_ACTION]
+
+            # 3. Convert to 2D tensor with the batch dim. 
+            valid_indices = torch.tensor([mask_ids], dtype=torch.long, device=config["device"])
 
             print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
-
+            
+            # When valid indices are empty, the policy gets a bad reward without ever having to call act() or simulate. 
+            # The state (S) with empty valid indices, forces action (a) to be (-1) and the new state (S') that env transitions to will have next route intialized. 
+            # But we still need to call act() to get the value and log prob.
+            # 4. Always call the policy so PPO has log_prob and value
             with torch.no_grad():
                 action_tensor, log_prob_tensor, value_tensor = model.act(batch, 
-                                                                       deterministic=False, 
-                                                                       valid_indices=valid_indices,
-                                                                       truncated=False)
+                                                                    deterministic=False, 
+                                                                    valid_indices=valid_indices,
+                                                                    truncated=False)
                 print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
                 print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
                 print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
@@ -316,7 +329,7 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     env = TransitEnv(config)
     node_feature_dim = env.N_NODE_FEATURES
     num_actions = env.action_space.n
-
+    config["n_nodes"] = env.n_nodes
     policy_kwargs = get_policy_kwargs(config, node_feature_dim)
 
     model = GATV2ActorCritic(num_actions, **policy_kwargs)
@@ -332,7 +345,9 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     while not terminated:
         data = pyg_converter.convert(state)
         batch = Batch.from_data_list([data])  # Data already on device
-        valid_indices = torch.tensor([env._get_valid_indices()], dtype=torch.long, device=config["device"])
+        valid_list = env._get_valid_indices()
+        mask_ids = valid_list if len(valid_list) > 0 else[env.NO_VALID_ACTION]
+        valid_indices = torch.tensor([mask_ids], dtype=torch.long, device=config["device"])
         
         with torch.no_grad():
             action_tensor, _, _ = model.act(batch, 
@@ -420,6 +435,7 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str
         "activation": config.get("activation"),
         "model_size": config.get("model_size"),
         "concat": config.get("concat_heads"),
+        "n_nodes": config.get("n_nodes"),
     }
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -457,7 +473,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
     parser.add_argument("--max_route_length", type=int, default=14, help="Maximum path length")
-    parser.add_argument("--min_route_length", type=int, default=1, help="Minimum path length")
+    parser.add_argument("--min_route_length", type=int, default=2, help="Minimum path length")
 
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")

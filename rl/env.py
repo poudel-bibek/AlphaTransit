@@ -50,7 +50,7 @@ class TransitEnv(gym.Env):
         self.MAX_ROUTE_LENGTH = self.config.get("max_route_length")
         self.MIN_ROUTE_LENGTH = self.config.get("min_route_length")
         self.world = None
-
+    
         # Multi-route management:
         self.all_routes = []           # List of completed routes [[route1], [route2], ...]
         self.current_route = []        # Currently active route being built
@@ -75,6 +75,8 @@ class TransitEnv(gym.Env):
         self.n_edges = int(len(df_links))
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
+        
+        self.NO_VALID_ACTION = self.n_nodes # The last id is the action to be taken when valid actions are empty
         
         # Cache demand DataFrame to avoid reading CSV every step
         self.demand_df_cached = df_demand
@@ -307,9 +309,9 @@ class TransitEnv(gym.Env):
     def action_space(self) -> gym.Space:
         """
         Option 1: Simultaneously advance all routes at once by 1 node.
-            - Action space would increase i.e., 3 x N 
+            - Action space would increase i.e., NUM_ROUTES x N 
         Option 2: Sequentially advance each route by 1 node.
-            - Action space remains N
+            - Action space remains N + 1 (one extra action NO_VALID_ACTION for the action taken when valid actions are empty)
             - It's easier to learn (credit assignment per route is cleaner i.e., allows the reward to immediately reflect on overlaps, transfers.)
 
         For each route, select the next node to add to the path (starting from a single node).
@@ -355,7 +357,7 @@ class TransitEnv(gym.Env):
 
 
         """
-        return gym.spaces.Discrete(self.n_nodes)
+        return gym.spaces.Discrete(self.n_nodes + 1) # extra action (NO_VALID_ACTION) for when valid actions are empty
     
     def _allocate_demand_by_service(self, world: World, method: str = "volume", unserved_as_cars: bool = False) -> None:
         """
@@ -758,12 +760,11 @@ class TransitEnv(gym.Env):
 
         Returns a dict with route completion signals:
         - route_completed: Route was successfully completed (met min length)
-        - route_forced_end: Route ended due to no valid moves (may be short)
         - ep_done: All routes have been processed
         """
 
         # Check for route completion conditions BEFORE creating buses (skip for baselines)
-        route_completed, route_forced_end, ep_done = False, False, False
+        route_completed, ep_done = False, False
 
         if not self.is_baseline:
             # Route reached maximum length - complete it successfully
@@ -771,11 +772,6 @@ class TransitEnv(gym.Env):
                 self.all_routes.append(self.current_route[:])  # Store completed route
                 print(f"Route {self.current_route_index} completed successfully: {self.current_route}")
                 route_completed = True
-
-            # No valid moves left - route is incomplete/forced to end
-            elif len(self._get_valid_indices()) == 0:
-                print(f"Route {self.current_route_index} forced to end (no valid moves, incomplete: {len(self.current_route)} < {self.MAX_ROUTE_LENGTH})")
-                route_forced_end = True
 
         # Simulate both completed and current partial route being built (only if current route has at least 2 nodes)
         routes_to_simulate = self.all_routes.copy()  # Create a copy, not a reference!
@@ -825,8 +821,7 @@ class TransitEnv(gym.Env):
         self.world = self._allocate_demand_by_service(self.world, unserved_as_cars=self.unserved_as_cars)
         
         return {
-            'route_completed': route_completed,
-            'route_forced_end': route_forced_end,
+            'route_completed': route_completed, 
             'ep_done': ep_done
         }
 
@@ -1277,7 +1272,7 @@ class TransitEnv(gym.Env):
         
         pass
 
-    def compute_reward(self, sim_result: Dict[str, int], action_signals: Dict[str, bool]) -> float:
+    def compute_reward(self, sim_result: Dict[str, int]) -> float:
         """
         Design routes that serve the full demand (100% coverage) with high passenger travel efficiency.
         In addition to route performance, we will use some components to help the agent design better routes i.e., complete routes, minimal overlaps.
@@ -1388,16 +1383,14 @@ class TransitEnv(gym.Env):
         service_rate_component = BETA_1 * (demand_coverage_actual_norm / demand_coverage_potential_norm) if demand_coverage_potential_norm > 0 else 0.0
         travel_time_penalty = BETA_2 * avg_travel_time_norm  
         overlap_penalty = BETA_3 * overlap_penalty_norm
-
+        
         # Penalties for poor forced end
         forced_end_penalty = 0.0
-        if action_signals['route_forced_end']:
+        if sim_result['route_forced_end']:
             # Calculate penalty based on how early the route was terminated
             current_route_length = len(self.current_route)
-            early_termination_ratio = 1.0 - (current_route_length / self.MAX_ROUTE_LENGTH) 
+            early_termination_ratio = 1.0 - (current_route_length / self.MAX_ROUTE_LENGTH)
             forced_end_penalty = BETA_4 * early_termination_ratio  
-
-        # TODO: Add invalid action penalty
 
         total_reward = (demand_coverage_component + service_rate_component - travel_time_penalty - overlap_penalty - forced_end_penalty)
         
@@ -1422,7 +1415,42 @@ class TransitEnv(gym.Env):
         Truncation: 
          - This does not indicate a truncation of the episode. It is a truncation of current route. Just used for logging.
         """
+        # Special case: When valid actions are empty, force the current route to end.
+        if action == self.NO_VALID_ACTION:
+            print("No valid actions found. Forcing the current route to end.")
 
+            # Add current route to all_routes if it meets minimum length requirement
+            if len(self.current_route) >= self.MIN_ROUTE_LENGTH:
+                self.all_routes.append(self.current_route[:])
+                print(f"Added forced-end route {self.current_route_index} to completed routes")
+
+            # Skip the route extension and call the simulation directly.
+            self.world = self.build_world(self.config.get("network"))
+            action_signals = self._apply_action()
+
+            # Run the sim so sim_result has the usual metrics for logging.
+            sim_result = self._step_until(self.horizon)
+
+            # Set flags
+            sim_result['route_forced_end'] = True
+            sim_result['route_completed'] = False
+
+            # Reward
+            reward = self.compute_reward(sim_result)
+
+            # Advance to next route of finish episode
+            terminated = False
+            self.current_route_index += 1
+            if self.current_route_index < self.NUM_ROUTES:
+                self.current_route = initialize_route(self)
+                print(f"Starting route {self.current_route_index}: {self.current_route}")
+            else:
+                print("All routes processed!")
+                terminated = True  # Episode is done when all routes are processed
+
+            return self._get_state(), reward, terminated, None, sim_result # Truncation is not used.
+        
+        # Regular case: Extend the current route and run the simulation.
         # 1. Extend the current route
         action_node = self.idx_to_node[action]
         self.current_route = [str(node) for node in self.current_route] + [action_node]
@@ -1438,16 +1466,16 @@ class TransitEnv(gym.Env):
         # 4. Run the full simulation upto horizon end.
         sim_result = self._step_until(self.horizon)
         
-        # 5. Compute reward with termination signals
-        reward = self.compute_reward(sim_result, action_signals)
-        
-        # 6. Extract route completion signals from _apply_action  
+        # 5. Extract route completion signals 
         sim_result['route_completed'] = action_signals['route_completed']  # Route completed gracefully 
-        sim_result['route_forced_end'] = action_signals['route_forced_end']  # Route got stuck (bad truncation)
-        
+        sim_result['route_forced_end'] = False
+            
+        # 6. Compute reward with termination signals
+        reward = self.compute_reward(sim_result)
+            
         # 7. If route completed this step, init next route NOW (after sim/ reward)
         terminated = False  # Default to continue episode
-        if action_signals['route_completed'] or action_signals['route_forced_end']:
+        if sim_result['route_completed'] or sim_result['route_forced_end']:
             self.current_route_index += 1
             if self.current_route_index < self.NUM_ROUTES:
                 self.current_route = initialize_route(self)

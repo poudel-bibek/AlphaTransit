@@ -42,7 +42,8 @@ class GATV2ActorCritic(nn.Module):
         - Batch norm, layer norm, etc.
         """
         super().__init__()
-        self.num_actions = num_actions
+        self.num_actions = num_actions  # n_nodes + 1 (for the NO_VALID_ACTION)
+        self.n_nodes = kwargs.get("n_nodes")
         self.num_layers = kwargs.get("num_layers")
         self.gat_channels = kwargs.get("gat_channels")
         
@@ -119,9 +120,9 @@ class GATV2ActorCritic(nn.Module):
         # Actor 
         actor_layers = []
         if self.concat:
-            actor_input = self.gat_channels[-1]*self.num_heads[-1]*self.num_actions + self.global_dim
+            actor_input = self.gat_channels[-1]*self.num_heads[-1]*self.n_nodes + self.global_dim
         else:
-            actor_input = self.gat_channels[-1]*self.num_actions + self.global_dim
+            actor_input = self.gat_channels[-1]*self.n_nodes + self.global_dim
 
         for j in range(len(actor_sizes)):
             actor_layers.append(self.layer_init(nn.Linear(actor_input, actor_sizes[j])))
@@ -157,6 +158,9 @@ class GATV2ActorCritic(nn.Module):
         Mask invalid actions by setting their logits to -inf.
         Handles batches: valid_indices [batch, max_valid] padded with -1.
         Ignores -1 during masking.
+
+        If an empty valid_indices is passed, everything will be masked.
+        So, don't pass empty valid_indices.
         """
         if valid_indices is None:
             return logits
