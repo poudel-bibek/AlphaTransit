@@ -308,7 +308,7 @@ class GATV2ActorCritic(nn.Module):
         num_nodes = node_features.shape[0] // batch_size  # Assumes fixed num_nodes per graph
         # Reshape to [batch_size, num_nodes * emb_dim]
         graph_features = node_features.view(batch_size, num_nodes * emb_dim)
-        print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
+        # print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
 
         route_progress = graph_batch.route_progress
         # Route progress shape handling:

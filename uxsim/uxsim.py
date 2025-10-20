@@ -1451,7 +1451,7 @@ class Vehicle:
             # Previously: num_buses_to_spawn = int(sim_horizon / headway_seconds) # This was causing unrealistic fleet sizes
             
             num_buses_to_spawn = service_frequency
-            print(f"Creating {num_buses_to_spawn} buses for service_frequency={service_frequency}, sim_horizon={sim_horizon}s")
+            # print(f"Creating {num_buses_to_spawn} buses for service_frequency={service_frequency}, sim_horizon={sim_horizon}s")
             
             # Create additional buses (skip the first one since we already have it)
             for i in range(1, num_buses_to_spawn):

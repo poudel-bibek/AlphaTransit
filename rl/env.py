@@ -753,7 +753,7 @@ class TransitEnv(gym.Env):
             comfort_capacity = float(self.comfort_threshold * self.BUS_CAPACITY)
 
             # Calculate frequency based on max load principle
-            print(f"DEBUG: Route {route[:3]}... max_load={max_segment_load:.1f} pph, capacity={comfort_capacity:.1f}")
+            # print(f"DEBUG: Route {route[:3]}... max_load={max_segment_load:.1f} pph, capacity={comfort_capacity:.1f}")
             frequency = int(np.ceil(max_segment_load / comfort_capacity))
             frequency = max(1, frequency)  # Minimum 1 bus per hour
 
@@ -806,7 +806,7 @@ class TransitEnv(gym.Env):
             all_routes_for_freq = self.all_routes + [self.current_route] if self.current_route and len(self.current_route) > 1 else self.all_routes
             service_frequency_route = self._get_service_frequency(route, all_routes_for_freq)
             print(f"\nService frequency for route {route_idx}: {service_frequency_route}\n")
-            print(f"DEBUG: service_frequency_route type: {type(service_frequency_route)}, value: {service_frequency_route}")
+            # print(f"DEBUG: service_frequency_route type: {type(service_frequency_route)}, value: {service_frequency_route}")
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
             buses = bus.set_bus_route(
@@ -820,7 +820,7 @@ class TransitEnv(gym.Env):
             )
 
             route_status = "completed" if route in self.all_routes else "current"
-            print(f"Route {route_idx} ({route_status}) bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
+            # print(f"Route {route_idx} ({route_status}) bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
                 
         # Print bus summary AFTER all buses are created
         # all_buses = [v for v in self.world.VEHICLES.values() if hasattr(v, 'mode') and v.mode == 'bus']
@@ -1476,7 +1476,7 @@ class TransitEnv(gym.Env):
         self.current_route = [str(node) for node in self.current_route] + [action_node]
         print(f"Route {self.current_route_index} extended: {self.current_route}")
 
-        # 2. Build_world needs to happen every step.
+        # 2. Build world needs to happen every step.
         # i.e., add the network and the classified demand (bus vs car).
         self.world = self.build_world(self.config.get("network"))
         
