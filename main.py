@@ -276,26 +276,38 @@ def train(config: Dict[str, Any]) -> None:
         # This makes sense for episodes that terminate naturally (with complete routes).
         
         print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_final_reward:.2f}")
+        
+        # time calculations
+        served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
+        wait_seconds = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
+        travel_seconds = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
+        
+        combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
+        combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
 
         wandb.log({
             "episode/episode_final_reward": episode_final_reward,
             "episode/episode_length": episode_steps, # Length of routes
             "episode/steps_elapsed": steps_elapsed, # Total steps across all episodes
-            # reward related
-            "episode/service_rate": sim_result['service_rate'],
+
+            # reward related and others
             "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
             "episode/demand_coverage_actual": sim_result['demand_coverage_actual'],
             "episode/route_overlap_ratio": sim_result['route_overlap_ratio'],
-            "episode/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
             "episode/node_coverage": sim_result['node_coverage'], # Percentage of nodes covered by routes
-            # performance related
             "episode/completed_passengers": sim_result['completed_passengers'],
             "episode/ongoing_passengers": sim_result['ongoing_passengers'],
             "episode/total_onboarded_count": sim_result['total_onboarded_count'],
             "episode/wanting_to_onboard": sim_result['wanting_to_onboard'],
-            "episode/bus_utilization": sim_result['bus_utilization'],
-            "episode/fleet_size": sim_result['fleet_size'],
+
+            # performance related
+            "episode/service_rate": sim_result['service_rate'],
+            "episode/avg_wait_time": combined_avg_wait_minutes,   # Wait time
+            "episode/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
+            "episode/avg_travel_time": combined_avg_travel_minutes,  # Travel time
             "episode/route_efficiency": sim_result['route_efficiency'],
+            "episode/fleet_size": sim_result['fleet_size'],
+            "episode/bus_utilization": sim_result['bus_utilization'],
             }, step=episode)
         
         # Update PPO when we have enough samples in memory
@@ -361,30 +373,39 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
         eval_episode_steps += 1
     episode_final_reward = reward
     if not config.get("wandb_off"):
+        served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
+        wait_seconds = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
+        travel_seconds = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
+
+        combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
+        combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
+
         # Log
         wandb.log({
             # Final reward (after a full path has been constructed)
             "eval/episode_final_reward": episode_final_reward, # Set to maximize in the sweep.
             "eval/episode_length": eval_episode_steps,
-
-            "eval/service_rate": sim_result['service_rate'],
+            "eval/steps_elapsed": eval_episode_steps,
+            
+            # reward related and others
             "eval/demand_coverage_potential": sim_result['demand_coverage_potential'],
             "eval/demand_coverage_actual": sim_result['demand_coverage_actual'],
             "eval/route_overlap_ratio": sim_result['route_overlap_ratio'],
-            "eval/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
             "eval/node_coverage": sim_result['node_coverage'],
-
             "eval/completed_passengers": sim_result['completed_passengers'],
             "eval/ongoing_passengers": sim_result['ongoing_passengers'],
             "eval/total_onboarded_count": sim_result['total_onboarded_count'],
             "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
-            "eval/route_length": sim_result['route_length'],
-            "eval/bus_utilization": sim_result['bus_utilization'],
-            "eval/average_bus_speed": sim_result['average_bus_speed'],
-            "eval/fleet_size": sim_result['fleet_size'],
-            "eval/route_efficiency": sim_result['route_efficiency'],
-        }, step=episode)
 
+            # Performance related
+            "eval/service_rate": sim_result['service_rate'],
+            "eval/avg_wait_time": combined_avg_wait_minutes,
+            "eval/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
+            "eval/avg_travel_time": combined_avg_travel_minutes,
+            "eval/route_efficiency": sim_result['route_efficiency'],
+            "eval/fleet_size": sim_result['fleet_size'],
+            "eval/bus_utilization": sim_result['bus_utilization'],
+        }, step=episode)
 
     # Plots
     env.render(save_dir, f"eval_{str(episode)}.png")
