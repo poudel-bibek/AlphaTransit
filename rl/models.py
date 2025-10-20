@@ -41,7 +41,6 @@ class GATV2ActorCritic(nn.Module):
         Notes: 
         - No shared MLP layers between actor and critic.
         - A custom layer init is used for GATv2 layers.
-        - 
         """
         super().__init__()
         self.num_actions = num_actions  # n_nodes + 1 (for the NO_VALID_ACTION)
@@ -67,8 +66,8 @@ class GATV2ActorCritic(nn.Module):
             self.activation = nn.ReLU()
         
         # Only include the hidden dimensions.
-        actor_sizes = [256, 128, 64] # [128, 64] 
-        critic_sizes = [256, 128, 64] # [128, 64] 
+        actor_sizes = [512, 256] # [128, 64] 
+        critic_sizes = [256, 64] # [128, 64] 
 
         # Build GATv2 layers with residuals, LayerNorm, and dropout.
         # E.g., For a 2 layer setup:

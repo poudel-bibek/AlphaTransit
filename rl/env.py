@@ -413,8 +413,8 @@ class TransitEnv(gym.Env):
         car_demand = 0 
 
         if method == "volume":
-            for _, row in demand_df.iterrows():
-                orig, dest, volume_per_hour = str(row["orig"]), str(row["dest"]), row["volume"]
+            for row in demand_df.itertuples(index=False):
+                orig, dest, volume_per_hour = str(row.orig), str(row.dest), row.volume
                 total_volume = volume_per_hour * (self.horizon / 3600) # multiply by "how many hours" in horizon
                 # print(f"Orig: {orig}, Dest: {dest}, Volume: {volume_per_hour}, Total Volume: {total_volume}")
                 if volume_per_hour <= 0 or orig == dest:
@@ -717,13 +717,13 @@ class TransitEnv(gym.Env):
                     all_routes_segments_loads[seg_key] = 0
 
             # 4. Calculate per-hour passenger load for each segment using accurate pathfinding
-            for _, row in self.demand_df_cached.iterrows():
-                orig, dest = str(row["orig"]), str(row["dest"])
+            for row in self.demand_df_cached.itertuples(index=False):
+                orig, dest = str(row.orig), str(row.dest)
 
                 # Check if this O-D pair can be served by the current transit network
                 if (orig in temp_transit_graph and dest in temp_transit_graph and nx.has_path(temp_transit_graph, orig, dest)):
 
-                    passenger_volume = float(row["volume"]) * float(self.alpha)
+                    passenger_volume = float(row.volume) * float(self.alpha)
                     if passenger_volume <= 0:
                         continue
 
