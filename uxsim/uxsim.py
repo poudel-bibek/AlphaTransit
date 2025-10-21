@@ -2224,6 +2224,8 @@ class World:
                     f -= passenger_unit
         else:
             # Default behavior: create vehicles
+            # Desynchronize OD streams so many ODs do not cross the W.DELTAN threshold on the same step
+            f = W.rng.random() * W.DELTAN
             for t in range(int(t_start/W.DELTAT), int(t_end/W.DELTAT)):
                 f += flow*W.DELTAT
                 while f >= W.DELTAN:

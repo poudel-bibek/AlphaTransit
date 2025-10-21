@@ -410,17 +410,17 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     # Plots
     env.render(save_dir, f"eval_{str(episode)}.png")
     env.world.analyzer.network_fancy(
-        animation_speed_inverse = 10,
-        sample_ratio = 1.0,
-        interval = 5,
-        trace_length = 5,
-        network_font_size = 14,
-        antialiasing = False,
+        animation_speed_inverse=10,
+        figsize=11,
+        sample_ratio=1.0,
+        interval=5,
+        trace_length=5,
+        network_font_size=11,
+        antialiasing=False,
         file_name = os.path.join(save_dir, f"eval_anim_{str(episode)}.gif"),
         save_as_mp4 = False,
-        bus_only = False # Since our new setup already only contains buses only.
+        # bus_only = False 
     )
-
 
 def get_config() -> Dict[str, Any]:
     """

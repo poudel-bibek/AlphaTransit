@@ -147,7 +147,7 @@ class TransitEnv(gym.Env):
 
                 # Add bi-directional edges in the edge index. 
                 for a, b in ((i, j), (j, i)):
-                    if a not in seen:
+                    if (a, b) not in seen:
                         edge_index_list.append([a, b]) # Add the i, j indices of the edge
                         edge_attr_list.append(attr) # Add the normalized edge attributes
                         seen.add((a, b))
@@ -1284,8 +1284,23 @@ class TransitEnv(gym.Env):
         
         pass
 
-    def compute_reward(self, sim_result: Dict[str, int]) -> float:
+    def compute_reward(self, sim_result: Dict[str, int], is_route_end: bool, is_forced_end: bool) -> float:
         """
+        ------------------------------------------------------------------------------------------------
+        FOR PARTIAL ROUTES:
+        A fast proxy reward for partial routes during route construction.
+        - wanting_to_onboard = Σ_{served ODs} (volume_per_hour * horizon_hours * alpha)
+        - total_demand = Σ_{all ODs} (volume_per_hour * horizon_hours)
+        - potential = wanting_to_onboard / total_demand [0-1]
+
+        This is an appropriate measure: 
+        - Can be obtained from initial metrics calculation.
+        - cheap to compute from route topology and the OD matrix only (no full sim required)
+        - monotone with respect to adding useful connectivity
+        - un-affected by dynamics like service frequency
+        
+        ------------------------------------------------------------------------------------------------
+        FOR COMPLETED ROUTES:
         Design routes that serve the full demand (100% coverage) with high passenger travel efficiency.
         In addition to route performance, we will use some components to help the agent design better routes i.e., complete routes, minimal overlaps.
         
@@ -1361,67 +1376,50 @@ class TransitEnv(gym.Env):
         Typical range: [-50, +80] 
         """
         
-        BETA_0 = 50.0      # Demand coverage component (demand served)
-        BETA_1 = 30.0      # Service rate component (demand coverage actual/ demand coverage potential)
-        BETA_2 = 30.0      # Travel time penalty (passenger efficiency)  
-        BETA_3 = 20.0      # Route overlap penalty
-        BETA_4 = 15.0      # Forced end penalty
-        MAX_TOTAL_TRAVEL_TIME = 3600.0   # 1 hour max expected travel time (seconds)
-
-        demand_coverage_potential = sim_result['demand_coverage_potential'] / 100.0 # Percentage [0-1]
-        demand_coverage_actual = sim_result['demand_coverage_actual'] / 100.0 # Percentage [0-1]
-        route_overlap_ratio = sim_result['route_overlap_ratio']  # Ratio of overlapped segments [0-1]
-
-        # Compute combined average travel time using totals (like baselines.py)
-        total_travel_completed = sim_result.get('total_travel_completed')
-        total_travel_ongoing = sim_result.get('total_travel_ongoing')
-        completed_passengers = sim_result.get('completed_passengers')
-        ongoing_passengers = sim_result.get('ongoing_passengers')
-
-        total_travel_time = total_travel_completed + total_travel_ongoing
-        total_passengers_served = completed_passengers + ongoing_passengers
-
-        avg_travel_time = total_travel_time / total_passengers_served if total_passengers_served > 0 else 0.0
-
-        # Normalize components to [0-1] scale
-        demand_coverage_potential_norm = demand_coverage_potential # Already [0-1] from sim_result
-        demand_coverage_actual_norm = demand_coverage_actual # Already [0-1] from sim_result
-        avg_travel_time_norm = min(avg_travel_time / MAX_TOTAL_TRAVEL_TIME, 1.0)  # [0-1] capped at 1
-        overlap_penalty_norm = route_overlap_ratio  
+        incremental_reward = 0.0
+        final_reward = 0.0
+        BETA_0 = 10.0      # Incremental reward component
+        BETA_1 = 50.0      # Demand coverage component (demand served)
+        BETA_2 = 30.0      # Service rate component (demand coverage actual/ demand coverage potential)
+        BETA_3 = -30.0      # Travel time penalty (passenger efficiency)  
+        BETA_4 = -20.0      # Route overlap penalty
+        BETA_5 = -15.0      # Forced end penalty
         
-        # Calculate reward components
-        demand_coverage_component = BETA_0 * demand_coverage_potential_norm
-        # Prevent division by zero (initially demand_coverage_potential_norm could be zero)
-        service_rate_component = BETA_1 * (demand_coverage_actual_norm / demand_coverage_potential_norm) if demand_coverage_potential_norm > 0 else 0.0
-        travel_time_penalty = BETA_2 * avg_travel_time_norm  
-        overlap_penalty = BETA_3 * overlap_penalty_norm
-        
-        # Penalties for poor forced end
-        forced_end_penalty = 0.0
-        if sim_result['route_forced_end']:
-            # Calculate penalty based on how early the route was terminated
-            current_route_length = len(self.current_route)
-            early_termination_ratio = 1.0 - (current_route_length / self.MAX_ROUTE_LENGTH)
-            forced_end_penalty = BETA_4 * early_termination_ratio  
+        # For partial routes, use proxy based on potential (no sim_result needed)
+        if not is_route_end:
+            pot_norm = sim_result['demand_coverage_potential']
+            incremental_reward = BETA_0 * pot_norm
+            print(f"Incremental reward: {incremental_reward:.2f}")
+        else: 
+            pot_norm = sim_result['demand_coverage_potential'] / 100.0
+            service_norm = sim_result['service_rate'] / 100.0
+            overlap = sim_result['route_overlap_ratio']
 
-        total_reward = (demand_coverage_component + service_rate_component - travel_time_penalty - overlap_penalty - forced_end_penalty)
-        
-        print(f"Total reward: {total_reward:.2f}")
-        print(f"\tDemand coverage component: +{demand_coverage_component:.2f} "
-            f"(β0={BETA_0} × {demand_coverage_potential*100:.1f}%)")
-        print(f"\tService rate component: +{service_rate_component:.2f} "
-            f"(β1={BETA_1} × {demand_coverage_actual*100:.1f}% / {demand_coverage_potential*100:.1f}%)")
-        print(f"\tTravel time penalty: -{travel_time_penalty:.2f} "
-            f"(β2={BETA_2} × {avg_travel_time:.0f}s / 3600)")
-        print(f"\tOverlap penalty: -{overlap_penalty:.2f} "
-            f"(β3={BETA_3} × {route_overlap_ratio:.3f})")
+            total_travel = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
+            served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
+            avg_travel = total_travel / served if served > 0 else 0.0
+            avg_travel_norm = min(avg_travel / 3600.0, 1.0)  # [0-1] capped at 1
+
+            final_reward = (
+                BETA_1 * pot_norm +
+                BETA_2 * service_norm +
+                BETA_3 * avg_travel_norm +
+                BETA_4 * overlap 
+            )
             
-        if sim_result['route_forced_end']:
-            print(f"\tForced end penalty: -{forced_end_penalty:.2f} "
-                f"(β4={BETA_4} × {early_termination_ratio:.3f})")
-
-        
-        return total_reward    
+            print(f"Final reward: {final_reward:.2f}")
+            print("Components:")
+            print(f"   Demand coverage potential: {BETA_1 * pot_norm:.2f}")
+            print(f"   Service rate: {BETA_2 * service_norm:.2f}")
+            print(f"   Travel time: {BETA_3 * avg_travel_norm:.2f}")
+            print(f"   Overlap: {BETA_4 * overlap:.2f}")
+            
+            if is_forced_end:
+                early_ratio = 1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)
+                final_reward += BETA_5 * early_ratio
+                print(f"   Forced end: {BETA_5 * early_ratio:.2f}")
+            
+        return incremental_reward + final_reward
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         """
@@ -1456,7 +1454,7 @@ class TransitEnv(gym.Env):
             sim_result['route_completed'] = False
 
             # Reward
-            reward = self.compute_reward(sim_result)
+            reward = self.compute_reward(sim_result, is_route_end=True, is_forced_end=True)
 
             # Advance to next route of finish episode
             terminated = False
@@ -1475,23 +1473,36 @@ class TransitEnv(gym.Env):
         action_node = self.idx_to_node[action]
         self.current_route = [str(node) for node in self.current_route] + [action_node]
         print(f"Route {self.current_route_index} extended: {self.current_route}")
+        is_route_end = len(self.current_route) >= self.MAX_ROUTE_LENGTH
+        
+        # initial metrics can be gotten. 
+        initial_metrics = self._get_initial_metrics()
+        sim_result = {
+            'route_length': initial_metrics['route_length'],
+            'wanting_to_onboard': initial_metrics['wanting_to_onboard'],
+            'total_demand': initial_metrics['total_demand'],
+            'demand_coverage_potential': initial_metrics['wanting_to_onboard'] / initial_metrics['total_demand'] if initial_metrics['total_demand'] > 0 else 0.0, #[0-1]
+            'route_completed': False,
+            'route_forced_end': False,
+        }
 
-        # 2. Build world needs to happen every step.
-        # i.e., add the network and the classified demand (bus vs car).
-        self.world = self.build_world(self.config.get("network"))
-        
-        # 3. spawn necessary buses, set routes, and handle route completion
-        action_signals = self._apply_action()
-        
-        # 4. Run the full simulation upto horizon end.
-        sim_result = self._step_until(self.horizon)
-        
-        # 5. Extract route completion signals 
-        sim_result['route_completed'] = action_signals['route_completed']  # Route completed gracefully 
-        sim_result['route_forced_end'] = False
+        if is_route_end: # Only simulate at route end.
+            # 2. Build world needs to happen every step.
+            # i.e., add the network and the classified demand (bus vs car).
+            self.world = self.build_world(self.config.get("network"))
+            
+            # 3. spawn necessary buses, set routes, and handle route completion
+            action_signals = self._apply_action()
+            
+            # 4. Run the full simulation upto horizon end.
+            sim_result = self._step_until(self.horizon)
+            
+            # 5. Extract route completion signals 
+            sim_result['route_completed'] = action_signals['route_completed']  # Route completed gracefully 
+            sim_result['route_forced_end'] = False
             
         # 6. Compute reward with termination signals
-        reward = self.compute_reward(sim_result)
+        reward = self.compute_reward(sim_result, is_route_end=is_route_end, is_forced_end=False)
             
         # 7. If route completed this step, init next route NOW (after sim/ reward)
         terminated = False  # Default to continue episode
