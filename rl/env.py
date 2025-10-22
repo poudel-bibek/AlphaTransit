@@ -44,6 +44,7 @@ class TransitEnv(gym.Env):
         self.comfort_threshold = self.config.get("comfort_threshold")
         self.radius = self.config.get("radius")
         self.path_init = self.config.get("path_init")
+        self.transit_center_node = str(self.config.get("transit_center_node"))
         
         # Constraints:
         self.NUM_ROUTES = self.config.get("num_routes")
@@ -863,10 +864,9 @@ class TransitEnv(gym.Env):
 
                 # bus capacity 
                 bus_capacity = stop_info['bus_capacity']
-                # capacity after passengers boarded/ alighted
-                capacity_after = stop_info['capacity_after']
-
-                utilization = capacity_after / bus_capacity
+                # occupancy after passengers boarded/ alighted
+                occupancy_after = stop_info['occupancy_after']
+                utilization = occupancy_after / bus_capacity
                 bus_utilizations[bus_name].append((f"stop_{i}", utilization))
             
             average_utilization_this_bus = np.mean([utilization for _, utilization in bus_utilizations[bus_name]])
@@ -1509,7 +1509,7 @@ class TransitEnv(gym.Env):
         Get fast metrics for the current partial route.
 
         Builds a lightweight stop graph from all completed routes plus the current route
-        using STOP_SPACING, then measures coverage directly from the OD matrix.
+        using STOP_SPACING, then measures coverage directly from the OD matrix.        
 
         Returns:
             - route_length: sum of link lengths for all completed routes plus current route (meters)

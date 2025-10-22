@@ -10,9 +10,8 @@ from typing import Any, Dict
 from datetime import datetime
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
-from rl.env_utils import pretty_print_state
 from torch_geometric.data import Data, Batch
-from rl.env_utils import plot_network_and_demand
+from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 
 class CachedPyGConverter:
@@ -315,9 +314,9 @@ def train(config: Dict[str, Any]) -> None:
             if update_count % config["eval_every"] == 0:
                 eval(config, policy_path, episode, training_save_dir)
     
-def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) -> Dict[str, float]: 
+def execute_eval_runs(config: Dict[str, Any], policy_path: str, num_runs: int, base_seed: int, save_dir: str) -> tuple[list, dict]:
     """
-    Evaluate a trained policy
+    Evaluate a trained policy for multiple runs.
     - Load a saved policy
     - Run the policy on the network (take deterministic actions) and get the path
     - Get relevant metrics and log
@@ -329,8 +328,29 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     -----
     episode_final_reward: this should be a true measure of the policy's performance.
     """
-    print("Evaluating policy: ", policy_path)
+    print(f"Evaluating policy: {policy_path} for {num_runs} runs with base seed: {base_seed}")
     
+    results = []
+    for run in range(num_runs):
+        current_seed = base_seed + run
+        set_global_seeds(current_seed)
+        print(f"\n=== Evaluation Run {run+1} (Seed: {current_seed}) ===")
+
+        # Create seed-specific directory
+        seed_dir = os.path.join(save_dir, f"eval_seed_{current_seed}")
+        img_dir = os.path.join(seed_dir, "images")
+        os.makedirs(img_dir, exist_ok=True)
+
+        result = single_eval_run(config, policy_path, seed_dir, run + 1)
+        results.append(result)
+
+    aggregated = summarize_eval_results(results)
+    return results, aggregated
+
+def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run_number: int) -> dict:
+    """
+    Execute a single evaluation run.
+    """
     env = TransitEnv(config)
     node_feature_dim = env.N_NODE_FEATURES
     num_actions = env.action_space.n
@@ -338,7 +358,8 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     policy_kwargs = get_policy_kwargs(config, node_feature_dim)
 
     model = GATV2ActorCritic(num_actions, **policy_kwargs)
-    model.load_state_dict(torch.load(policy_path), map_location=config["device"])
+    state_dict = torch.load(policy_path, map_location=config["device"])
+    model.load_state_dict(state_dict)
     model.to(config["device"])
     model.eval() # eval mode
     
@@ -355,8 +376,8 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
         valid_indices = torch.tensor([mask_ids], dtype=torch.long, device=config["device"])
         
         with torch.no_grad():
-            action_tensor, _, _ = model.act(batch, 
-            deterministic=True, 
+            action_tensor, _, _ = model.act(batch,
+            deterministic=True,
             valid_indices=valid_indices,
             truncated=False)
  
@@ -365,43 +386,17 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
         state = next_state
         eval_episode_steps += 1
     episode_final_reward = reward
-    if not config.get("wandb_off"):
-        served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
-        wait_seconds = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
-        travel_seconds = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
 
-        combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
-        combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
+    # Calculate combined metrics
+    served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
+    wait_seconds = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
+    travel_seconds = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
 
-        # Log
-        wandb.log({
-            # Final reward (after a full path has been constructed)
-            "eval/episode_final_reward": episode_final_reward, # Set to maximize in the sweep.
-            "eval/episode_length": eval_episode_steps,
-            "eval/steps_elapsed": eval_episode_steps,
-            
-            # reward related and others
-            "eval/demand_coverage_potential": sim_result['demand_coverage_potential'],
-            "eval/demand_coverage_actual": sim_result['demand_coverage_actual'],
-            "eval/route_overlap_ratio": sim_result['route_overlap_ratio'],
-            "eval/node_coverage": sim_result['node_coverage'],
-            "eval/completed_passengers": sim_result['completed_passengers'],
-            "eval/ongoing_passengers": sim_result['ongoing_passengers'],
-            "eval/total_onboarded_count": sim_result['total_onboarded_count'],
-            "eval/wanting_to_onboard": sim_result['wanting_to_onboard'],
+    combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
+    combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
 
-            # Performance related
-            "eval/service_rate": sim_result['service_rate'],
-            "eval/avg_wait_time": combined_avg_wait_minutes,
-            "eval/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
-            "eval/avg_travel_time": combined_avg_travel_minutes,
-            "eval/route_efficiency": sim_result['route_efficiency'],
-            "eval/fleet_size": sim_result['fleet_size'],
-            "eval/bus_utilization": sim_result['bus_utilization'],
-        }, step=episode)
-
-    # Plots
-    env.render(save_dir, f"eval_{str(episode)}.png")
+    # Generate visualizations for this run
+    env.render(save_dir, f"eval_run_{run_number}.png")
     env.world.analyzer.network_fancy(
         animation_speed_inverse=10,
         figsize=11,
@@ -410,10 +405,96 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
         trace_length=5,
         network_font_size=11,
         antialiasing=False,
-        file_name = os.path.join(save_dir, f"eval_anim_{str(episode)}.gif"),
-        save_as_mp4 = False,
+        file_name=os.path.join(save_dir, f"eval_anim_run_{run_number}.gif"),
+        save_as_mp4=False,
         # bus_only = False 
     )
+
+    return {
+        'episode_final_reward': episode_final_reward,
+        'episode_length': eval_episode_steps,
+        'demand_coverage_potential': sim_result['demand_coverage_potential'],
+        'demand_coverage_actual': sim_result['demand_coverage_actual'],
+        'route_overlap_ratio': sim_result['route_overlap_ratio'],
+        'node_coverage': sim_result['node_coverage'],
+        'completed_passengers': sim_result['completed_passengers'],
+        'ongoing_passengers': sim_result['ongoing_passengers'],
+        'total_onboarded_count': sim_result['total_onboarded_count'],
+        'wanting_to_onboard': sim_result['wanting_to_onboard'],
+        'service_rate': sim_result['service_rate'],
+        'combined_avg_wait_minutes': combined_avg_wait_minutes,
+        'transfer_rate': sim_result['transfer_rate'],
+        'combined_avg_travel_minutes': combined_avg_travel_minutes,
+        'route_efficiency': sim_result['route_efficiency'],
+        'fleet_size': sim_result['fleet_size'],
+        'bus_utilization': sim_result['bus_utilization'],
+    }
+
+def summarize_eval_results(results_list):
+    """
+    Aggregate evaluation results using shared function.
+    """
+    return aggregate_results(results_list, result_format='direct')
+
+def write_eval_summary_json(results_list, aggregated, save_dir, num_runs):
+    """
+    Write evaluation summary to JSON file using shared function.
+    """
+    write_results_summary(aggregated, num_runs, save_dir, 'eval_results_summary.json')
+
+def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) -> Dict[str, float]:
+    """
+    Evaluate a trained policy
+    - Load a saved policy
+    - Run the policy on the network (take deterministic actions) and get the path
+    - Get relevant metrics and log
+    - Plot path and call world.analyzer.network_fancy
+
+    Notes:
+    - During eval episode, agent constructs a route path step by step
+    - The results are only meaningful at the end of the episode.
+    -----
+    episode_final_reward: this should be a true measure of the policy's performance.
+    """
+    print("Evaluating policy: ", policy_path)
+
+    num_runs = config["num_eval_runs"]
+
+    # Run evaluations and aggregate results (works for any number of runs including 1)
+    results, aggregated = execute_eval_runs(config, policy_path, num_runs, config["seed"], save_dir)
+
+    # Save summary JSON with statistical information (works for any number of runs)
+    write_eval_summary_json(results, aggregated, save_dir, num_runs)
+
+    # Log averaged results to wandb (for single run, this is just the single result)
+    if not config.get("wandb_off"):
+        wandb.log({
+            # Final reward (after a full path has been constructed)
+            "eval/episode_final_reward": aggregated['episode_final_reward'],
+            "eval/episode_length": aggregated['episode_length'],
+            "eval/steps_elapsed": aggregated['episode_length'],
+
+            # reward related and others
+            "eval/demand_coverage_potential": aggregated['demand_coverage_potential'],
+            "eval/demand_coverage_actual": aggregated['demand_coverage_actual'],
+            "eval/route_overlap_ratio": aggregated['route_overlap_ratio'],
+            "eval/node_coverage": aggregated['node_coverage'],
+            "eval/completed_passengers": aggregated['completed_passengers'],
+            "eval/ongoing_passengers": aggregated['ongoing_passengers'],
+            "eval/total_onboarded_count": aggregated['total_onboarded_count'],
+            "eval/wanting_to_onboard": aggregated['wanting_to_onboard'],
+
+            # Performance related
+            "eval/service_rate": aggregated['service_rate'],
+            "eval/avg_wait_time": aggregated['combined_avg_wait_minutes'],
+            "eval/transfer_rate": aggregated['transfer_rate'],
+            "eval/avg_travel_time": aggregated['combined_avg_travel_minutes'],
+            "eval/route_efficiency": aggregated['route_efficiency'],
+            "eval/fleet_size": aggregated['fleet_size'],
+            "eval/bus_utilization": aggregated['bus_utilization'],
+        }, step=episode)
+
+    return aggregated
 
 def get_config() -> Dict[str, Any]:
     """
@@ -467,11 +548,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples")
+    parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
-    parser.add_argument("--eval_every", type=int, default=1, help="Evaluate every N updates to the policy")
+    parser.add_argument("--eval_every", type=int, default=2, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
-    parser.add_argument("--num_baseline_runs", type=int, default=10, help="Number of runs (over which we average the results) for the baseline")
+    parser.add_argument("--num_eval_runs", type=int, default=1, help="Number of runs (over which we average the results) for both evaluation and baselines")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
@@ -481,7 +562,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end with no demand (0.0-0.5)")
-    parser.add_argument("--path_init", type=str, default="random", help="Initialize path using various schemes (possible: random, highest demand node, transit center)")
+    parser.add_argument("--path_init", type=str, default="transit_center", help="Initialize path using various schemes (possible: random, highest demand node, transit_center)")
+    parser.add_argument("--transit_center_node", type=str, default="96", help="Node identifier to use when path_init is 'transit_center'")
     
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
@@ -543,6 +625,7 @@ def main() -> None:
         config["wandb_off"] = True
         policy_path = config["saved_policy_path"]
         eval(config, policy_path, "final", config["save_dir"])
+        print(f"Evaluation completed. Results saved to: {config['save_dir']}")
 
     else: 
         config["wandb_off"] = True
@@ -561,7 +644,7 @@ def main() -> None:
             raise ValueError(f"Invalid baseline type: {config['baseline_type']}. Available: {list(baseline_classes.keys())}")
         
         BaselineClass = baseline_classes[config["baseline_type"]]
-        baseline = BaselineClass(env, config, num_runs=config["num_baseline_runs"], base_seed=config["seed"])
+        baseline = BaselineClass(env, config, num_runs=config["num_eval_runs"], base_seed=config["seed"])
         baseline.run()
 
 if __name__ == "__main__":

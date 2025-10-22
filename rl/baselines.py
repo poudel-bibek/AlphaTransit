@@ -39,8 +39,7 @@ import numpy as np
 import random
 import torch
 from datetime import datetime
-from collections import defaultdict
-from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, initialize_route
+from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, initialize_route, aggregate_results, create_results_summary, METRICS_OF_INTEREST, write_results_summary
 
 def set_global_seeds(seed: int) -> None:
     """
@@ -145,72 +144,12 @@ def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
 
 def summarize_results(results_list):
     """
-    Aggregate per-run metrics, scalars, and distributions.
+    Aggregate per-run metrics using shared function.
     """
-    scalar_series = defaultdict(list)
-    distribution_series = defaultdict(list)
-    per_run_stats = []
-
-    for res in results_list:
-        sim = res['sim_result']
-
-        for key, value in sim.items():
-            if isinstance(value, (int, float)):
-                scalar_series[key].append(float(value))
-            elif isinstance(value, (list, tuple)):
-                distribution_series[key].extend(value)
-
-        completed = float(sim['completed_passengers'])
-        ongoing = float(sim['ongoing_passengers'])
-        served = completed + ongoing
-        wait_seconds = float(sim['total_wait_completed']) + float(sim['total_wait_ongoing'])
-        travel_seconds = float(sim['total_travel_completed']) + float(sim['total_travel_ongoing'])
-
-        wait_minutes = (wait_seconds / served) / 60.0 if served > 0 else 0.0
-        travel_minutes = (travel_seconds / served) / 60.0 if served > 0 else 0.0
-
-        scalar_series['combined_avg_wait_minutes'].append(wait_minutes)
-        scalar_series['combined_avg_travel_minutes'].append(travel_minutes)
-
-        per_run_stats.append({
-            'served_passengers': served,
-            'combined_wait_seconds': wait_seconds,
-            'combined_travel_seconds': travel_seconds,
-        })
-
-    aggregated = {key: float(np.mean(values)) for key, values in scalar_series.items() if values}
-    aggregated['_scalar_series'] = scalar_series
-    aggregated['_distribution_series'] = distribution_series
-    aggregated['_per_run_stats'] = per_run_stats
-    return aggregated
+    return aggregate_results(results_list, result_format='sim')
 
 def write_summary_json(baseline, aggregated):
-    scalar_series = aggregated.get('_scalar_series', {})
-    if not scalar_series:
-        return
-
-    metrics_of_interest = [
-        'service_rate',
-        'transfer_rate',
-        'route_efficiency',
-        'fleet_size',
-        'bus_utilization',
-        'combined_avg_wait_minutes',
-        'combined_avg_travel_minutes',
-    ]
-
-    results_section = {}
-    for metric in metrics_of_interest:
-        values = scalar_series.get(metric)
-        if not values:
-            continue
-        arr = np.array(values, dtype=np.float64)
-        results_section[metric] = { 'avg': float(arr.mean()), 'std': float(arr.std(ddof=0)), 'data': values }
-
-    output_path = os.path.join(baseline.main_save_dir, 'results_summary.json')
-    with open(output_path, 'w') as f:
-        json.dump({ 'num_runs': baseline.num_runs, 'results': results_section }, f, indent=2)
-    print(f"Saved summary statistics to: {output_path}")
+    write_results_summary(aggregated, baseline.num_runs, baseline.main_save_dir, 'results_summary.json')
 
 def average_sim_results(results_list):
     if not results_list:

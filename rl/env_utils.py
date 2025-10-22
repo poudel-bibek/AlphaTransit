@@ -4,8 +4,11 @@ import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 import random
+import numpy as np
+import json
+import os
 from collections import defaultdict
-from typing import Any, Dict, Optional, List, Tuple, Sequence
+from typing import Any, Dict, Optional, List, Tuple
 
 
 def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str]:
@@ -44,13 +47,33 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
         demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
         for _, row in demand_df_ranked.iterrows():
             candidate_node = row["orig"]
-            if candidate_node in choice_nodes:
+            if candidate_node in choice_nodes and candidate_node in env.node_to_idx:
                 print(f"Initializing route at highest available demand node: {candidate_node}")
                 return [candidate_node]
 
     elif strategy == "transit_center":
-        print(f"Initializing route at transit center node: 96")
-        return [96] # NOTE: This is a hardcoded value for Bloomington transit.
+        center_node = str(env.transit_center_node)
+        if center_node in env.node_to_idx:
+            print(f"Initializing route at transit center node: {center_node}")
+            return [center_node]
+
+        print(f"Transit center node {center_node} not found in network; falling back to highest demand node")
+        # Reuse highest demand fallback
+        demand_df_grouped = env.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
+        demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
+        for _, row in demand_df_ranked.iterrows():
+            candidate_node = row["orig"]
+            if candidate_node in choice_nodes and candidate_node in env.node_to_idx:
+                print(f"Fallback initialization at highest available demand node: {candidate_node}")
+                return [candidate_node]
+
+        if choice_nodes:
+            fallback_node = next((node for node in choice_nodes if node in env.node_to_idx), None)
+            if fallback_node is not None:
+                print(f"Fallback initialization at available node: {fallback_node}")
+                return [fallback_node]
+
+        raise ValueError("No valid starting node found for initialization strategy")
 
 def normalize_coordinates(world):
     """
@@ -364,3 +387,151 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
         spine.set_visible(False)
     plt.savefig(output_loc, bbox_inches='tight', dpi=150)
     plt.close(fig)
+
+
+METRICS_OF_INTEREST = [
+    'service_rate',
+    'transfer_rate',
+    'route_efficiency',
+    'fleet_size',
+    'bus_utilization',
+    'combined_avg_wait_minutes',
+    'combined_avg_travel_minutes',
+]
+
+def calculate_combined_metrics(sim_result: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Calculate combined average wait and travel times from simulation results.
+    Used consistently across baselines and evaluation.
+    """
+    completed = float(sim_result['completed_passengers'])
+    ongoing = float(sim_result['ongoing_passengers'])
+    served = completed + ongoing
+
+    if served == 0:
+        return 0.0, 0.0
+
+    wait_seconds = float(sim_result['total_wait_completed']) + float(sim_result['total_wait_ongoing'])
+    travel_seconds = float(sim_result['total_travel_completed']) + float(sim_result['total_travel_ongoing'])
+
+    wait_minutes = (wait_seconds / served) / 60.0
+    travel_minutes = (travel_seconds / served) / 60.0
+
+    return wait_minutes, travel_minutes
+
+def aggregate_results(results_list: List[Dict[str, Any]], result_format: str = 'sim') -> Dict[str, Any]:
+    """
+    Aggregate results from multiple runs with consistent logic.
+
+    Args:
+        results_list: List of result dictionaries from runs
+        result_format: Either 'sim' (baselines) or 'direct' (evaluation)
+
+    Returns:
+        Dictionary with aggregated metrics and metadata
+    """
+    if not results_list:
+        return {}
+
+    scalar_series = defaultdict(list)
+    distribution_series = defaultdict(list)
+    per_run_stats = []
+
+    for res in results_list:
+        if result_format == 'sim':
+            # Baselines: results have 'sim_result' key
+            sim = res['sim_result']
+
+            # Extract scalar and distribution metrics
+            for key, value in sim.items():
+                if isinstance(value, (int, float)):
+                    scalar_series[key].append(float(value))
+                elif isinstance(value, (list, tuple)):
+                    distribution_series[key].extend(value)
+
+            # Calculate combined metrics for baselines
+            completed = float(sim['completed_passengers'])
+            ongoing = float(sim['ongoing_passengers'])
+            served = completed + ongoing
+            wait_seconds = float(sim['total_wait_completed']) + float(sim['total_wait_ongoing'])
+            travel_seconds = float(sim['total_travel_completed']) + float(sim['total_travel_ongoing'])
+
+            wait_minutes = (wait_seconds / served) / 60.0 if served > 0 else 0.0
+            travel_minutes = (travel_seconds / served) / 60.0 if served > 0 else 0.0
+
+            scalar_series['combined_avg_wait_minutes'].append(wait_minutes)
+            scalar_series['combined_avg_travel_minutes'].append(travel_minutes)
+
+            per_run_stats.append({
+                'served_passengers': served,
+                'combined_wait_seconds': wait_seconds,
+                'combined_travel_seconds': travel_seconds,
+            })
+
+        else:  # result_format == 'direct' (evaluation)
+            # Evaluation: results have metrics directly
+            for key, value in res.items():
+                if key not in ['sim_result']:  # Skip sim_result if present
+                    scalar_series[key].append(float(value))
+
+            per_run_stats.append({
+                'episode_final_reward': res['episode_final_reward'],
+                'served_passengers': res['completed_passengers'] + res['ongoing_passengers'],
+                'combined_wait_seconds': res['combined_avg_wait_minutes'] * 60 * (res['completed_passengers'] + res['ongoing_passengers']),
+                'combined_travel_seconds': res['combined_avg_travel_minutes'] * 60 * (res['completed_passengers'] + res['ongoing_passengers']),
+            })
+
+    # Calculate aggregated values
+    aggregated = {key: float(np.mean(values)) for key, values in scalar_series.items() if values}
+    aggregated['_scalar_series'] = scalar_series
+    aggregated['_distribution_series'] = distribution_series
+    aggregated['_per_run_stats'] = per_run_stats
+
+    return aggregated
+
+def create_results_summary(aggregated: Dict[str, Any], num_runs: int) -> Dict[str, Any]:
+    """
+    Create a summary dictionary with statistical information for key metrics.
+
+    Args:
+        aggregated: Aggregated results from aggregate_results()
+        num_runs: Number of runs that were aggregated
+
+    Returns:
+        Dictionary with mean, std, and raw data for metrics of interest
+    """
+    scalar_series = aggregated['_scalar_series']
+    if not scalar_series:
+        return {}
+
+    results_section = {}
+    for metric in METRICS_OF_INTEREST:
+        values = scalar_series[metric]
+        if values:
+            arr = np.array(values, dtype=np.float64)
+            results_section[metric] = {
+                'avg': float(arr.mean()),
+                'std': float(arr.std(ddof=0)),
+                'data': values
+            }
+
+    return {'num_runs': num_runs, 'results': results_section}
+
+def write_results_summary(aggregated: Dict[str, Any], num_runs: int, output_dir: str, filename: str = 'results_summary.json') -> None:
+    """
+    Write results summary to JSON file.
+
+    Args:
+        aggregated: Aggregated results from aggregate_results()
+        num_runs: Number of runs that were aggregated
+        output_dir: Directory to save the file
+        filename: Name of the output file (default: 'results_summary.json')
+    """
+    summary = create_results_summary(aggregated, num_runs)
+    if not summary or 'results' not in summary:
+        return
+
+    output_path = os.path.join(output_dir, filename)
+    with open(output_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"Saved summary statistics to: {output_path}")

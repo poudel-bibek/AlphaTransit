@@ -108,8 +108,8 @@ class BusHandler:
         if bus.mode != "bus":
             return
 
-        # Capacity before any passenger activity
-        capacity_before = len(bus.passengers)
+        # Occupancy before any passenger activity
+        occupancy_before = len(bus.passengers)
 
         # Step 1: Alight passengers whose current leg alight or final dest is current stop
         alighting_passengers = []
@@ -178,7 +178,7 @@ class BusHandler:
                 passenger.journey_log.append({'type': 'ride', 'start': self.W.TIME, 'end': None, 'bus': bus.name, 'board_stop': current_stop.name, 'alight_stop': None})
 
         num_boarded = len(boarded_passengers)
-        capacity_after = len(bus.passengers)
+        occupancy_after = len(bus.passengers)
 
         # Record bus route journey (track stop-to-stop progression)
         if bus.name not in self.bus_route_journeys:
@@ -187,10 +187,10 @@ class BusHandler:
         self.bus_route_journeys[bus.name].append({
             'stop_name': current_stop.name,
             'arrival_time': self.W.TIME,
-            'capacity_before': capacity_before,
+            'occupancy_before': occupancy_before,
             'passengers_alighted': num_alighted,
             'passengers_boarded': num_boarded,
-            'capacity_after': capacity_after,
+            'occupancy_after': occupancy_after,
             'bus_capacity': getattr(bus, 'capacity')
         })
 
