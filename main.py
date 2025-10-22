@@ -338,7 +338,7 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     policy_kwargs = get_policy_kwargs(config, node_feature_dim)
 
     model = GATV2ActorCritic(num_actions, **policy_kwargs)
-    model.load_state_dict(torch.load(policy_path))
+    model.load_state_dict(torch.load(policy_path), map_location=config["device"])
     model.to(config["device"])
     model.eval() # eval mode
     

@@ -1010,11 +1010,6 @@ class TransitEnv(gym.Env):
                 for i in range(len(route) - 1):
                     route_length += self.link_lengths.get((str(route[i]), str(route[i+1])), 0.0)
 
-        # Add length of current route (if it has at least 2 nodes and not baseline)
-        if not self.is_baseline and len(self.current_route) >= 2:
-            for i in range(len(self.current_route) - 1):
-                route_length += self.link_lengths.get((str(self.current_route[i]), str(self.current_route[i+1])), 0.0)
-
         # 2. Wanting to onboard
         wanting_to_onboard = 0
         for _, row in self.demand_df_cached.iterrows():
@@ -1364,7 +1359,7 @@ class TransitEnv(gym.Env):
         BETA_2 = 30.0      # Service rate component (demand coverage actual/ demand coverage potential)
         BETA_3 = -30.0      # Travel time penalty (passenger efficiency)  
         BETA_4 = -10.0      # Route overlap penalty
-        BETA_5 = -15.0      # Forced end penalty
+        BETA_5 = -10.0      # Forced end penalty
         
         # For partial routes, use proxy based on potential (no sim_result needed)
         if not is_route_end:
@@ -1372,7 +1367,13 @@ class TransitEnv(gym.Env):
             partial_delta = max(0.0, pot_norm - self.previous_partial_reward)
             incremental_reward = BETA_0 * partial_delta
             self.previous_partial_reward = pot_norm
-            print(f"Incremental reward: {incremental_reward:.2f}")
+            print(f"Incremental reward: {incremental_reward}")
+
+            if is_forced_end:
+                incremental_reward += BETA_5 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH))
+                print(f"   Forced end: {BETA_5 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)):.2f}")
+
+        # For completed routes, use actual metrics from simulation
         else: 
             pot_norm = sim_result['demand_coverage_potential'] / 100.0 # need to be divided by 100 to convert to [0-1]
             service_norm = sim_result['service_rate'] / 100.0 # need to be divided by 100 to convert to [0-1]
@@ -1401,11 +1402,6 @@ class TransitEnv(gym.Env):
             print(f"   Service rate: {BETA_2 * delta_service:.2f}")
             print(f"   Travel time: {BETA_3 * delta_travel:.2f}")
             print(f"   Overlap: {BETA_4 * delta_overlap:.2f}")
-            
-            if is_forced_end:
-                early_ratio = 1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)
-                final_reward += BETA_5 * early_ratio
-                print(f"   Forced end: {BETA_5 * early_ratio:.2f}")
             
         return incremental_reward + final_reward
 
@@ -1440,8 +1436,8 @@ class TransitEnv(gym.Env):
             sim_result['route_forced_end'] = True
             sim_result['route_completed'] = False
 
-            # Reward
-            reward = self.compute_reward(sim_result, is_route_end=True, is_forced_end=True)
+            # Reward (route didnt end gracefully, forced end)
+            reward = self.compute_reward(sim_result, is_route_end=False, is_forced_end=True)
 
             # Advance to next route of finish episode
             terminated = False
