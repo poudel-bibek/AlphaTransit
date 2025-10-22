@@ -39,7 +39,15 @@ import numpy as np
 import random
 import torch
 from datetime import datetime
-from rl.env_utils import plot_network_and_demand, plot_network_demand_and_path, initialize_route, aggregate_results, create_results_summary, METRICS_OF_INTEREST, write_results_summary
+from rl.env_utils import (
+    plot_network_and_demand,
+    plot_network_demand_and_path,
+    initialize_route,
+    aggregate_results,
+    write_results_summary,
+    ensure_eval_results_dir,
+    make_seed_output_dir,
+)
 
 def set_global_seeds(seed: int) -> None:
     """
@@ -58,12 +66,13 @@ def create_main_save_dir(config):
     """
     now = datetime.now()
     main_save_dir = os.path.join(
-        config.get("save_dir", "./baseline_data"), 
-        f"{config.get('baseline_type', 'unknown')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
+        config.get("save_dir"), 
+        f"{config.get('baseline_type')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
     os.makedirs(main_save_dir, exist_ok=True)
-    print(f"Baseline results will be saved to: {main_save_dir}")
-    return main_save_dir
+    eval_root = ensure_eval_results_dir(main_save_dir)
+    print(f"Baseline results will be saved to: {eval_root}")
+    return main_save_dir, eval_root
 
 def create_initial_network_plot(env, config, img_dir):
     """
@@ -71,7 +80,7 @@ def create_initial_network_plot(env, config, img_dir):
     """
     # Build a temporary world for initial visualization
     temp_world = env.build_world(config.get("network"))
-    temp_world.name = config.get("network", "Unknown")  # Set proper network name
+    temp_world.name = config.get("network")  # Set proper network name
     # Load demand data for visualization
     env.load_demand_for_plotting(temp_world)
     output_path = os.path.join(img_dir, f"00_{config.get('network')}_demand_network.png")
@@ -82,7 +91,7 @@ def create_path_visualization(env, config, routes, img_dir):
     """
     Create network + path overlay visualization for multiple routes.
     """
-    output_path = os.path.join(img_dir, f"{config.get('baseline_type', 'unknown')}_final_routes.png")
+    output_path = os.path.join(img_dir, f"{config.get('baseline_type')}_final_routes.png")
     plot_network_demand_and_path(env.world, routes, output_path)
     print(f"Routes visualization saved to: {output_path}")
 
@@ -91,7 +100,7 @@ def create_fancy_animations(env, config, baseline_save_dir):
     """
     try:
         # Create fancy animation with all vehicles
-        all_vehicles_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type', 'unknown')}_anim_all_vehicles.gif")
+        all_vehicles_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type')}_anim_all_vehicles.gif")
         env.world.analyzer.network_fancy(
             animation_speed_inverse=10,
             figsize=11,
@@ -149,7 +158,7 @@ def summarize_results(results_list):
     return aggregate_results(results_list, result_format='sim')
 
 def write_summary_json(baseline, aggregated):
-    write_results_summary(aggregated, baseline.num_runs, baseline.main_save_dir, 'results_summary.json')
+    write_results_summary(aggregated, baseline.num_runs, baseline.eval_root_dir, 'eval_results_summary.json')
 
 def average_sim_results(results_list):
     if not results_list:
@@ -277,16 +286,16 @@ def execute_runs(baseline, num_runs, base_seed):
     """
     Execute multiple runs for a baseline.
     """
+    eval_offset = baseline.config["eval_seed_offset"]
+    starting_seed = base_seed 
     results = []
     for run in range(num_runs):
-        current_seed = base_seed + run
+        current_seed = starting_seed + (run * eval_offset)
         set_global_seeds(current_seed)
         print(f"\n=== Run {run+1} (Seed: {current_seed}) ===")
         
         # Create seed-specific directory
-        seed_dir = os.path.join(baseline.main_save_dir, f"seed_{current_seed}")
-        img_dir = os.path.join(seed_dir, "images")
-        os.makedirs(img_dir, exist_ok=True)
+        seed_dir, img_dir = make_seed_output_dir(baseline.eval_root_dir, current_seed)
         
         # Reset env
         state, _ = baseline.env.reset()
@@ -315,7 +324,7 @@ class RandomWalk:
         self.world = env.build_world(config.get("network"))
         self.num_runs = num_runs
         self.base_seed = base_seed
-        self.main_save_dir = create_main_save_dir(config)
+        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
@@ -374,7 +383,7 @@ class DemandCoverage:
         self.world = env.build_world(config.get("network"))
         self.num_runs = num_runs
         self.base_seed = base_seed
-        self.main_save_dir = create_main_save_dir(config)
+        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
@@ -451,7 +460,7 @@ class ShortestPath:
         self.world = env.build_world(config.get("network"))
         self.num_runs = num_runs
         self.base_seed = base_seed
-        self.main_save_dir = create_main_save_dir(config)
+        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
@@ -522,7 +531,7 @@ class RewardMaximization:
         self.world = env.build_world(config.get("network"))
         self.num_runs = num_runs
         self.base_seed = base_seed
-        self.main_save_dir = create_main_save_dir(config)
+        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
@@ -600,7 +609,7 @@ class RealWorld:
         self.world = env.build_world(config.get("network"))
         self.num_runs = num_runs
         self.base_seed = base_seed
-        self.main_save_dir = create_main_save_dir(config)
+        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
     
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)

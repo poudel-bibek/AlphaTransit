@@ -11,7 +11,7 @@ from datetime import datetime
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
 from torch_geometric.data import Data, Batch
-from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary
+from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_results_dir, make_seed_output_dir
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 
 class CachedPyGConverter:
@@ -328,18 +328,16 @@ def execute_eval_runs(config: Dict[str, Any], policy_path: str, num_runs: int, b
     -----
     episode_final_reward: this should be a true measure of the policy's performance.
     """
-    print(f"Evaluating policy: {policy_path} for {num_runs} runs with base seed: {base_seed}")
+    print(f"Evaluating policy: {policy_path} for {num_runs} runs starting at seed: {base_seed}")
     
     results = []
     for run in range(num_runs):
-        current_seed = base_seed + run
+        current_seed = base_seed + (run * config["eval_seed_offset"])
         set_global_seeds(current_seed)
         print(f"\n=== Evaluation Run {run+1} (Seed: {current_seed}) ===")
 
         # Create seed-specific directory
-        seed_dir = os.path.join(save_dir, f"eval_seed_{current_seed}")
-        img_dir = os.path.join(seed_dir, "images")
-        os.makedirs(img_dir, exist_ok=True)
+        seed_dir, img_dir = make_seed_output_dir(save_dir, current_seed)
 
         result = single_eval_run(config, policy_path, seed_dir, run + 1)
         results.append(result)
@@ -436,7 +434,7 @@ def summarize_eval_results(results_list):
     """
     return aggregate_results(results_list, result_format='direct')
 
-def write_eval_summary_json(results_list, aggregated, save_dir, num_runs):
+def write_eval_summary_json(aggregated, save_dir, num_runs):
     """
     Write evaluation summary to JSON file using shared function.
     """
@@ -459,12 +457,14 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     print("Evaluating policy: ", policy_path)
 
     num_runs = config["num_eval_runs"]
+    eval_root_dir = ensure_eval_results_dir(save_dir)
+    starting_seed = config["seed"] 
 
     # Run evaluations and aggregate results (works for any number of runs including 1)
-    results, aggregated = execute_eval_runs(config, policy_path, num_runs, config["seed"], save_dir)
+    results, aggregated = execute_eval_runs(config, policy_path, num_runs, starting_seed, eval_root_dir)
 
     # Save summary JSON with statistical information (works for any number of runs)
-    write_eval_summary_json(results, aggregated, save_dir, num_runs)
+    write_eval_summary_json(aggregated, eval_root_dir, num_runs)
 
     # Log averaged results to wandb (for single run, this is just the single result)
     if not config.get("wandb_off"):
@@ -553,6 +553,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_every", type=int, default=2, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
     parser.add_argument("--num_eval_runs", type=int, default=1, help="Number of runs (over which we average the results) for both evaluation and baselines")
+    parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")

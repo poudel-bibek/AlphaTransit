@@ -11,6 +11,26 @@ from collections import defaultdict
 from typing import Any, Dict, Optional, List, Tuple
 
 
+def ensure_eval_results_dir(base_dir: str, folder_name: str = "eval_results") -> str:
+    """
+    Create or reuse the eval results directory for consistent layouts.
+    """
+    eval_dir = os.path.join(base_dir, folder_name)
+    os.makedirs(eval_dir, exist_ok=True)
+    return eval_dir
+
+
+def make_seed_output_dir(eval_root: str, seed: int) -> Tuple[str, str]:
+    """
+    Create the per-seed directory structure for storing evaluation artifacts.
+    """
+    seed_dir = os.path.join(eval_root, f"seed_{seed}")
+    os.makedirs(seed_dir, exist_ok=True)
+    img_dir = os.path.join(seed_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
+    return seed_dir, img_dir
+
+
 def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str]:
     """
     Select a route starting node according to the initialization strategy.
@@ -47,33 +67,14 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
         demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
         for _, row in demand_df_ranked.iterrows():
             candidate_node = row["orig"]
-            if candidate_node in choice_nodes and candidate_node in env.node_to_idx:
+            if candidate_node in choice_nodes:
                 print(f"Initializing route at highest available demand node: {candidate_node}")
                 return [candidate_node]
 
     elif strategy == "transit_center":
-        center_node = str(env.transit_center_node)
-        if center_node in env.node_to_idx:
-            print(f"Initializing route at transit center node: {center_node}")
-            return [center_node]
-
-        print(f"Transit center node {center_node} not found in network; falling back to highest demand node")
-        # Reuse highest demand fallback
-        demand_df_grouped = env.demand_df_cached.groupby("orig").sum(numeric_only=True).reset_index()
-        demand_df_ranked = demand_df_grouped.sort_values("volume", ascending=False)
-        for _, row in demand_df_ranked.iterrows():
-            candidate_node = row["orig"]
-            if candidate_node in choice_nodes and candidate_node in env.node_to_idx:
-                print(f"Fallback initialization at highest available demand node: {candidate_node}")
-                return [candidate_node]
-
-        if choice_nodes:
-            fallback_node = next((node for node in choice_nodes if node in env.node_to_idx), None)
-            if fallback_node is not None:
-                print(f"Fallback initialization at available node: {fallback_node}")
-                return [fallback_node]
-
-        raise ValueError("No valid starting node found for initialization strategy")
+        center_node = env.transit_center_node
+        print(f"Initializing route at transit center node: {center_node}")
+        return [center_node]
 
 def normalize_coordinates(world):
     """
