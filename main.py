@@ -108,22 +108,15 @@ def train(config: Dict[str, Any]) -> None:
     Train the transit route design agent to "learn to design routes".
 
     Note: 
-    # Partial Route Simulation (Per-Step Rewards):
-    - Step 1: Route [A] → Run simulation with 1-node bus "route" → Get reward R1
-    - Step 2: Route [A→B] → Run simulation with 2-node bus route → Get reward R2  
-    - Step 3: Route [A→B→C] → Run simulation with 3-node bus route → Get reward R3
+    ------------------------------------------------------------------------------------------------
+    Per-Step Rewards (Routes run a simulation only on completion):
+    ------------------------------------------------------------------------------------------------
+    - Step 1: Route [A] → Get proxy reward R1
+    - Step 2: Route [A→B] → Get proxy reward R2  
+    - Step 3: Route [A→B→C] if completed → Run full simulation → Get final reward R3
     Pro: Agent gets immediate feedback after each node addition
-    Cons: 
-        - Computationally expensive (compared to route simulation after route completion)
-        - Partial routes might connect zero O-D pairs -> zero reward (still useful for learning?)
-        - For very large networks/ long-routes, becomes a problem
 
-    Objective: max E[R₁ + γR₂ + γ²R₃ + γ³R₄ + ...]
-    Agent learns: "What next node maximizes total discounted reward?"
-
-    # action = env.action_space.sample()
-
-    --------------
+    ------------------------------------------------------------------------------------------------
     Value bootstraping: 
     - Required when an episode ends premeturely (truncated)
     - If terminated naturally, value = 0 (no more rewards coming)

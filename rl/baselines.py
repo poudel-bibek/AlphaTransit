@@ -628,7 +628,7 @@ class RewardMaximization:
                     # Temporarily set path and simulate
                     self.env.current_route = temp_route
                     self.env.world = self.env.build_world(self.env.config.get("network"))
-                    self.env._apply_action()
+                    self.env._apply_action() # is_baseline in this case is not set to True
                     sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
                     reward = self.env.compute_reward(sim_result)
                     print(f"\nReward obtained from choice of {neighbor} = {reward}\n")

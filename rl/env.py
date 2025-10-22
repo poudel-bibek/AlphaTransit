@@ -312,8 +312,8 @@ class TransitEnv(gym.Env):
         
         return gym.spaces.Dict({
             "node_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_nodes, self.N_NODE_FEATURES), dtype=np.float32),  # +1 for is_valid_next
-            "edge_index": gym.spaces.Box(low=0, high=self.n_nodes - 1, shape=(2, self.n_edges), dtype=np.int64), # int64 so torch.from_numpy(...).long() matches PyG expectations
-            "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=(self.n_edges, self.N_EDGE_FEATURES), dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
+            "edge_index": gym.spaces.Box(low=0, high=self.n_nodes - 1, shape=self.edge_index.shape, dtype=np.int64), # int64 so torch.from_numpy(...).long() matches PyG expectations
+            "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=self.edge_features.shape, dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
             "route_progress": gym.spaces.Box(low=0.0, high=1.0, shape=(self.NUM_ROUTES,), dtype=np.float32), # Normalized to 0-1
         })
         
@@ -763,37 +763,16 @@ class TransitEnv(gym.Env):
 
             return frequency
             
-    def _apply_action(self) -> Dict[str, bool]:
+    def _apply_action(self) -> None:
         """
         Invoked internally by step
         - Add stops based on STOP_SPACING.
         - Add necessary vehicles to the world.
             - Add buses based on the current path and SERVICE_FREQUENCY.
-        - Check for route completion conditions and handle transitions
-
-        Args:
-            baseline: If True, skip route completion checks (for baseline evaluation)
-
-        Returns a dict with route completion signals:
-        - route_completed: Route was successfully completed (met min length)
-        - ep_done: All routes have been processed
         """
+        routes_to_simulate = self.all_routes.copy()
 
-        # Check for route completion conditions BEFORE creating buses (skip for baselines)
-        route_completed, ep_done = False, False
-
-        if not self.is_baseline:
-            # Route reached maximum length - complete it successfully
-            if len(self.current_route) >= self.MAX_ROUTE_LENGTH:
-                self.all_routes.append(self.current_route[:])  # Store completed route
-                print(f"Route {self.current_route_index} completed successfully: {self.current_route}")
-                route_completed = True
-
-        # Simulate both completed and current partial route being built (only if current route has at least 2 nodes)
-        routes_to_simulate = self.all_routes.copy()  # Create a copy, not a reference!
-        if not self.is_baseline and len(self.current_route) > 1:
-            routes_to_simulate.append(self.current_route)
-        
+        # Simulate all routes
         for route_idx, route in enumerate(routes_to_simulate):
             # Determine bus stops based on STOP_SPACING for this route
             bus_stops = route[::self.STOP_SPACING]
@@ -806,10 +785,9 @@ class TransitEnv(gym.Env):
                 mode="bus"
             )
 
-            # Pass all routes including current for normalization
-            all_routes_for_freq = self.all_routes + [self.current_route] if self.current_route and len(self.current_route) > 1 else self.all_routes
-            service_frequency_route = self._get_service_frequency(route, all_routes_for_freq)
-            print(f"\nService frequency for route {route_idx}: {service_frequency_route}\n")
+            # Pass all routes for normalization
+            service_frequency_route = self._get_service_frequency(route, routes_to_simulate)
+            print(f"Service frequency for route {route_idx}: {service_frequency_route}")
             # print(f"DEBUG: service_frequency_route type: {type(service_frequency_route)}, value: {service_frequency_route}")
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
@@ -836,10 +814,6 @@ class TransitEnv(gym.Env):
         # Add demand AFTER buses and transit graph are ready
         self.world = self._allocate_demand_by_service(self.world, unserved_as_cars=self.unserved_as_cars)
         
-        return {
-            'route_completed': route_completed, 
-            'ep_done': ep_done
-        }
 
     def _get_final_metrics(self, handler: BusHandler) -> Dict[str, Any]:
         """
@@ -1409,10 +1383,11 @@ class TransitEnv(gym.Env):
             avg_travel = total_travel / served if served > 0 else 0.0
             avg_travel_norm = min(avg_travel / 3600.0, 1.0)  # [0-1] capped at 1
 
-            delta_pot = max(0.0, pot_norm - self.previous_final_reward['demand_coverage_potential'])
-            delta_service = max(0.0, service_norm - self.previous_final_reward['service_rate'])
-            delta_travel = max(0.0, avg_travel_norm - self.previous_final_reward['travel_time'])
-            delta_overlap = max(0.0, overlap - self.previous_final_reward['overlap'])
+            # Do not use max(0.0, ..) make them signed
+            delta_pot = pot_norm - self.previous_final_reward['demand_coverage_potential'] # positive is good
+            delta_service = service_norm - self.previous_final_reward['service_rate']  # positive is good
+            delta_travel = avg_travel_norm - self.previous_final_reward['travel_time'] # negative is good
+            delta_overlap = overlap - self.previous_final_reward['overlap'] # negative is good
             final_reward = (
                 BETA_1 * delta_pot +
                 BETA_2 * delta_service +
@@ -1422,10 +1397,10 @@ class TransitEnv(gym.Env):
             self.previous_final_reward = {'demand_coverage_potential': pot_norm, 'service_rate': service_norm, 'travel_time': avg_travel_norm, 'overlap': overlap}
             print(f"Final reward: {final_reward:.2f}")
             print("Components:")
-            print(f"   Demand coverage potential: {BETA_1 * pot_norm:.2f}")
-            print(f"   Service rate: {BETA_2 * service_norm:.2f}")
-            print(f"   Travel time: {BETA_3 * avg_travel_norm:.2f}")
-            print(f"   Overlap: {BETA_4 * overlap:.2f}")
+            print(f"   Demand coverage potential: {BETA_1 * delta_pot:.2f}")
+            print(f"   Service rate: {BETA_2 * delta_service:.2f}")
+            print(f"   Travel time: {BETA_3 * delta_travel:.2f}")
+            print(f"   Overlap: {BETA_4 * delta_overlap:.2f}")
             
             if is_forced_end:
                 early_ratio = 1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)
@@ -1450,14 +1425,13 @@ class TransitEnv(gym.Env):
         if action == self.NO_VALID_ACTION:
             print("No valid actions found. Forcing the current route to end.")
 
-            # Add current route to all_routes if it meets minimum length requirement
-            if len(self.current_route) >= self.MIN_ROUTE_LENGTH:
-                self.all_routes.append(self.current_route[:])
-                print(f"Added forced-end route {self.current_route_index} to completed routes")
+            # Add current route to all_routes (optionally make it follow the MIN_ROUTE_LENGTH requirement)
+            self.all_routes.append(self.current_route)
+            print(f"Added forced-end route {self.current_route_index} to completed routes")
 
             # Skip the route extension and call the simulation directly.
             self.world = self.build_world(self.config.get("network"))
-            action_signals = self._apply_action()
+            self._apply_action()
 
             # Run the sim so sim_result has the usual metrics for logging.
             sim_result = self._step_until(self.horizon)
@@ -1500,18 +1474,22 @@ class TransitEnv(gym.Env):
         }
 
         if is_route_end: # Only simulate at route end.
+
+            self.all_routes.append(self.current_route)
+            print(f"Added completed route {self.current_route_index} to completed routes")
+            
             # 2. Build world needs to happen every step.
             # i.e., add the network and the classified demand (bus vs car).
             self.world = self.build_world(self.config.get("network"))
             
             # 3. spawn necessary buses, set routes, and handle route completion
-            action_signals = self._apply_action()
+            self._apply_action()
             
             # 4. Run the full simulation upto horizon end.
             sim_result = self._step_until(self.horizon)
             
             # 5. Extract route completion signals 
-            sim_result['route_completed'] = action_signals['route_completed']  # Route completed gracefully 
+            sim_result['route_completed'] = True  # Route completed gracefully 
             sim_result['route_forced_end'] = False
             
         # 6. Compute reward with termination signals
