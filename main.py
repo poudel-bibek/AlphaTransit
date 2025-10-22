@@ -199,7 +199,7 @@ def train(config: Dict[str, Any]) -> None:
 
         while not terminated:
             data = pyg_converter.convert(state)
-            print("\nEpisode data: ")
+            print("\nStep data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
             
             batch = Batch.from_data_list([data])  # Data already on device]
@@ -534,7 +534,8 @@ def main() -> None:
         if not config.get("wandb_off"):
             wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
         train(config)
-        wandb.finish()
+        if not config.get("wandb_off"):
+            wandb.finish()
 
     elif config["mode"] == "eval":
         # If performing eval only

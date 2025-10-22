@@ -1113,14 +1113,14 @@ class TransitEnv(gym.Env):
         avg_travel_time_minutes_ongoing = ongoing_travel_time_minutes / ongoing_passengers if ongoing_passengers > 0 else 0.0
         
         # Service rate calculation (used in both metrics dict and print statements)
-        service_rate_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard']) if initial_metrics['wanting_to_onboard'] > 0 else 0.0
+        service_rate_pct = final_metrics['total_onboarded_count'] / initial_metrics['wanting_to_onboard'] if initial_metrics['wanting_to_onboard'] > 0 else 0.0
         
         # Route efficiency calculation (passengers completed per km of route)
         route_efficiency_passengers_per_km = 1000 * (final_metrics['completed_count'] / initial_metrics['route_length']) if initial_metrics['route_length'] > 0 else 0.0
         
         # Other components
-        demand_coverage_potential_pct = 100 * (initial_metrics['wanting_to_onboard'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
-        demand_coverage_actual_pct = 100 * (final_metrics['total_onboarded_count'] / initial_metrics['total_demand']) if initial_metrics['total_demand'] > 0 else 0.0
+        demand_coverage_potential_pct = initial_metrics['wanting_to_onboard'] / initial_metrics['total_demand'] if initial_metrics['total_demand'] > 0 else 0.0
+        demand_coverage_actual_pct = final_metrics['total_onboarded_count'] / initial_metrics['total_demand'] if initial_metrics['total_demand'] > 0 else 0.0
         route_overlap_ratio = self._calculate_route_overlap_ratio()
 
         # Calculate node coverage percentage
@@ -1354,12 +1354,12 @@ class TransitEnv(gym.Env):
         
         incremental_reward = 0.0
         final_reward = 0.0
-        BETA_0 = 50.0      # Incremental reward component
-        BETA_1 = 50.0      # Demand coverage component (demand served)
-        BETA_2 = 30.0      # Service rate component (demand coverage actual/ demand coverage potential)
-        BETA_3 = -30.0      # Travel time penalty (passenger efficiency)  
-        BETA_4 = -10.0      # Route overlap penalty
-        BETA_5 = -10.0      # Forced end penalty
+        BETA_0 = 20.0      # Incremental reward component
+        BETA_1 = 40.0      # Demand coverage component (demand served)
+        BETA_2 = 200.0      # Service rate component (demand coverage actual/ demand coverage potential)
+        BETA_3 = -1000.0      # Travel time penalty (passenger efficiency)  
+        BETA_4 = -100.0      # Route overlap penalty
+        BETA_5 = -20.0      # Forced end penalty
         
         # For partial routes, use proxy based on potential (no sim_result needed)
         if not is_route_end:
@@ -1375,8 +1375,8 @@ class TransitEnv(gym.Env):
 
         # For completed routes, use actual metrics from simulation
         else: 
-            pot_norm = sim_result['demand_coverage_potential'] / 100.0 # need to be divided by 100 to convert to [0-1]
-            service_norm = sim_result['service_rate'] / 100.0 # need to be divided by 100 to convert to [0-1]
+            pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
+            service_norm = sim_result['service_rate'] # already in [0-1]
             overlap = sim_result['route_overlap_ratio']
 
             total_travel = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
