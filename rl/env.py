@@ -77,7 +77,8 @@ class TransitEnv(gym.Env):
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
         
         self.NO_VALID_ACTION = self.n_nodes # The last id is the action to be taken when valid actions are empty
-        
+        self.previous_partial_reward = 0.0
+        self.previous_final_reward = {'demand_coverage_potential': 0.0, 'service_rate': 0.0, 'travel_time': 0.0, 'overlap': 0.0}
         # Cache demand DataFrame to avoid reading CSV every step
         self.demand_df_cached = df_demand
 
@@ -440,16 +441,17 @@ class TransitEnv(gym.Env):
                 bus_demand += bus_volume_float  # Keep float for logging/analytics
                 car_demand += car_volume_float  # Keep float for logging/analytics
 
-                warmup_steps = int(self.horizon * self.demand_warmup)
-                arrival_window_start = warmup_steps
-                arrival_window_end = self.horizon - warmup_steps
-
                 if car_passengers > 0:
-                    world.adddemand(orig=orig, dest=dest, t_start=arrival_window_start, t_end=arrival_window_end,
+                    # Car demand is spread throughout the horizon.
+                    world.adddemand(orig=orig, dest=dest, t_start=0.0, t_end=self.horizon,
                                     volume=car_passengers, mode="vehicle")
 
                 # Spread bus passengers if served
                 if bus_passengers > 0:
+                    # Car demand does not have to follow the warmup window rule. Only for bus
+                    warmup_steps = int(self.horizon * self.demand_warmup)
+                    arrival_window_start = warmup_steps
+                    arrival_window_end = self.horizon - warmup_steps
                     world.adddemand(orig=orig, dest=dest, t_start=arrival_window_start, t_end=arrival_window_end,
                                     volume=bus_passengers, mode="bus_passenger")
 
@@ -582,6 +584,8 @@ class TransitEnv(gym.Env):
         self.current_route_index = 0   # Start with first route
         self.current_route = initialize_route(self)
         state = self._get_state() # initial state
+        self.previous_partial_reward = 0.0
+        self.previous_final_reward = {'demand_coverage_potential': 0.0, 'service_rate': 0.0, 'travel_time': 0.0, 'overlap': 0.0}
         return state, {}
     
     def build_world(self, network: str) -> World:
@@ -819,7 +823,7 @@ class TransitEnv(gym.Env):
                 sim_horizon=self.horizon # Pass simulation horizon for proper bus spacing
             )
 
-            route_status = "completed" if route in self.all_routes else "current"
+            # route_status = "completed" if route in self.all_routes else "current"
             # print(f"Route {route_idx} ({route_status}) bus '{bus_name}': set_bus_route created additional {len(buses) - 1} buses")
                 
         # Print bus summary AFTER all buses are created
@@ -1286,25 +1290,26 @@ class TransitEnv(gym.Env):
 
     def compute_reward(self, sim_result: Dict[str, int], is_route_end: bool, is_forced_end: bool) -> float:
         """
+        On making reward delta: 
+        - Prevent "Coasting" behavior of the agent when it is not making progress. i.e., prevent it from getting a positive reward when potential did not improve.
+
         ------------------------------------------------------------------------------------------------
         FOR PARTIAL ROUTES:
-        A fast proxy reward for partial routes during route construction.
+        A proxy reward for partial routes during route construction.
         - wanting_to_onboard = Σ_{served ODs} (volume_per_hour * horizon_hours * alpha)
         - total_demand = Σ_{all ODs} (volume_per_hour * horizon_hours)
-        - potential = wanting_to_onboard / total_demand [0-1]
+        - demand coverage potential = wanting_to_onboard / total_demand [0-1]
+            - This is an appropriate measure: 
+                - cheap to compute from route topology and the OD matrix only (no full sim required)
+                - un-affected by dynamics like service frequency
+        - The magnitute of this needs to be significant enough to drive learning but not so large that it dominates the final/ complete route reward.
 
-        This is an appropriate measure: 
-        - Can be obtained from initial metrics calculation.
-        - cheap to compute from route topology and the OD matrix only (no full sim required)
-        - monotone with respect to adding useful connectivity
-        - un-affected by dynamics like service frequency
-        
         ------------------------------------------------------------------------------------------------
         FOR COMPLETED ROUTES:
+
         Design routes that serve the full demand (100% coverage) with high passenger travel efficiency.
         In addition to route performance, we will use some components to help the agent design better routes i.e., complete routes, minimal overlaps.
-        
-        ---------
+    
         Encourage: 
             1. Higher demand coverage potential.
                 - This encourages agent to select include O-D pairs that have high demand.
@@ -1318,6 +1323,7 @@ class TransitEnv(gym.Env):
         2. Forced end: 
             - Early termination: Each route should be designed upto the full max_route_length. This represents poor planning from agent.
             - When invalid (masked) action slips through.
+            - Not getting the route force end penalty is equivalent to getting a bonus for completion.
 
         TODO: Should I add a final reward at the end of the episode? Based on final performace metrics?
         
@@ -1335,12 +1341,13 @@ class TransitEnv(gym.Env):
         
         - Units are normalized: 
             - demand_coverage_potential: [0 to 1] (divide by 100)
-            - demand_coverage_actual: [0 to 1] (divide by 100)
-            - avg_total_travel_time: [0 to perhaps >1] (normalize by max_travel_time = 1 hour)
+            - service_rate: [0 to 1] (divide by 100)
+            - travel_time: [0 to perhaps >1] (normalize by max_travel_time = 1 hour)
             - route_overlap_ratio: [0 to 1] (normalize by max_route_length i.e., max overlap = entire route overlap)
             - forced_end_penalty: [0 to 1] 
-                - For early termination: 1 - (current route ended at what length/ max_route_length)
-                - TODO: For invalid action: set to 1. Not done for now (the probability is very low)
+                - i.e., early termination penalty: 1 - (current route ended at what length/ max_route_length)
+                - TODO: For invalid action: Not done for now (the probability is very low)
+
         ---------
         TODO: On further normalizing the reward: 
         - Applying the Welford Normalization to the returns (not the absolute reward values).
@@ -1353,46 +1360,48 @@ class TransitEnv(gym.Env):
         ---------
         Potential pitfalls: 
         1. If the rewards are too small like 0.0001, then gradients are too small to be effective.
-        2. An improper reward formulation could lead to reward hacking: 
+        2. An improper reward formulation could lead to reward hacking
            
         ---------
-
-        Max reward:
-        - 100% demand coverage: +50
-        - 100% service rate: +30
-        - 0 travel time penalty: +0  
-        - No overlaps: +0
-        - No forced ends: +0
-        → Total: +50
-        
-        Min reward:
-        - 0% demand coverage: +0 (If the demand coverage is 0 then perhaps routes terminated early and overlaps are low)
-        - 0% service rate: +0
-        - Max travel time penalty: -30
-        - Overlap penalty: -5
-        - forced ends: -15
-        → Total: -50
-        
-        Typical range: [-50, +80] 
+        Reward ranges (before delta, on route end):
+            Max reward:
+            - 100% demand coverage: +50
+            - 100% service rate: +30
+            - 0 travel time penalty: +0  (realistically this will not be zero)
+            - No overlaps: +0
+            - No forced ends: +0
+            → Total: +80
+            
+            Min reward:
+            - 0% demand coverage: +0 (If the demand coverage is 0 then perhaps routes terminated early and overlaps are low)
+            - 0% service rate: +0
+            - Max travel time penalty: -30
+            - Overlap penalty: -5
+            - forced ends: -15
+            → Total: -50
+            
+            Typical range: [-50, +80] 
         """
         
         incremental_reward = 0.0
         final_reward = 0.0
-        BETA_0 = 10.0      # Incremental reward component
+        BETA_0 = 50.0      # Incremental reward component
         BETA_1 = 50.0      # Demand coverage component (demand served)
         BETA_2 = 30.0      # Service rate component (demand coverage actual/ demand coverage potential)
         BETA_3 = -30.0      # Travel time penalty (passenger efficiency)  
-        BETA_4 = -20.0      # Route overlap penalty
+        BETA_4 = -10.0      # Route overlap penalty
         BETA_5 = -15.0      # Forced end penalty
         
         # For partial routes, use proxy based on potential (no sim_result needed)
         if not is_route_end:
-            pot_norm = sim_result['demand_coverage_potential']
-            incremental_reward = BETA_0 * pot_norm
+            pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
+            partial_delta = max(0.0, pot_norm - self.previous_partial_reward)
+            incremental_reward = BETA_0 * partial_delta
+            self.previous_partial_reward = pot_norm
             print(f"Incremental reward: {incremental_reward:.2f}")
         else: 
-            pot_norm = sim_result['demand_coverage_potential'] / 100.0
-            service_norm = sim_result['service_rate'] / 100.0
+            pot_norm = sim_result['demand_coverage_potential'] / 100.0 # need to be divided by 100 to convert to [0-1]
+            service_norm = sim_result['service_rate'] / 100.0 # need to be divided by 100 to convert to [0-1]
             overlap = sim_result['route_overlap_ratio']
 
             total_travel = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
@@ -1400,13 +1409,17 @@ class TransitEnv(gym.Env):
             avg_travel = total_travel / served if served > 0 else 0.0
             avg_travel_norm = min(avg_travel / 3600.0, 1.0)  # [0-1] capped at 1
 
+            delta_pot = max(0.0, pot_norm - self.previous_final_reward['demand_coverage_potential'])
+            delta_service = max(0.0, service_norm - self.previous_final_reward['service_rate'])
+            delta_travel = max(0.0, avg_travel_norm - self.previous_final_reward['travel_time'])
+            delta_overlap = max(0.0, overlap - self.previous_final_reward['overlap'])
             final_reward = (
-                BETA_1 * pot_norm +
-                BETA_2 * service_norm +
-                BETA_3 * avg_travel_norm +
-                BETA_4 * overlap 
+                BETA_1 * delta_pot +
+                BETA_2 * delta_service +
+                BETA_3 * delta_travel +
+                BETA_4 * delta_overlap 
             )
-            
+            self.previous_final_reward = {'demand_coverage_potential': pot_norm, 'service_rate': service_norm, 'travel_time': avg_travel_norm, 'overlap': overlap}
             print(f"Final reward: {final_reward:.2f}")
             print("Components:")
             print(f"   Demand coverage potential: {BETA_1 * pot_norm:.2f}")
@@ -1475,13 +1488,13 @@ class TransitEnv(gym.Env):
         print(f"Route {self.current_route_index} extended: {self.current_route}")
         is_route_end = len(self.current_route) >= self.MAX_ROUTE_LENGTH
         
-        # initial metrics can be gotten. 
-        initial_metrics = self._get_initial_metrics()
+        # initial metrics cannot be gotten before transit graph is built. But for transit graph to be built, world must exist.
+        partial_metrics = self._get_partial_route_metrics() 
         sim_result = {
-            'route_length': initial_metrics['route_length'],
-            'wanting_to_onboard': initial_metrics['wanting_to_onboard'],
-            'total_demand': initial_metrics['total_demand'],
-            'demand_coverage_potential': initial_metrics['wanting_to_onboard'] / initial_metrics['total_demand'] if initial_metrics['total_demand'] > 0 else 0.0, #[0-1]
+            'route_length': partial_metrics['route_length'],
+            'wanting_to_onboard': partial_metrics['wanting_to_onboard'],
+            'total_demand': partial_metrics['total_demand'],
+            'demand_coverage_potential': partial_metrics['demand_coverage_potential'],
             'route_completed': False,
             'route_forced_end': False,
         }
@@ -1516,6 +1529,87 @@ class TransitEnv(gym.Env):
                 terminated = True  # Episode is done when all routes are processed
 
         return self._get_state(), reward, terminated, None, sim_result # Truncation is not used.
+    
+    def _get_partial_route_metrics(self) -> Dict[str, float]:
+        """
+        Get fast metrics for the current partial route.
+
+        Builds a lightweight stop graph from all completed routes plus the current route
+        using STOP_SPACING, then measures coverage directly from the OD matrix.
+
+        Returns:
+            - route_length: sum of link lengths for all completed routes plus current route (meters)
+            - wanting_to_onboard: served demand over the horizon multiplied by alpha (passengers)
+            - total_demand: total demand over the horizon (passengers)
+            - demand_coverage_potential: wanting_to_onboard / total_demand in [0, 1]
+        """
+        # 1) Route length over completed routes + current route
+        route_length = 0.0
+
+        def add_route_length(route):
+            nonlocal route_length
+            if len(route) >= 2:
+                for u, v in zip(route, route[1:]):
+                    route_length += float(self.link_lengths.get((str(u), str(v)), 0.0))
+
+        for r in self.all_routes:
+            add_route_length(r)
+        # Avoid double counting if someone calls this after a route was already stored
+        if self.current_route and (self.current_route not in self.all_routes):
+            add_route_length(self.current_route)
+
+        # 2) Build a stop graph from routes using STOP_SPACING
+        G = nx.Graph()
+
+        def add_route_stops(route):
+            if len(route) <= 1:
+                return
+            step = max(1, int(self.STOP_SPACING))
+            stops = [str(n) for n in route[::step]]
+            if not stops:
+                return
+            if len(stops) == 1:
+                G.add_node(stops[0])
+            else:
+                nx.add_path(G, stops)
+
+        for r in self.all_routes:
+            add_route_stops(r)
+        add_route_stops(self.current_route)
+
+        # 3) Compute served and total demand from OD matrix (per hour -> over horizon)
+        M = self.od_matrix
+        if M.size == 0:
+            total_demand = 0.0
+            wanting_to_onboard = 0.0
+        else:
+            M_no_diag = M.copy()
+            if M_no_diag.shape[0] == M_no_diag.shape[1]:
+                np.fill_diagonal(M_no_diag, 0.0)
+
+            hours = float(self.horizon) / 3600.0 if self.horizon else 0.0
+            total_per_hour = float(M_no_diag.sum())
+
+            served_per_hour = 0.0
+            if G.number_of_nodes() > 0:
+                for comp in nx.connected_components(G):
+                    idx = [self.node_to_idx[n] for n in comp if n in self.node_to_idx]
+                    if idx:
+                        served_per_hour += float(M_no_diag[np.ix_(idx, idx)].sum())
+
+            total_demand = total_per_hour * hours
+            wanting_to_onboard = served_per_hour * hours * float(self.alpha)
+
+        # 4) Potential as a fraction
+        potential = (wanting_to_onboard / total_demand) if total_demand > 0.0 else 0.0
+
+        return {
+            'route_length': route_length,
+            'wanting_to_onboard': wanting_to_onboard,
+            'total_demand': total_demand,
+            'demand_coverage_potential': potential,
+        }
+
     
     def _get_valid_indices(self) -> list:
         """
