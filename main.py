@@ -18,6 +18,7 @@ from rl.env_utils import (
     ensure_eval_results_dir,
     make_seed_output_dir,
     save_routes_json,
+    pretty_print_state,
 )
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 
@@ -450,7 +451,7 @@ def summarize_eval_results(results_list):
     """
     Aggregate evaluation results using shared function.
     """
-    return aggregate_results(results_list, result_format='direct')
+    return aggregate_results(results_list)
 
 def write_eval_summary_json(aggregated, save_dir, num_runs):
     """

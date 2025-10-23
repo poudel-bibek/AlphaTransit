@@ -149,19 +149,8 @@ def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
         'sim_result': sim_result
     }
 
-def summarize_results(results_list):
-    """
-    Aggregate per-run metrics using shared function.
-    """
-    return aggregate_results(results_list, result_format='sim')
-
 def write_summary_json(baseline, aggregated):
     write_results_summary(aggregated, baseline.num_runs, baseline.eval_root_dir, 'eval_results_summary.json')
-
-def average_sim_results(results_list):
-    if not results_list:
-        return {}
-    return summarize_results(results_list)
 
 def print_results(results_list, aggregated):
     eval_metrics = {
@@ -304,7 +293,7 @@ def execute_runs(baseline, num_runs, base_seed):
         result = simulate_baseline_routes(baseline.env, baseline.config, routes, img_dir, seed_dir)
         results.append(result)
     
-    aggregated = average_sim_results(results)
+    aggregated = aggregate_results(results)
     print_results(results, aggregated)
     return results, aggregated
 

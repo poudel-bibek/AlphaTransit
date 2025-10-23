@@ -295,7 +295,7 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
     # Default black edges
     edge_colors = ["#000000"] * len(world.NODES)
     node_list = list(world.NODES)
-
+    node_size = 50
     # Note: Starting node coloring removed for cleaner visualization
 
     if show_node_labels:
@@ -306,8 +306,8 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
         for n in world.NODES:
             ax.text(node_to_norm_x[n], node_to_norm_y[n], str(n.name), ha="center", va="center", fontsize=6, color="#000000", zorder=4)
     else:
-        # Show smaller nodes without labels (reduce by 20%)
-        ax.scatter(node_xs_norm, node_ys_norm, s=82, c="white", edgecolors=edge_colors, linewidths=1.0, zorder=3)
+        # Show smaller nodes without labels
+        ax.scatter(node_xs_norm, node_ys_norm, s=node_size, c="white", edgecolors=edge_colors, linewidths=1.0, zorder=3)
 
     # Two-pass route plotting system
     # Pass 1: Identify routes per link (bi-directional)
@@ -394,10 +394,11 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
     labels = []
     for i, route in enumerate(routes):
         color = colors[i % len(colors)]
+        route_number = i + 1
         if show_full_routes:
-            route_text = f"Route {i}: {' → '.join(route)}"
+            route_text = f"Route {route_number}: {' → '.join(route)}"
         else:
-            route_text = f"Route {i}"
+            route_text = f"Route {route_number}"
         handle = plt.Line2D([0], [0], color=color, linewidth=2, label=route_text)
         handles.append(handle)
         labels.append(route_text)
@@ -447,66 +448,52 @@ def calculate_combined_metrics(sim_result: Dict[str, Any]) -> Tuple[float, float
 
     return wait_minutes, travel_minutes
 
-def aggregate_results(results_list: List[Dict[str, Any]], result_format: str = 'sim') -> Dict[str, Any]:
+def aggregate_results(results_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Aggregate results from multiple runs with consistent logic.
-
-    Args:
-        results_list: List of result dictionaries from runs
-        result_format: Either 'sim' (baselines) or 'direct' (evaluation)
-
-    Returns:
-        Dictionary with aggregated metrics and metadata
     """
-    if not results_list:
-        return {}
 
     scalar_series = defaultdict(list)
     distribution_series = defaultdict(list)
     per_run_stats = []
 
     for res in results_list:
-        if result_format == 'sim':
-            # Baselines: results have 'sim_result' key
+        # For Baselines, results have 'sim_result' key
+        if 'sim_result' in res:
             sim = res['sim_result']
 
-            # Extract scalar and distribution metrics
             for key, value in sim.items():
                 if isinstance(value, (int, float)):
                     scalar_series[key].append(float(value))
                 elif isinstance(value, (list, tuple)):
                     distribution_series[key].extend(value)
 
-            # Calculate combined metrics for baselines
-            completed = float(sim['completed_passengers'])
-            ongoing = float(sim['ongoing_passengers'])
-            served = completed + ongoing
-            wait_seconds = float(sim['total_wait_completed']) + float(sim['total_wait_ongoing'])
-            travel_seconds = float(sim['total_travel_completed']) + float(sim['total_travel_ongoing'])
-
-            wait_minutes = (wait_seconds / served) / 60.0 if served > 0 else 0.0
-            travel_minutes = (travel_seconds / served) / 60.0 if served > 0 else 0.0
+            wait_minutes, travel_minutes = calculate_combined_metrics(sim)
 
             scalar_series['combined_avg_wait_minutes'].append(wait_minutes)
             scalar_series['combined_avg_travel_minutes'].append(travel_minutes)
+
+            served = float(sim['completed_passengers']) + float(sim['ongoing_passengers'])
+            wait_seconds = (wait_minutes * 60.0) * served
+            travel_seconds = (travel_minutes * 60.0) * served
 
             per_run_stats.append({
                 'served_passengers': served,
                 'combined_wait_seconds': wait_seconds,
                 'combined_travel_seconds': travel_seconds,
             })
-
-        else:  # result_format == 'direct' (evaluation)
-            # Evaluation: results have metrics directly
+        else: # For Policy Evaluation, results have metrics directly
             for key, value in res.items():
-                if key not in ['sim_result']:  # Skip sim_result if present
-                    scalar_series[key].append(float(value))
+                if key == 'routes':
+                    continue
+                scalar_series[key].append(float(value))
 
+            total_served = res['completed_passengers'] + res['ongoing_passengers']
             per_run_stats.append({
                 'episode_final_reward': res['episode_final_reward'],
-                'served_passengers': res['completed_passengers'] + res['ongoing_passengers'],
-                'combined_wait_seconds': res['combined_avg_wait_minutes'] * 60 * (res['completed_passengers'] + res['ongoing_passengers']),
-                'combined_travel_seconds': res['combined_avg_travel_minutes'] * 60 * (res['completed_passengers'] + res['ongoing_passengers']),
+                'served_passengers': total_served,
+                'combined_wait_seconds': res['combined_avg_wait_minutes'] * 60 * total_served,
+                'combined_travel_seconds': res['combined_avg_travel_minutes'] * 60 * total_served,
             })
 
     # Calculate aggregated values
