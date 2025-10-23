@@ -169,7 +169,7 @@ class GATV2ActorCritic(nn.Module):
         if valid_indices is None:
             return logits
 
-        MASK_VALUE = -1e9  # Large negative instead of -inf to avoid NaNs
+        MASK_VALUE = -float("inf") 
         mask = torch.zeros_like(logits, dtype=torch.bool)
 
         batch_size = logits.shape[0]
@@ -371,6 +371,10 @@ class GATV2ActorCritic(nn.Module):
         #     return dummy_action, dummy_log_prob, values
         
         dist, values = self._compute_dist_and_value(graph_batch, valid_indices)
+
+        # print(f"[DEBUG] Dist: {dist.logits.shape}")
+        # print(f"[DEBUG] Dist logits values: {dist.logits.detach().cpu().numpy()}")
+        # print(f"[DEBUG] Values: {values.detach().cpu().numpy()}")
         
         if deterministic:
             actions = dist.logits.argmax(-1)

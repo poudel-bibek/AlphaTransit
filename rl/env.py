@@ -78,8 +78,10 @@ class TransitEnv(gym.Env):
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
         
         self.NO_VALID_ACTION = self.n_nodes # The last id is the action to be taken when valid actions are empty
-        self.previous_partial_reward = 0.0
-        self.previous_final_reward = {'demand_coverage_potential': 0.0, 'service_rate': 0.0, 'travel_time': 0.0, 'overlap': 0.0}
+        self.previous_partial_reward = {
+            'demand_coverage_potential': 0.0,
+            'route_overlap': 0.0,
+        }
         # Cache demand DataFrame to avoid reading CSV every step
         self.demand_df_cached = df_demand
 
@@ -578,15 +580,15 @@ class TransitEnv(gym.Env):
     
     def reset( self, ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        TODO: Can I just sample the action space and get a random initial state?
         """
-
         self.all_routes = []           # Reset completed routes
         self.current_route_index = 0   # Start with first route
         self.current_route = initialize_route(self)
         state = self._get_state() # initial state
-        self.previous_partial_reward = 0.0
-        self.previous_final_reward = {'demand_coverage_potential': 0.0, 'service_rate': 0.0, 'travel_time': 0.0, 'overlap': 0.0}
+        self.previous_partial_reward = {
+            'demand_coverage_potential': 0.0,
+            'route_overlap': 0.0,
+        }
         return state, {}
     
     def build_world(self, network: str) -> World:
@@ -1032,30 +1034,29 @@ class TransitEnv(gym.Env):
     
     def _calculate_route_overlap_ratio(self) -> float:
         """
-        Calculate the ratio of overlapped segments in routes.
-        Logic: 
-        - pair-wise node overlap across all routes.
-        Returns:
-            - Ratio of overlapped segments [0-1]
-            - 0.0 = No overlaps
-            - 1.0 = All segments overlap
+        Calculate average overlapped segment ratio across routes.
+        Pairwise edge overlap is normalized by the shorter route length.
+        Range: 0.0 (no overlap) to 1.0 (complete overlap).
         """
         total_routes = self.all_routes + [self.current_route]
         num_routes = len(total_routes)
-
-        # No overlap possible if there is only one route
-        if num_routes <= 1:
-            return 0.0
-        
+        edge_sets = []
         overlap_sum = 0.0
         num_pairs = 0
 
+        for route in total_routes:
+            edges = set()
+            if len(route) >= 2:
+                for idx in range(len(route) - 1):
+                    edges.add((str(route[idx]), str(route[idx + 1])))
+            edge_sets.append(edges)
+
         for i in range(num_routes):
             for j in range(i + 1, num_routes):
-                set_i = set(total_routes[i])
-                set_j = set(total_routes[j])
-                common = len(set_i & set_j)
-                min_len = min(len(set_i), len(set_j))
+                edges_i = edge_sets[i]
+                edges_j = edge_sets[j]
+                min_len = min(len(edges_i), len(edges_j))
+                common = len(edges_i & edges_j)
                 pair_ratio = common / min_len if min_len > 0 else 0.0
                 overlap_sum += pair_ratio
                 num_pairs += 1
@@ -1259,19 +1260,22 @@ class TransitEnv(gym.Env):
 
     def compute_reward(self, sim_result: Dict[str, int], is_route_end: bool, is_forced_end: bool) -> float:
         """
-        On making reward delta: 
-        - Prevent "Coasting" behavior of the agent when it is not making progress. i.e., prevent it from getting a positive reward when potential did not improve.
-
         ------------------------------------------------------------------------------------------------
         FOR PARTIAL ROUTES:
         A proxy reward for partial routes during route construction.
-        - wanting_to_onboard = Σ_{served ODs} (volume_per_hour * horizon_hours * alpha)
-        - total_demand = Σ_{all ODs} (volume_per_hour * horizon_hours)
-        - demand coverage potential = wanting_to_onboard / total_demand [0-1]
+        - Component 1: demand coverage potential = wanting_to_onboard / total_demand [0-1]
+            - wanting_to_onboard = Σ_{served ODs} (volume_per_hour * horizon_hours * alpha)
+            - total_demand = Σ_{all ODs} (volume_per_hour * horizon_hours)
             - This is an appropriate measure: 
                 - cheap to compute from route topology and the OD matrix only (no full sim required)
                 - un-affected by dynamics like service frequency
         - The magnitute of this needs to be significant enough to drive learning but not so large that it dominates the final/ complete route reward.
+        
+        - Component 2: Route overlap ratio
+            - Number of overlapped edges / total number of edges in the shorter route
+            
+        - On making partial reward delta: 
+            - Prevent "Coasting" behavior of the agent when it is not making progress. i.e., prevent it from getting a positive reward when potential did not improve.
 
         ------------------------------------------------------------------------------------------------
         FOR COMPLETED ROUTES:
@@ -1354,20 +1358,28 @@ class TransitEnv(gym.Env):
         
         incremental_reward = 0.0
         final_reward = 0.0
-        BETA_0 = 20.0      # Incremental reward component
-        BETA_1 = 40.0      # Demand coverage component (demand served)
-        BETA_2 = 200.0      # Service rate component (demand coverage actual/ demand coverage potential)
-        BETA_3 = -1000.0      # Travel time penalty (passenger efficiency)  
-        BETA_4 = -100.0      # Route overlap penalty
+        BETA_0 = 40.0      # Incremental reward component
+        BETA_1 = 20.0      # Demand coverage component (demand served)
+        BETA_2 = 20.0      # Service rate component (demand coverage actual/ demand coverage potential)
+        BETA_3 = -20.0      # Travel time penalty (passenger efficiency)  
+        BETA_4 = -20.0      # Route overlap penalty
         BETA_5 = -20.0      # Forced end penalty
         
         # For partial routes, use proxy based on potential (no sim_result needed)
         if not is_route_end:
             pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
-            partial_delta = max(0.0, pot_norm - self.previous_partial_reward)
-            incremental_reward = BETA_0 * partial_delta
-            self.previous_partial_reward = pot_norm
+            overlap_ratio = sim_result['route_overlap_ratio']
+
+            demand_delta = pot_norm - self.previous_partial_reward['demand_coverage_potential']
+            overlap_delta = overlap_ratio - self.previous_partial_reward['route_overlap']
+            incremental_reward = (BETA_0 * demand_delta) + (BETA_4 * overlap_delta)
+
+            self.previous_partial_reward['demand_coverage_potential'] = pot_norm
+            self.previous_partial_reward['route_overlap'] = overlap_ratio
+
             print(f"Incremental reward: {incremental_reward}")
+            print(f"   Demand delta: {demand_delta:.4f}")
+            print(f"   Overlap delta: {overlap_delta:.4f}")
 
             if is_forced_end:
                 incremental_reward += BETA_5 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH))
@@ -1377,31 +1389,29 @@ class TransitEnv(gym.Env):
         else: 
             pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
             service_norm = sim_result['service_rate'] # already in [0-1]
-            overlap = sim_result['route_overlap_ratio']
+            overlap_ratio = sim_result['route_overlap_ratio']
 
             total_travel = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
             served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
             avg_travel = total_travel / served if served > 0 else 0.0
             avg_travel_norm = min(avg_travel / 3600.0, 1.0)  # [0-1] capped at 1
 
-            # Do not use max(0.0, ..) make them signed
-            delta_pot = pot_norm - self.previous_final_reward['demand_coverage_potential'] # positive is good
-            delta_service = service_norm - self.previous_final_reward['service_rate']  # positive is good
-            delta_travel = avg_travel_norm - self.previous_final_reward['travel_time'] # negative is good
-            delta_overlap = overlap - self.previous_final_reward['overlap'] # negative is good
             final_reward = (
-                BETA_1 * delta_pot +
-                BETA_2 * delta_service +
-                BETA_3 * delta_travel +
-                BETA_4 * delta_overlap 
+                BETA_1 * pot_norm +
+                BETA_2 * service_norm +
+                BETA_3 * avg_travel_norm +
+                BETA_4 * overlap_ratio 
             )
-            self.previous_final_reward = {'demand_coverage_potential': pot_norm, 'service_rate': service_norm, 'travel_time': avg_travel_norm, 'overlap': overlap}
+            
             print(f"Final reward: {final_reward:.2f}")
             print("Components:")
-            print(f"   Demand coverage potential: {BETA_1 * delta_pot:.2f}")
-            print(f"   Service rate: {BETA_2 * delta_service:.2f}")
-            print(f"   Travel time: {BETA_3 * delta_travel:.2f}")
-            print(f"   Overlap: {BETA_4 * delta_overlap:.2f}")
+            print(f"   Demand coverage potential: {BETA_1 * pot_norm:.2f}")
+            print(f"   Service rate: {BETA_2 * service_norm:.2f}")
+            print(f"   Travel time: {BETA_3 * avg_travel_norm:.2f}")
+            print(f"   Overlap: {BETA_4 * overlap_ratio:.2f}")
+
+            self.previous_partial_reward['demand_coverage_potential'] = pot_norm
+            self.previous_partial_reward['route_overlap'] = overlap_ratio
             
         return incremental_reward + final_reward
 
@@ -1465,6 +1475,7 @@ class TransitEnv(gym.Env):
             'wanting_to_onboard': partial_metrics['wanting_to_onboard'],
             'total_demand': partial_metrics['total_demand'],
             'demand_coverage_potential': partial_metrics['demand_coverage_potential'],
+            'route_overlap_ratio': partial_metrics['route_overlap_ratio'],
             'route_completed': False,
             'route_forced_end': False,
         }
@@ -1528,7 +1539,7 @@ class TransitEnv(gym.Env):
 
         for r in self.all_routes:
             add_route_length(r)
-        # Avoid double counting if someone calls this after a route was already stored
+            
         if self.current_route and (self.current_route not in self.all_routes):
             add_route_length(self.current_route)
 
@@ -1576,12 +1587,15 @@ class TransitEnv(gym.Env):
 
         # 4) Potential as a fraction
         potential = (wanting_to_onboard / total_demand) if total_demand > 0.0 else 0.0
-
+ 
+        # 5) Route overlap ratio
+        overlap_ratio = self._calculate_route_overlap_ratio()
         return {
             'route_length': route_length,
             'wanting_to_onboard': wanting_to_onboard,
             'total_demand': total_demand,
             'demand_coverage_potential': potential,
+            'route_overlap_ratio': overlap_ratio,
         }
 
     

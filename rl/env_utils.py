@@ -27,7 +27,7 @@ def ensure_eval_results_dir(
     if episode is None:
         return target_dir
 
-    episode_dir = os.path.join(target_dir, f"eval_epi_{episode}")
+    episode_dir = os.path.join(target_dir, f"eval_ep_{episode}")
     os.makedirs(episode_dir, exist_ok=True)
     return episode_dir
 
@@ -128,18 +128,33 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     Print observation fields in a readable format.
     Shows shapes, samples, and mappings.
     """
+    node_features = state["node_features"]
+    edge_index = state["edge_index"]
+    edge_features = state["edge_features"]
+    route_progress = state["route_progress"]
+
     # Node and edge counts
-    num_nodes_obs = state["node_features"].shape[0]
-    num_edges_obs = state["edge_index"].shape[1]
+    num_nodes_obs = node_features.shape[0]
+    num_edges_obs = edge_index.shape[1]
     resolved_max_nodes = num_nodes_obs if max_nodes is None else max_nodes
     resolved_max_edges = num_edges_obs if max_edges is None else max_edges
 
     # Steps
-    route_progress = float(state["route_progress"][0])  # Current route progress
-    steps_taken = len(self.current_route) - 1
+    current_route_length = len(self.current_route)
+    steps_taken = max(current_route_length - 1, 0)
+    active_route_progress = float(route_progress[self.current_route_index])
+
     print(f"\n=== State Summary ===")
-    print(f"Current route: {self.current_route}")
-    print(f"Steps taken / max: {steps_taken} / {self.MAX_ROUTE_LENGTH} (route_progress={route_progress:.3f})")
+    print(f"Current route (index {self.current_route_index}): {self.current_route}")
+    print(
+        "Steps taken / max: "
+        f"{steps_taken} / {self.MAX_ROUTE_LENGTH} "
+        f"(active route progress={active_route_progress:.3f})"
+    )
+
+    rp_series = pd.Series(route_progress, name="normalized_length")
+    with pd.option_context('display.max_rows', None, 'display.width', 120):
+        print("\nRoute progress by route index:\n", rp_series.round(3))
 
     # Node features
     feature_names = [
@@ -148,29 +163,43 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
         "d_out_completed_routes", "d_in_completed_routes",
         "in_current_route_flag", "is_valid_next", "in_completed_routes_flag",
     ]
-    nf_df = pd.DataFrame(state["node_features"], index=self.node_list, columns=feature_names)
+    node_feature_dim = node_features.shape[1]
+    if node_feature_dim != len(feature_names):
+        feature_names = feature_names[:node_feature_dim]
+        if len(feature_names) < node_feature_dim:
+            feature_names.extend(
+                f"feature_{idx}" for idx in range(len(feature_names), node_feature_dim)
+            )
+
+    nf_df = pd.DataFrame(node_features, index=self.node_list, columns=feature_names)
     with pd.option_context('display.max_rows', resolved_max_nodes, 'display.max_columns', 8, 'display.width', 120):
         print("\nNode features (sample):\n", nf_df.round(4))
 
     # Edges
-    edge_index = state["edge_index"]
-    edge_features = state["edge_features"]
     num_edges = edge_index.shape[1]
     print(f"\nEdges: {num_edges}")
     preview = min(resolved_max_edges, num_edges)
+    edge_feature_dim = edge_features.shape[1]
+    edge_feature_names = ["length_norm", "speed_norm"]
+    if edge_feature_dim != len(edge_feature_names):
+        edge_feature_names = edge_feature_names[:edge_feature_dim]
+        if len(edge_feature_names) < edge_feature_dim:
+            edge_feature_names.extend(
+                f"edge_feature_{idx}" for idx in range(len(edge_feature_names), edge_feature_dim)
+            )
+
     rows = []
     for e in range(preview):
         src_idx = int(edge_index[0, e])
         dst_idx = int(edge_index[1, e])
         src = self.idx_to_node[src_idx]
         dst = self.idx_to_node[dst_idx]
-        length_n, speed_n = [float(x) for x in edge_features[e]]
-        rows.append({
-            "src": src,
-            "dst": dst,
-            "length_norm": round(length_n, 4),
-            "speed_norm": round(speed_n, 4),
-        })
+        feature_values = edge_features[e]
+        row = {"src": src, "dst": dst}
+        for idx, feature_name in enumerate(edge_feature_names):
+            row[feature_name] = round(float(feature_values[idx]), 4)
+        rows.append(row)
+
     ef_df = pd.DataFrame(rows)
     print("Edge samples:\n", ef_df)
 

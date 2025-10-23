@@ -200,7 +200,7 @@ def train(config: Dict[str, Any]) -> None:
         print(f"\n=== Episode {episode} ===")
         
         state, _ = env.reset()
-        # pretty_print_state(env, state)
+        pretty_print_state(env, state)
         episode_steps = 0
         terminated = False
         bootstrap_value = None  # Initialize outside loop
@@ -229,7 +229,7 @@ def train(config: Dict[str, Any]) -> None:
             # 4. Always call the policy so PPO has log_prob and value
             with torch.no_grad():
                 action_tensor, log_prob_tensor, value_tensor = model.act(batch, 
-                                                                    deterministic=False, 
+                                                                    deterministic=True, 
                                                                     valid_indices=valid_indices,
                                                                     truncated=False)
                 print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
@@ -391,7 +391,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         
         with torch.no_grad():
             action_tensor, _, _ = model.act(batch,
-            deterministic=True,
+            deterministic=False,
             valid_indices=valid_indices,
             truncated=False)
  
@@ -570,7 +570,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
-    parser.add_argument("--eval_every", type=int, default=2, help="Evaluate every N updates to the policy")
+    parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of runs (over which we average the results) for both evaluation and baselines")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
