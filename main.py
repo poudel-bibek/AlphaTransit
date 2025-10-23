@@ -11,7 +11,14 @@ from datetime import datetime
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
 from torch_geometric.data import Data, Batch
-from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_results_dir, make_seed_output_dir
+from rl.env_utils import (
+    plot_network_and_demand,
+    aggregate_results,
+    write_results_summary,
+    ensure_eval_results_dir,
+    make_seed_output_dir,
+    save_routes_json,
+)
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 
 class CachedPyGConverter:
@@ -138,7 +145,8 @@ def train(config: Dict[str, Any]) -> None:
     
     now = datetime.now()
     training_save_dir = os.path.join(config["save_dir"], f"{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}")
-    img_dir = os.path.join(training_save_dir, "images")
+    # img_dir = os.path.join(training_save_dir, "images")
+    img_dir = training_save_dir
     os.makedirs(img_dir, exist_ok=True)
 
     # Build world for initial visualization
@@ -346,6 +354,7 @@ def execute_eval_runs(
         seed_dir, img_dir = make_seed_output_dir(save_dir, current_seed)
 
         result = single_eval_run(config, policy_path, seed_dir, run + 1)
+        save_routes_json(seed_dir, result['routes'])
         results.append(result)
 
     aggregated = summarize_eval_results(results)
@@ -401,18 +410,20 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
 
     # Generate visualizations for this run
     env.render(save_dir, f"eval_run_{run_number}.png")
-    env.world.analyzer.network_fancy(
-        animation_speed_inverse=10,
-        figsize=11,
-        sample_ratio=1.0,
-        interval=5,
-        trace_length=5,
-        network_font_size=11,
-        antialiasing=False,
-        file_name=os.path.join(save_dir, f"eval_anim_run_{run_number}.gif"),
-        save_as_mp4=False,
-        # bus_only = False 
-    )
+
+    if config["save_animations"]: # Takes almost 40 seconds per run.
+        env.world.analyzer.network_fancy(
+            animation_speed_inverse=10,
+            figsize=11,
+            sample_ratio=1.0,
+            interval=5,
+            trace_length=5,
+            network_font_size=11,
+            antialiasing=False,
+            file_name=os.path.join(save_dir, f"eval_anim_run_{run_number}.gif"),
+            save_as_mp4=False,
+            bus_only = True # 
+        )
 
     return {
         'episode_final_reward': episode_final_reward,
@@ -432,6 +443,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         'route_efficiency': sim_result['route_efficiency'],
         'fleet_size': sim_result['fleet_size'],
         'bus_utilization': sim_result['bus_utilization'],
+        'routes': env.all_routes,
     }
 
 def summarize_eval_results(results_list):
@@ -561,6 +573,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of runs (over which we average the results) for both evaluation and baselines")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
+    parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
 
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
@@ -660,11 +673,11 @@ if __name__ == "__main__":
 
 """
 Scripts: 
-python main.py --mode=baseline --baseline_type=demand_cover
-python main.py --mode=baseline --baseline_type=random_walk
-python main.py --mode=baseline --baseline_type=shortest_path
-python main.py --mode=baseline --baseline_type=reward_max
-python main.py --mode=baseline --baseline_type=real_world
+python main.py --mode=baseline --baseline_type=demand_cover --save_animations
+python main.py --mode=baseline --baseline_type=random_walk --save_animations
+python main.py --mode=baseline --baseline_type=shortest_path --save_animations
+python main.py --mode=baseline --baseline_type=reward_max --save_animations
+python main.py --mode=baseline --baseline_type=real_world --save_animations
 
 python main.py --gpu --concat_heads
 

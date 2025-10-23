@@ -1613,7 +1613,8 @@ class TransitEnv(gym.Env):
         # Only add current_route if it's not already in all_routes (avoid duplicates)
         if self.current_route and len(self.current_route) > 1 and self.current_route not in all_routes_to_display:
             all_routes_to_display.append(self.current_route)
-
-        output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
+  
+        # output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
+        output_loc = os.path.join(save_dir, render_name)
         plot_network_demand_and_path(self.world, all_routes_to_display, output_loc)
 

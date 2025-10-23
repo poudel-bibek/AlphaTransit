@@ -38,10 +38,25 @@ def make_seed_output_dir(eval_root: str, seed: int) -> Tuple[str, str]:
     """
     seed_dir = os.path.join(eval_root, f"seed_{seed}")
     os.makedirs(seed_dir, exist_ok=True)
-    img_dir = os.path.join(seed_dir, "images")
+    # img_dir = os.path.join(seed_dir, "images")
+    img_dir = seed_dir
     os.makedirs(img_dir, exist_ok=True)
     return seed_dir, img_dir
 
+
+def save_routes_json(target_dir: str, routes: List[List[str]]) -> None:
+    """
+    Persist designed routes to JSON artifacts for auditing.
+    Convert node identifiers to strings for consistent storage.
+    """
+    route_payload = {
+        f"route_{idx}": [str(node) for node in route]
+        for idx, route in enumerate(routes, start=1)
+    }
+
+    output_path = os.path.join(target_dir, "designed_routes.json")
+    with open(output_path, "w", encoding="utf-8") as fp:
+        json.dump(route_payload, fp, indent=2)
 
 def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str]:
     """

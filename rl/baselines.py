@@ -47,6 +47,7 @@ from rl.env_utils import (
     write_results_summary,
     ensure_eval_results_dir,
     make_seed_output_dir,
+    save_routes_json,
 )
 
 def set_global_seeds(seed: int) -> None:
@@ -98,26 +99,20 @@ def create_path_visualization(env, config, routes, img_dir):
 def create_fancy_animations(env, config, baseline_save_dir):
     """
     """
-    try:
-        # Create fancy animation with all vehicles
-        all_vehicles_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type')}_anim_all_vehicles.gif")
-        env.world.analyzer.network_fancy(
-            animation_speed_inverse=10,
-            figsize=11,
-            sample_ratio=1.0,
-            interval=5,
-            trace_length=5,
-            network_font_size=11,
-            antialiasing=False,
-            file_name=all_vehicles_anim_path,
-            save_as_mp4=False,
-            # bus_only=True
-        )
-        print(f"All vehicles animation saved to: {all_vehicles_anim_path}")
-        
-    except Exception as e:
-        print(f"Warning: Could not create fancy animations: {e}")
-        print("This might be due to insufficient simulation data or missing dependencies.")
+    all_vehicles_anim_path = os.path.join(baseline_save_dir, f"{config.get('baseline_type')}_anim_all_vehicles.gif")
+    env.world.analyzer.network_fancy(
+        animation_speed_inverse=10,
+        figsize=11,
+        sample_ratio=1.0,
+        interval=5,
+        trace_length=5,
+        network_font_size=11,
+        antialiasing=False,
+        file_name=all_vehicles_anim_path,
+        save_as_mp4=False,
+        # bus_only=True
+    )
+    print(f"All vehicles animation saved to: {all_vehicles_anim_path}")
 
 def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
     """
@@ -145,8 +140,11 @@ def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
 
     # Generate visualizations using standalone functions
     create_path_visualization(env, config, routes, img_dir)
-    create_fancy_animations(env, config, baseline_save_dir)
 
+    if config["save_animations"]:
+        create_fancy_animations(env, config, baseline_save_dir)
+
+    save_routes_json(baseline_save_dir, routes)
     return {
         'sim_result': sim_result
     }
