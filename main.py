@@ -229,7 +229,7 @@ def train(config: Dict[str, Any]) -> None:
             # 4. Always call the policy so PPO has log_prob and value
             with torch.no_grad():
                 action_tensor, log_prob_tensor, value_tensor = model.act(batch, 
-                                                                    deterministic=True, 
+                                                                    deterministic=False, 
                                                                     valid_indices=valid_indices,
                                                                     truncated=False)
                 print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
@@ -391,7 +391,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         
         with torch.no_grad():
             action_tensor, _, _ = model.act(batch,
-            deterministic=False,
+            deterministic=True,
             valid_indices=valid_indices,
             truncated=False)
  

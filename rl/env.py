@@ -6,19 +6,13 @@ import pandas as pd
 import gymnasium as gym
 from uxsim import World
 from pathlib import Path
-
-from collections import defaultdict
+from collections import defaultdict, Counter
 from uxsim.BusHandler import BusHandler
 from rl.env_utils import plot_network_demand_and_path, initialize_route
 from typing import Any, Dict, Optional, Tuple, List 
 
 class TransitEnv(gym.Env):
-    """
-    Transit environment for RL.
-    """
-
     metadata = {"render_modes": []}
-
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         """
         The order of operations performed in the constructor matters. 
@@ -78,10 +72,6 @@ class TransitEnv(gym.Env):
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
         
         self.NO_VALID_ACTION = self.n_nodes # The last id is the action to be taken when valid actions are empty
-        self.previous_partial_reward = {
-            'demand_coverage_potential': 0.0,
-            'route_overlap': 0.0,
-        }
         # Cache demand DataFrame to avoid reading CSV every step
         self.demand_df_cached = df_demand
 
@@ -564,7 +554,8 @@ class TransitEnv(gym.Env):
         route_progress = np.zeros(self.NUM_ROUTES, dtype=np.float32)
         for i, route in enumerate(self.all_routes):
             route_progress[i] = len(route) / self.MAX_ROUTE_LENGTH
-        print(f"\nAll routes: {self.all_routes}, length: {len(self.all_routes)}\n")
+        print(f"\nCurrent route: {self.current_route}, length: {len(self.current_route)}")
+        print(f"All routes: {self.all_routes}, length: {len(self.all_routes)}\n")
         if self.current_route_index < self.NUM_ROUTES:  # Only if there's a current route being built
             route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
         
@@ -585,10 +576,6 @@ class TransitEnv(gym.Env):
         self.current_route_index = 0   # Start with first route
         self.current_route = initialize_route(self)
         state = self._get_state() # initial state
-        self.previous_partial_reward = {
-            'demand_coverage_potential': 0.0,
-            'route_overlap': 0.0,
-        }
         return state, {}
     
     def build_world(self, network: str) -> World:
@@ -1031,37 +1018,68 @@ class TransitEnv(gym.Env):
                 total_demand += total_volume
 
         return {'route_length': route_length, 'wanting_to_onboard': wanting_to_onboard, 'total_demand': total_demand}
-    
+        
     def _calculate_route_overlap_ratio(self) -> float:
         """
-        Calculate average overlapped segment ratio across routes.
-        Pairwise edge overlap is normalized by the shorter route length.
-        Range: 0.0 (no overlap) to 1.0 (complete overlap).
+        Route overlap ratio in [0, 1] 
+        Overlap is computed on undirected segments:
+        - Segment [u, v] on one route and [v, u] on another are treated as the same segment.
+        - Each route contributes each segment at most once (dedup within the route).
+
+        Definition
+        ----------
+        Let the nonempty route set be R_eff routes, where a route is nonempty if it has at least one edge.
+        Build the multiset of unique undirected segments S across those routes. For each segment s in S:
+            c_s = number of routes that contain s
+            d_s = (c_s - 1) / (R_eff - 1)         in [0, 1]
+        The final ratio is the average of d_s over S:
+            overlap_ratio = (1 / |S|) * sum_{s in S} d_s
+        This yields:
+        - 0 when every segment appears in exactly one route
+        - 1 when every segment is used by all nonempty routes
+        - A smooth increase as c_s grows from 1 to R_eff
         """
+        
+        # Collect all routes to consider: completed plus the current route in progress
         total_routes = self.all_routes + [self.current_route]
-        num_routes = len(total_routes)
-        edge_sets = []
-        overlap_sum = 0.0
-        num_pairs = 0
 
+        # Build a set of undirected segments for each route, skipping empty routes
+        # An undirected segment is represented by a sorted tuple (min(u, v), max(u, v))
+        segments_per_route = []
         for route in total_routes:
-            edges = set()
-            if len(route) >= 2:
-                for idx in range(len(route) - 1):
-                    edges.add((str(route[idx]), str(route[idx + 1])))
-            edge_sets.append(edges)
+            if not route or len(route) < 2:
+                continue
+            segs = set()
+            for a, b in zip(route, route[1:]):
+                a, b = str(a), str(b)
+                if a == b:
+                    continue
+                segs.add((a, b) if a < b else (b, a))  # undirected key
+            if segs:
+                segments_per_route.append(segs)
 
-        for i in range(num_routes):
-            for j in range(i + 1, num_routes):
-                edges_i = edge_sets[i]
-                edges_j = edge_sets[j]
-                min_len = min(len(edges_i), len(edges_j))
-                common = len(edges_i & edges_j)
-                pair_ratio = common / min_len if min_len > 0 else 0.0
-                overlap_sum += pair_ratio
-                num_pairs += 1
+        # Need at least 2 routes with at least one segment to have any overlap
+        R_eff = len(segments_per_route)
+        if R_eff < 2:
+            return 0.0
 
-        return overlap_sum / num_pairs if num_pairs > 0 else 0.0
+        # Count how many routes use each segment
+        segment_counts = Counter()
+        for segs in segments_per_route:
+            segment_counts.update(segs)
+
+        # If no segments at all, ratio is 0
+        if not segment_counts:
+            return 0.0
+
+        # Average normalized overlap depth over unique segments
+        denom_segments = len(segment_counts)
+        depth_sum = sum((c - 1) / (R_eff - 1) for c in segment_counts.values())
+        ratio = depth_sum / denom_segments
+
+        # Numerical safety clamp
+        return float(max(0.0, min(1.0, ratio)))
+
     
     def _step_until(self, until_t: int, print_metrics: bool = True) -> Dict[str, int]:
         """
@@ -1188,9 +1206,9 @@ class TransitEnv(gym.Env):
             print("\nROUTE INFORMATION:")
             print(f"   All Routes:                {self.all_routes}")
             print(f"   Current Route:               {' → '.join(current_route_str)}")
-            print(f"   Route Length:             {metrics['route_length']/1000:.2f} km")
-            print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.1f} km/h)")
-            print(f"   Bus Utilization:          {metrics['bus_utilization']:.1f}%")
+            print(f"   Route Length:             {metrics['route_length']/1000:.2f} km ({len(self.current_route)} nodes)")
+            print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.2f} km/h)")
+            print(f"   Bus Utilization:          {metrics['bus_utilization']:.2f}%")
             print(f"   Fleet Size:               {metrics['fleet_size']} buses")
             
             # Passenger Counts
@@ -1204,29 +1222,29 @@ class TransitEnv(gym.Env):
             # Time Metrics - Aggregated
             print("\nAGGREGATE TIME METRICS:")
             print(f"   Simulation Duration:      {until_t:,} seconds")
-            print(f"   Total Wait Time (completed):   {total_wait_time_minutes:.1f} minutes")
-            print(f"   Total Wait Time (ongoing):     {ongoing_wait_time_minutes:.1f} minutes")
-            print(f"   │  └─ Still Waiting:           {wait_time_sim_end_minutes:.1f} minutes")
-            print(f"   Total Movement Time (completed): {movement_time_minutes:.1f} minutes")
-            print(f"   Total Movement Time (ongoing):   {ongoing_movement_time_minutes:.1f} minutes")
-            print(f"   Total Travel Time (completed):   {total_travel_time_minutes:.1f} minutes")
-            print(f"   Total Travel Time (ongoing):     {ongoing_travel_time_minutes:.1f} minutes")
+            print(f"   Total Wait Time (completed):   {total_wait_time_minutes:.2f} minutes")
+            print(f"   Total Wait Time (ongoing):     {ongoing_wait_time_minutes:.2f} minutes")
+            print(f"   │  └─ Still Waiting:           {wait_time_sim_end_minutes:.2f} minutes")
+            print(f"   Total Movement Time (completed): {movement_time_minutes:.2f} minutes")
+            print(f"   Total Movement Time (ongoing):   {ongoing_movement_time_minutes:.2f} minutes")
+            print(f"   Total Travel Time (completed):   {total_travel_time_minutes:.2f} minutes")
+            print(f"   Total Travel Time (ongoing):     {ongoing_travel_time_minutes:.2f} minutes")
             
             # Time Metrics - Per Passenger Averages
             print("\nPER-PASSENGER AVERAGES:")
-            print(f"   Average Wait Time (completed):     {avg_wait_time_minutes:.1f} minutes")
-            print(f"   Average Wait Time (ongoing riders): {avg_wait_time_minutes_ongoing:.1f} minutes")
-            print(f"   Average Movement Time (completed): {avg_movement_time_minutes:.1f} minutes")
-            print(f"   Average Movement Time (ongoing riders): {avg_movement_time_minutes_ongoing:.1f} minutes")
-            print(f"   Average Travel Time (completed):   {avg_travel_time_minutes:.1f} minutes")
-            print(f"   Average Travel Time (ongoing riders): {avg_travel_time_minutes_ongoing:.1f} minutes")
+            print(f"   Average Wait Time (completed):     {avg_wait_time_minutes:.2f} minutes")
+            print(f"   Average Wait Time (ongoing riders): {avg_wait_time_minutes_ongoing:.2f} minutes")
+            print(f"   Average Movement Time (completed): {avg_movement_time_minutes:.2f} minutes")
+            print(f"   Average Movement Time (ongoing riders): {avg_movement_time_minutes_ongoing:.2f} minutes")
+            print(f"   Average Travel Time (completed):   {avg_travel_time_minutes:.2f} minutes")
+            print(f"   Average Travel Time (ongoing riders): {avg_travel_time_minutes_ongoing:.2f} minutes")
             
             # Performance Summary
             print("\nPERFORMANCE SUMMARY:")
-            print(f"   Passengers Served:        {service_rate_pct:.1f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
-            print(f"   Completion Success:       {completed_rate_pct:.1f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
-            print(f"   Transfer Rate:            {metrics['transfer_rate']:.1f}% ")
-            print(f"   Node Coverage:            {node_coverage_pct:.1f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
+            print(f"   Passengers Served:        {service_rate_pct:.2f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
+            print(f"   Completion Success:       {completed_rate_pct:.2f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
+            print(f"   Transfer Rate:            {metrics['transfer_rate']:.2f}% ")
+            print(f"   Node Coverage:            {node_coverage_pct:.2f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
             print(f"   Route Efficiency:         {route_efficiency_passengers_per_km:.2f} passengers/km")
             
             print("="*70)
@@ -1246,15 +1264,15 @@ class TransitEnv(gym.Env):
         print("\n DISTRIBUTION STATISTICS:")
         if len(metrics['waiting_time_dstr']) > 0:
             wait_times = np.array(metrics['waiting_time_dstr'])
-            print(f"   Wait Times (n={len(wait_times)}):  min={wait_times.min():.1f}s, max={wait_times.max():.1f}s, mean={wait_times.mean():.1f}s, std={wait_times.std():.1f}s")
+            print(f"   Wait Times (n={len(wait_times)}):  min={wait_times.min():.2f}s, max={wait_times.max():.2f}s, mean={wait_times.mean():.2f}s, std={wait_times.std():.2f}s")
         
         if len(metrics['movement_time_dstr']) > 0:
             movement_times = np.array(metrics['movement_time_dstr'])
-            print(f"   Movement Times (n={len(movement_times)}): min={movement_times.min():.1f}s, max={movement_times.max():.1f}s, mean={movement_times.mean():.1f}s, std={movement_times.std():.1f}s")
+            print(f"   Movement Times (n={len(movement_times)}): min={movement_times.min():.2f}s, max={movement_times.max():.2f}s, mean={movement_times.mean():.2f}s, std={movement_times.std():.2f}s")
         
         if len(metrics['travel_time_dstr']) > 0:
             travel_times = np.array(metrics['travel_time_dstr'])
-            print(f"   Travel Times (n={len(travel_times)}):   min={travel_times.min():.1f}s, max={travel_times.max():.1f}s, mean={travel_times.mean():.1f}s, std={travel_times.std():.1f}s")
+            print(f"   Travel Times (n={len(travel_times)}):   min={travel_times.min():.2f}s, max={travel_times.max():.2f}s, mean={travel_times.mean():.2f}s, std={travel_times.std():.2f}s")
         
         pass
 
@@ -1273,9 +1291,6 @@ class TransitEnv(gym.Env):
         
         - Component 2: Route overlap ratio
             - Number of overlapped edges / total number of edges in the shorter route
-            
-        - On making partial reward delta: 
-            - Prevent "Coasting" behavior of the agent when it is not making progress. i.e., prevent it from getting a positive reward when potential did not improve.
 
         ------------------------------------------------------------------------------------------------
         FOR COMPLETED ROUTES:
@@ -1299,8 +1314,7 @@ class TransitEnv(gym.Env):
             - Not getting the route force end penalty is equivalent to getting a bonus for completion.
 
         TODO: Should I add a final reward at the end of the episode? Based on final performace metrics?
-        
-
+    
         As of now do not care about, operator side metrics like: 
         - route_efficiency: Passengers served per km of route (passengers/km)
             - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
@@ -1336,7 +1350,7 @@ class TransitEnv(gym.Env):
         2. An improper reward formulation could lead to reward hacking
            
         ---------
-        Reward ranges (before delta, on route end):
+        Reward ranges (on route end):
             Max reward:
             - 100% demand coverage: +50
             - 100% service rate: +30
@@ -1357,33 +1371,29 @@ class TransitEnv(gym.Env):
         """
         
         incremental_reward = 0.0
+        BETA_0 = 40.0      # Demand coverage potential
+        BETA_1 = -20.0     # Overlap penalty
+        BETA_2 = -15.0      # Forced end penalty
+
         final_reward = 0.0
-        BETA_0 = 40.0      # Incremental reward component
-        BETA_1 = 20.0      # Demand coverage component (demand served)
-        BETA_2 = 20.0      # Service rate component (demand coverage actual/ demand coverage potential)
-        BETA_3 = -20.0      # Travel time penalty (passenger efficiency)  
-        BETA_4 = -20.0      # Route overlap penalty
-        BETA_5 = -20.0      # Forced end penalty
-        
+        BETA_3 = 30.0      # Demand coverage potential
+        BETA_4 = 15.0      # Service rate  
+        BETA_5 = -15.0     # Travel time penalty 
+        BETA_6 = -10.0     # Route overlap penalty
+
         # For partial routes, use proxy based on potential (no sim_result needed)
         if not is_route_end:
             pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
             overlap_ratio = sim_result['route_overlap_ratio']
-
-            demand_delta = pot_norm - self.previous_partial_reward['demand_coverage_potential']
-            overlap_delta = overlap_ratio - self.previous_partial_reward['route_overlap']
-            incremental_reward = (BETA_0 * demand_delta) + (BETA_4 * overlap_delta)
-
-            self.previous_partial_reward['demand_coverage_potential'] = pot_norm
-            self.previous_partial_reward['route_overlap'] = overlap_ratio
+            incremental_reward = (BETA_0 * pot_norm) + (BETA_1 * overlap_ratio)
 
             print(f"Incremental reward: {incremental_reward}")
-            print(f"   Demand delta: {demand_delta:.4f}")
-            print(f"   Overlap delta: {overlap_delta:.4f}")
+            print(f"   Demand coverage potential: {BETA_0 * pot_norm:.2f}")
+            print(f"   Overlap: {BETA_1 * overlap_ratio:.2f}")
 
             if is_forced_end:
-                incremental_reward += BETA_5 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH))
-                print(f"   Forced end: {BETA_5 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)):.2f}")
+                incremental_reward += BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH))
+                print(f"   Forced end: {BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)):.2f}")
 
         # For completed routes, use actual metrics from simulation
         else: 
@@ -1397,21 +1407,18 @@ class TransitEnv(gym.Env):
             avg_travel_norm = min(avg_travel / 3600.0, 1.0)  # [0-1] capped at 1
 
             final_reward = (
-                BETA_1 * pot_norm +
-                BETA_2 * service_norm +
-                BETA_3 * avg_travel_norm +
-                BETA_4 * overlap_ratio 
+                BETA_3 * pot_norm +
+                BETA_4 * service_norm +
+                BETA_5 * avg_travel_norm +
+                BETA_6 * overlap_ratio 
             )
             
             print(f"Final reward: {final_reward:.2f}")
             print("Components:")
-            print(f"   Demand coverage potential: {BETA_1 * pot_norm:.2f}")
-            print(f"   Service rate: {BETA_2 * service_norm:.2f}")
-            print(f"   Travel time: {BETA_3 * avg_travel_norm:.2f}")
-            print(f"   Overlap: {BETA_4 * overlap_ratio:.2f}")
-
-            self.previous_partial_reward['demand_coverage_potential'] = pot_norm
-            self.previous_partial_reward['route_overlap'] = overlap_ratio
+            print(f"   Demand coverage potential: {BETA_3 * pot_norm:.2f}")
+            print(f"   Service rate: {BETA_4 * service_norm:.2f}")
+            print(f"   Travel time: {BETA_5 * avg_travel_norm:.2f}")
+            print(f"   Overlap: {BETA_6 * overlap_ratio:.2f}")
             
         return incremental_reward + final_reward
 
@@ -1471,7 +1478,6 @@ class TransitEnv(gym.Env):
         # initial metrics cannot be gotten before transit graph is built. But for transit graph to be built, world must exist.
         partial_metrics = self._get_partial_route_metrics() 
         sim_result = {
-            'route_length': partial_metrics['route_length'],
             'wanting_to_onboard': partial_metrics['wanting_to_onboard'],
             'total_demand': partial_metrics['total_demand'],
             'demand_coverage_potential': partial_metrics['demand_coverage_potential'],
@@ -1518,34 +1524,16 @@ class TransitEnv(gym.Env):
     def _get_partial_route_metrics(self) -> Dict[str, float]:
         """
         Get fast metrics for the current partial route.
-
         Builds a lightweight stop graph from all completed routes plus the current route
         using STOP_SPACING, then measures coverage directly from the OD matrix.        
-
         Returns:
-            - route_length: sum of link lengths for all completed routes plus current route (meters)
             - wanting_to_onboard: served demand over the horizon multiplied by alpha (passengers)
             - total_demand: total demand over the horizon (passengers)
             - demand_coverage_potential: wanting_to_onboard / total_demand in [0, 1]
         """
-        # 1) Route length over completed routes + current route
-        route_length = 0.0
 
-        def add_route_length(route):
-            nonlocal route_length
-            if len(route) >= 2:
-                for u, v in zip(route, route[1:]):
-                    route_length += float(self.link_lengths.get((str(u), str(v)), 0.0))
-
-        for r in self.all_routes:
-            add_route_length(r)
-            
-        if self.current_route and (self.current_route not in self.all_routes):
-            add_route_length(self.current_route)
-
-        # 2) Build a stop graph from routes using STOP_SPACING
+        # 1) Build a stop graph from routes using STOP_SPACING
         G = nx.Graph()
-
         def add_route_stops(route):
             if len(route) <= 1:
                 return
@@ -1562,7 +1550,7 @@ class TransitEnv(gym.Env):
             add_route_stops(r)
         add_route_stops(self.current_route)
 
-        # 3) Compute served and total demand from OD matrix (per hour -> over horizon)
+        # 2) Compute served and total demand from OD matrix (per hour -> over horizon)
         M = self.od_matrix
         if M.size == 0:
             total_demand = 0.0
@@ -1585,20 +1573,18 @@ class TransitEnv(gym.Env):
             total_demand = total_per_hour * hours
             wanting_to_onboard = served_per_hour * hours * float(self.alpha)
 
-        # 4) Potential as a fraction
+        # 3) Potential as a fraction
         potential = (wanting_to_onboard / total_demand) if total_demand > 0.0 else 0.0
  
-        # 5) Route overlap ratio
+        # 4) Route overlap ratio
         overlap_ratio = self._calculate_route_overlap_ratio()
         return {
-            'route_length': route_length,
             'wanting_to_onboard': wanting_to_onboard,
             'total_demand': total_demand,
             'demand_coverage_potential': potential,
             'route_overlap_ratio': overlap_ratio,
         }
 
-    
     def _get_valid_indices(self) -> list:
         """
         For a given frontier node, get the indices of valid next nodes.
@@ -1631,4 +1617,3 @@ class TransitEnv(gym.Env):
         # output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
         output_loc = os.path.join(save_dir, render_name)
         plot_network_demand_and_path(self.world, all_routes_to_display, output_loc)
-
