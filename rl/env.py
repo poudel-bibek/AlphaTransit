@@ -372,7 +372,7 @@ class TransitEnv(gym.Env):
         """
         return gym.spaces.Discrete(self.n_nodes + 1) # extra action (NO_VALID_ACTION) for when valid actions are empty
     
-    def _allocate_demand_by_service(self, world: World, method: str = "volume", unserved_as_cars: bool = False) -> None:
+    def _allocate_demand_by_service(self, world: World, method: str = "volume", unserved_as_cars: bool = False) -> World:
         """
         Assigns mode-specific demands based on the current bus route:
         - for OD pairs served by the route (both O and D on route)
@@ -576,7 +576,7 @@ class TransitEnv(gym.Env):
         
         return state
     
-    def reset( self, ) -> None:
+    def reset( self, ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         TODO: Can I just sample the action space and get a random initial state?
         """

@@ -144,7 +144,9 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     # Node features
     feature_names = [
         "x_norm", "y_norm", "degree_norm", "d_out_norm", "d_in_norm",
-        "d_out_path_norm", "d_in_path_norm", "in_path_flag", "is_valid_next"
+        "d_out_current_route", "d_in_current_route",
+        "d_out_completed_routes", "d_in_completed_routes",
+        "in_current_route_flag", "is_valid_next", "in_completed_routes_flag",
     ]
     nf_df = pd.DataFrame(state["node_features"], index=self.node_list, columns=feature_names)
     with pd.option_context('display.max_rows', resolved_max_nodes, 'display.max_columns', 8, 'display.width', 120):
@@ -406,7 +408,7 @@ def plot_network_demand_and_path(world, routes: List[List[str]], output_loc: str
     fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.88, 0.5), ncol=1,
                 fontsize=8, frameon=False, handlelength=2.0)
 
-    ax.set_title(f"{world.name}: Routes", fontsize=16, pad=4)
+    # ax.set_title(f"{world.name}: Routes", fontsize=16, pad=4)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
