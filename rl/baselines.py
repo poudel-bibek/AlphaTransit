@@ -70,7 +70,7 @@ def create_main_save_dir(config):
         f"{config.get('baseline_type')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
     os.makedirs(main_save_dir, exist_ok=True)
-    eval_root = ensure_eval_results_dir(main_save_dir)
+    eval_root = ensure_eval_results_dir(main_save_dir, folder_name="")
     print(f"Baseline results will be saved to: {eval_root}")
     return main_save_dir, eval_root
 

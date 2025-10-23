@@ -314,7 +314,13 @@ def train(config: Dict[str, Any]) -> None:
             if update_count % config["eval_every"] == 0:
                 eval(config, policy_path, episode, training_save_dir)
     
-def execute_eval_runs(config: Dict[str, Any], policy_path: str, num_runs: int, base_seed: int, save_dir: str) -> tuple[list, dict]:
+def execute_eval_runs(
+    config: Dict[str, Any],
+    policy_path: str,
+    num_runs: int,
+    base_seed: int,
+    save_dir: str,
+) -> tuple[list, dict]:
     """
     Evaluate a trained policy for multiple runs.
     - Load a saved policy
@@ -458,13 +464,14 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
 
     num_runs = config["num_eval_runs"]
     eval_root_dir = ensure_eval_results_dir(save_dir)
+    episode_dir = ensure_eval_results_dir(eval_root_dir, folder_name="", episode=episode)
     starting_seed = config["seed"] 
 
     # Run evaluations and aggregate results (works for any number of runs including 1)
-    results, aggregated = execute_eval_runs(config, policy_path, num_runs, starting_seed, eval_root_dir)
+    results, aggregated = execute_eval_runs(config, policy_path, num_runs, starting_seed, episode_dir)
 
     # Save summary JSON with statistical information (works for any number of runs)
-    write_eval_summary_json(aggregated, eval_root_dir, num_runs)
+    write_eval_summary_json(aggregated, episode_dir, num_runs)
 
     # Log averaged results to wandb (for single run, this is just the single result)
     if not config.get("wandb_off"):
@@ -552,7 +559,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=2, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
-    parser.add_argument("--num_eval_runs", type=int, default=1, help="Number of runs (over which we average the results) for both evaluation and baselines")
+    parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of runs (over which we average the results) for both evaluation and baselines")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
 
     # Learning environment specific: 

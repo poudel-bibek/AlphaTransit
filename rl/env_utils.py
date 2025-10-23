@@ -11,13 +11,25 @@ from collections import defaultdict
 from typing import Any, Dict, Optional, List, Tuple
 
 
-def ensure_eval_results_dir(base_dir: str, folder_name: str = "eval_results") -> str:
+def ensure_eval_results_dir(
+    base_dir: str,
+    folder_name: str = "eval_results",
+    episode: Optional[int] = None,
+) -> str:
     """
-    Create or reuse the eval results directory for consistent layouts.
+    Prepare evaluation directories for the current context.
+    Preserve shared roots and optional per-episode subfolders.
+    Return the deepest directory path for downstream saves.
     """
-    eval_dir = os.path.join(base_dir, folder_name)
-    os.makedirs(eval_dir, exist_ok=True)
-    return eval_dir
+    target_dir = os.path.join(base_dir, folder_name) if folder_name else base_dir
+    os.makedirs(target_dir, exist_ok=True)
+
+    if episode is None:
+        return target_dir
+
+    episode_dir = os.path.join(target_dir, f"eval_epi_{episode}")
+    os.makedirs(episode_dir, exist_ok=True)
+    return episode_dir
 
 
 def make_seed_output_dir(eval_root: str, seed: int) -> Tuple[str, str]:
