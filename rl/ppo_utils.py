@@ -7,47 +7,45 @@ from torch.utils.data import Dataset
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Collate samples into mini-batch.
-    Pads valid_indices with -1; model ignores -1 during masking.
+    Collate samples into mini-batch for PPO
+    produces: 
+    - Custom atributes like route_progress shaped as [B, Num_routes]
+    - actions, log_probs, advantages, returns, values shaped as [B]
+    - valid_mask shaped as [B, Max_nodes] boolean
     """
-    
-    # Handle variable-length valid_indices
-    valid_indices_list = [item['valid_indices'] for item in batch]
-    if valid_indices_list and valid_indices_list[0]:  # Check if we have valid indices
 
-        max_valid_len = max(len(indices) for indices in valid_indices_list)
-        padded_valid_indices = []
-        for indices in valid_indices_list:
-
-            pad_len = max_valid_len - len(indices)
-            # Pad with -1 (invalid index that won't match any actual action)
-            padded = indices + [-1] * pad_len
-            padded_valid_indices.append(padded)
-        
-        valid_indices_tensor = torch.tensor(padded_valid_indices, dtype=torch.long)
-    else:
-        # No constraints, all actions valid
-        valid_indices_tensor = None
-    
-    # Handle route_progress separately since PyG doesn't batch custom attributes properly
+    # 1) Batch the observations
     batch_obs_list = [item['obs'] for item in batch]
     batched_obs = Batch.from_data_list(batch_obs_list)
 
-    # Manually stack route_progress tensors to ensure proper batching
-    route_progress_list = [obs.route_progress for obs in batch_obs_list]
-    # torch.stack automatically handles both 1D and 2D tensors correctly
-    batched_obs.route_progress = torch.stack(route_progress_list, dim=0)
+    # 2) Manually stack the custom attributes
+    route_progress_list = [obs.route_progress for obs in batch_obs_list] # list of 1D tensors
+    batched_obs.route_progress = torch.stack(route_progress_list, dim=0) # 2D tensor [B, Num_routes]
 
-    collated = {
+    # 3) Properly stack valid masks into [B, num_nodes]
+    # Each item[valid mask] is a boolean tensor [1, num_nodes]
+    valid_masks = []
+    for item in batch:
+        m = item['valid_mask']
+        valid_masks.append(m)
+    batched_valid_mask = torch.stack(valid_masks, dim=0) # 2D tensor [B, num_nodes]
+
+    # 4) Stack the other tensors
+    actions = torch.tensor([item['actions'] for item in batch], dtype=torch.long) # [B]
+    log_probs = torch.tensor([item['log_probs'] for item in batch], dtype=torch.float32) # [B]
+    advantages = torch.tensor([item['advantages'] for item in batch], dtype=torch.float32) # [B]
+    returns = torch.tensor([item['returns'] for item in batch], dtype=torch.float32) # [B]
+    values = torch.tensor([item['values'] for item in batch], dtype=torch.float32) # [B]
+
+    return {
         'obs': batched_obs,
-        'actions': torch.tensor([item['actions'] for item in batch], dtype=torch.long),
-        'log_probs': torch.tensor([item['log_probs'] for item in batch], dtype=torch.float32),
-        'advantages': torch.tensor([item['advantages'] for item in batch], dtype=torch.float32),
-        'returns': torch.tensor([item['returns'] for item in batch], dtype=torch.float32),
-        'values': torch.tensor([item['values'] for item in batch], dtype=torch.float32),
-        'valid_indices': valid_indices_tensor
+        'actions': actions,
+        'log_probs': log_probs,
+        'advantages': advantages,
+        'returns': returns,
+        'values': values,
+        'valid_mask': batched_valid_mask,
     }
-    return collated
 
 
 class Memory:
@@ -61,7 +59,7 @@ class Memory:
         self.rewards: List[float] = []
         self.values: List[float] = []
         self.dones: List[bool] = []  # True for terminated episodes only
-        self.valid_indices: List[List[int]] = []
+        self.valid_mask: List[torch.BoolTensor] = []
         
         # Bootstrap values for each episode (if truncated)
         self.bootstrap_values: List[float] = []  # One per episode
@@ -81,8 +79,8 @@ class Memory:
         self.rewards.append(transition['reward'])
         self.values.append(transition['value'])
         self.log_probs.append(transition['log_prob'])
-        self.dones.append(transition.get('terminated', False))  # Only terminated!
-        self.valid_indices.append(transition.get('valid_indices', []))
+        self.dones.append(transition['terminated'])  # Only terminated!
+        self.valid_mask.append(transition['valid_mask'])
         
     def mark_episode_end(self, bootstrap_value: float) -> None:
         """
@@ -101,7 +99,7 @@ class Memory:
         self.values.clear()
         self.log_probs.clear()
         self.dones.clear()
-        self.valid_indices.clear()
+        self.valid_mask.clear()
         self.bootstrap_values.clear()
         self.episode_boundaries.clear()
         self.advantages = None # Will be added during GAE
@@ -127,7 +125,7 @@ class DatasetClass(Dataset):
             'advantages': self.memory.advantages[idx],
             'returns': self.memory.returns[idx],
             'values': self.memory.values[idx],
-            'valid_indices': self.memory.valid_indices[idx]
+            'valid_mask': self.memory.valid_mask[idx]
         }
 
 

@@ -56,15 +56,29 @@ class PPO:
             for batch_data in dataloader:
 
                 obs = batch_data['obs'].to(self.device)
+                print(f"Type of obs: {type(obs)}, value: {obs}")
                 actions = batch_data['actions'].to(self.device)
                 old_log_probs = batch_data['log_probs'].to(self.device)
                 advantages = batch_data['advantages'].to(self.device)
                 returns = batch_data['returns'].to(self.device)
-
-                valid_indices = batch_data['valid_indices'].to(self.device)
+                valid_mask = batch_data['valid_mask'].to(self.device)
                 
+                print({
+                    "x": tuple(obs.x.shape),
+                    "edge_index": tuple(obs.edge_index.shape),
+                    "edge_attr": tuple(getattr(obs, "edge_attr", torch.empty(0)).shape),
+                    "batch_vec": tuple(obs.batch.shape),
+                    "valid_mask": tuple(valid_mask.shape),
+                    "actions": tuple(actions.shape),
+                })
+
                 # Get current policy outputs
-                log_probs, entropy, values = self.model.evaluate(obs, actions, valid_indices=valid_indices)
+                log_probs, entropy, values = self.model.evaluate(obs.x,          # Node features [sum_n_i, D]
+                                                            obs.edge_index,      # Edge index [2, sum_e_i]
+                                                            obs.edge_attr,       # Edge features [E, edge_dim]
+                                                            obs.batch,
+                                                            valid_mask,          # Valid mask [batch_size, max_nodes]
+                                                            actions)             # Actions [batch_size]
                 
                 # Normalize advantages (per batch; similar to cleanRL)
                 # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero

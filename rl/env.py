@@ -147,7 +147,7 @@ class TransitEnv(gym.Env):
                         seen.add((a, b))
 
         self.edge_index = np.array(edge_index_list).T.astype(np.int64) # Transpose, shape (2, E)
-        self.edge_features = np.array(edge_attr_list, dtype=np.float32) # Shape (E, 3)
+        self.edge_features = np.array(edge_attr_list, dtype=np.float32) # Shape (E, 2)
 
         # For efficiency, pre-compute a number of things required in state during init (once):
         self.node_coordinates_norm = np.zeros((self.n_nodes, 2), dtype=np.float32)
@@ -179,6 +179,8 @@ class TransitEnv(gym.Env):
             - Path nodes
         - Budget state:
             - Remaining number of nodes to add.
+
+        We want the policy to be conditioned on the: frontier node and the routes designed so far (completed and current)
         
         ##########
         1. For each node in the network (12): 

@@ -199,16 +199,16 @@ class GATV2ActorCritic(nn.Module):
         ptr[1:] = torch.cumsum(torch.bincount(batch_tensor), dim=0)
         return ptr
 
-    def act(self, x, edge_index, edge_attr, batch, valid_indices, stochastic: bool = True):
+    def act(self, x, edge_index, edge_attr, batch, valid_mask, stochastic: bool = True):
         """
-       valid_indices (NOT optional) is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
+       valid_mask (NOT optional) is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
        - Mask out nodes that are not valid.
        - How batch works in PyG: 
         - If graph 0 has [A, B, C] nodes, and graph 1 has [D, E, F] nodes
         - Then PyG flattens them to a single graph with [A, B, C, D, E, F] nodes.
         - Then batch will be [0, 0, 0, 1, 1, 1] with nodes A-F indexed as 0 to 5
         - If you are allowed to pick [B, C] from graph 0 (local 1,2) and [D, F] from graph 1 (local 0,2), then valid_indices would be[[False, True, True], [True, False, True]].
-       The batch input is not the object but the batch tensot i.e., [0, 0, 0, 1, 1, 1...]
+       The batch input is not the object but the batch tensor i.e., [0, 0, 0, 1, 1, 1...]
        Build a categorical distribution (per graph) over the valid indices.
        When stochastic is True, sample from the distribution otherwise return argmax
        Returns: 
@@ -224,8 +224,8 @@ class GATV2ActorCritic(nn.Module):
         num_graphs = batch.max().item() + 1
         ptr = self._get_ptr(batch)
 
-        if valid_indices.dim() != 2 or valid_indices.shape[0] != num_graphs:
-            raise ValueError("valid_indices must be 2D bool tensor of shape [batch_size, max_nodes]")
+        if valid_mask.dim() != 2 or valid_mask.shape[0] != num_graphs:
+            raise ValueError("valid_mask must be 2D bool tensor of shape [batch_size, max_nodes]")
 
         actions_list = []
         log_probs_list = []
@@ -235,26 +235,28 @@ class GATV2ActorCritic(nn.Module):
             
             # Number of nodes in the current graph.
             num_nodes_i = end - start
-            valid_mask = valid_indices[i, :num_nodes_i] # For the i-th graph, get the valid mask.
+            valid_mask_i = valid_mask[i, :num_nodes_i] # For the i-th graph, get the valid mask.
+
+            # Sanity
+            if not valid_mask_i.any():
+                raise ValueError(f"No valid nodes in graph {i}")
 
             # Logits for the current graph.
             graph_logits = logits[start:end]
             masked_logits = graph_logits.clone()
-            masked_logits[~valid_mask] = -float('inf')
+            masked_logits[~valid_mask_i] = -float('inf')
 
-            # Sanity
-            if masked_logits.numel() == 0:
-                raise ValueError(f"No valid logits in graph {i}")
-
+            print(f"\nGraph {i} masked logits: \n{masked_logits}")
             # Distribution has to be built over all local indices in the current graph but logits for invalid ones are masked to -inf.
             # If we were to build a dist over only valid nodes (for example 3 valid nodes), then it would be over indices 0, 1, 2.
             # This is a problem because although the valid nodes could be index 10 , 11, 12 in the graph the dist would have indices 0, 1, 2.
             dist = Categorical(logits=masked_logits)
+        
             if stochastic:
                 local_idx = dist.sample()
             else:
-                # local_idx = torch.argmax(masked_logits) # Select the node index with the highest logit.
-                local_idx = dist.probs.argmax() # Select the node index with the highest probability.
+                local_idx = torch.argmax(masked_logits) # Select the node index with the highest logit.
+                # local_idx = dist.probs.argmax() # Select the node index with the highest probability. This is fine but slower and can NaN if all invalid.
 
             log_prob = dist.log_prob(local_idx)      # scalar value
             actions_list.append(local_idx)
@@ -273,10 +275,10 @@ class GATV2ActorCritic(nn.Module):
         """
         return global_mean_pool(z, batch) # [batch_size, D]   
 
-    def evaluate(self, x, edge_index, edge_attr, batch, valid_indices, actions):
+    def evaluate(self, x, edge_index, edge_attr, batch, valid_mask, actions):
         """
         The input actions are local indices into the current graph i.e., a 2D tensor of shape [batch_size, 1], 1 corresponding to local index of node_chosen_for_graph_i.
-        valid_indices is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
+        valid_mask is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
         Values (scalar values) are one value per graph.
         Returns: log_probs, entropies, values
         """
@@ -285,8 +287,8 @@ class GATV2ActorCritic(nn.Module):
         num_graphs = batch.max().item() + 1
         ptr = self._get_ptr(batch)
         
-        if valid_indices.dim() != 2 or valid_indices.shape[0] != num_graphs:
-            raise ValueError("valid_indices must be 2D bool tensor of shape [batch_size, max_nodes]")
+        if valid_mask.dim() != 2 or valid_mask.shape[0] != num_graphs:
+            raise ValueError("valid_mask must be 2D bool tensor of shape [batch_size, max_nodes]")
 
         g = self.critic_readout(z, batch)
         values = self.critic_head(g).squeeze(-1)
@@ -299,24 +301,25 @@ class GATV2ActorCritic(nn.Module):
 
             # Number of nodes in the current graph.
             num_nodes_i = end - start
-            valid_mask = valid_indices[i, :num_nodes_i] # For the i-th graph, get the valid mask.
+            valid_mask_i = valid_mask[i, :num_nodes_i] # For the i-th graph, get the valid mask.
 
             # Logits for the current graph.
             graph_logits = logits[start:end]
             masked_logits = graph_logits.clone()
-            masked_logits[~valid_mask] = -float('inf')
+            masked_logits[~valid_mask_i] = -float('inf')
 
             # Sanity
             if masked_logits.numel() == 0:
                 raise ValueError(f"No valid logits in graph {i}")
 
+            print(f"\nGraph {i} masked logits: \n{masked_logits}")
             # Distribution over valid local indices in the current graph.
             dist = Categorical(logits=masked_logits)
             local_idx = actions[i] # The action that was chosen for the i-th graph (local index).
 
             # Sanity 
-            if local_idx >= num_nodes_i or not valid_mask[local_idx]:
-                raise ValueError(f"Invalid action {local_idx} in graph {i}")
+            if int(local_idx.item()) >= num_nodes_i or not valid_mask_i[local_idx.item()]:
+                raise ValueError(f"Invalid action {local_idx.item()} in graph {i}")
 
             log_prob = dist.log_prob(local_idx)
             entropy = dist.entropy()
@@ -385,6 +388,7 @@ class GATV2ActorCritic(nn.Module):
         print("\n".join(lines))
         print("--------------------")
 
+"""
 if __name__ == "__main__":
     set_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -440,21 +444,21 @@ if __name__ == "__main__":
     print(f"Total nodes in batch: {batch.num_nodes}")
 
     # Define valid local indices for each graph
-    valid_locals = [
+    valid_mask_local = [
         [2, 4, 5, 7, 9],  # For graph 0 (local indices)
         [0, 3, 6, 8, 10, 12, 14]  # For graph 1
     ]
     max_num_nodes = max(g0.num_nodes, g1.num_nodes)  # 15
-    valid_indices = torch.zeros(2, max_num_nodes, dtype=torch.bool, device=device)
-    for i, locals in enumerate(valid_locals):
+    valid_mask = torch.zeros(2, max_num_nodes, dtype=torch.bool, device=device)
+    for i, locals in enumerate(valid_mask_local):
         print(f"Graph {i} valid local indices: {locals}")
         for idx in locals:
-            valid_indices[i, idx] = True
+            valid_mask[i, idx] = True
 
     # Test act() - stochastic sampling
     print("\nTesting act() with stochastic=True:")
     actions, log_probs, values = model.act(
-        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices, stochastic=True
+        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_mask, stochastic=True
     )
     for i in range(batch.num_graphs):
         global_idx = actions[i].item() + (0 if i == 0 else g0.num_nodes)
@@ -463,7 +467,7 @@ if __name__ == "__main__":
     # Test act() - deterministic (argmax)
     print("\nTesting act() with stochastic=False (deterministic):")
     actions_det, log_probs_det, values_det = model.act(
-        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices, stochastic=False
+        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_mask, stochastic=False
     )
     for i in range(batch.num_graphs):
         global_idx = actions_det[i].item() + (0 if i == 0 else g0.num_nodes)
@@ -475,8 +479,20 @@ if __name__ == "__main__":
     for i, act in enumerate(past_actions):
         global_idx = act.item() + (0 if i == 0 else g0.num_nodes)
         print(f"Graph {i}: Past local action {act.item()} (global {global_idx})")
+
     log_probs_eval, entropies, values_eval = model.evaluate(
-        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices, past_actions
+        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_mask, past_actions
     )
     for i in range(batch.num_graphs):
         print(f"Graph {i}: Eval log_prob {log_probs_eval[i].item():.4f}, entropy {entropies[i].item():.4f}, value {values_eval[i].item():.4f}")
+
+    print("\n" + "="*30)
+    print("Testing act() with empty valid_mask")
+    print("="*30)
+
+    # All graphs have no valid indices
+    print("\nAll graphs have no valid mask")
+    valid_indices_empty_all = torch.zeros(batch.num_graphs, max_num_nodes, dtype=torch.bool, device=device)
+    model.act(batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices_empty_all, stochastic=True)
+
+"""

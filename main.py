@@ -137,7 +137,7 @@ def train(config: Dict[str, Any]) -> None:
     
     env = TransitEnv(config)
     node_feature_dim = env.N_NODE_FEATURES
-    num_actions = env.action_space.n
+    edge_feature_dim = env.N_EDGE_FEATURES
     
     print("\tObservation space:")
     for key, space in env.observation_space.items():
@@ -176,16 +176,17 @@ def train(config: Dict[str, Any]) -> None:
 
     # Set policy hyper-param defaults
     config["n_nodes"] = env.n_nodes
-    policy_kwargs = get_policy_kwargs(config, node_feature_dim)
+    policy_kwargs = get_policy_kwargs(config, node_feature_dim, edge_feature_dim)
 
     # Only node features are supplied at GATv2 init, edge features are injected at each attention layer.
-    model = GATV2ActorCritic(num_actions, **policy_kwargs)
-    model.to(config["device"])
-    param_counts = model.param_count()
-
-    print(f"\nPolicy parameters on device = {config['device']}:")
-    for k, v in param_counts.items():
-        print(f"  {k}: {v:,}")
+    model = GATV2ActorCritic(**policy_kwargs).to(config["device"])
+    model.apply_orthogonal_init(
+        hidden_gain=None,         # auto from activation
+        bias_const=0.0,
+        actor_final_gain=0.01,    # small gain to keep initial policy high-entropy
+        critic_final_gain=1.0,
+    )
+    model.count_params()
 
     ppo = PPO(model, **config)
     policy_dir = os.path.join(training_save_dir, "policies")
@@ -209,33 +210,47 @@ def train(config: Dict[str, Any]) -> None:
             data = pyg_converter.convert(state)
             print("\nStep data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
-            
             batch = Batch.from_data_list([data])  # Data already on device]
             
-            # 1. Build a valid list
-            valid_list = env._get_valid_indices()
+            # 1. Build a boolean valid mask of shape [num_graphs, max_nodes].
+            # We have one graph per step, so this is [1, num_nodes]
+            valid_list = env._get_valid_indices() # list[int] of local node ids
+        
+            # 2. Call the policy to get the action, log_prob and value
+            if len(valid_list) > 0:
+                num_nodes = batch.num_nodes
+                valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=config["device"])
+                for local_idx in valid_list:
+                    valid_mask[0, local_idx] = True
+                print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
+                
+                with torch.no_grad():
+                    action_tensor, log_prob_tensor, value_tensor = model.act(
+                                                                        batch.x, 
+                                                                        batch.edge_index, 
+                                                                        batch.edge_attr, 
+                                                                        batch.batch, 
+                                                                        valid_mask=valid_mask,
+                                                                        stochastic=True)
             
-            # 2. Decide which ids are allowed this step
-            mask_ids = valid_list if len(valid_list) > 0 else[env.NO_VALID_ACTION]
+            else: 
+                # When valid indices are empty, the policy gets a bad reward without ever having to call act() or simulate. 
+                # The state (S) with empty valid indices, forces action (a) to be (env.NO_VALID_ACTION) and the new state (S') that env transitions to will have next route intialized. 
+                # But we still need to call act() to get the value and log prob.
+                with torch.no_grad():
+                    z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+                    g = model.critic_readout(z, batch.batch)
+                    value_tensor = model.critic_head(g).squeeze(-1)  # shape [1]
+                action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=config["device"])
 
-            # 3. Convert to 2D tensor with the batch dim. 
-            valid_indices = torch.tensor([mask_ids], dtype=torch.long, device=config["device"])
+                # Zero log prob is a safe placeholder that avoids NaNs in PPO. 
+                log_prob_tensor = torch.tensor([0.0], dtype=torch.float32, device=config["device"])
 
-            print(f"\tValid indices: shape: {valid_indices.shape}, value: {valid_indices}")
+            print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
+            print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
+            print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
             
-            # When valid indices are empty, the policy gets a bad reward without ever having to call act() or simulate. 
-            # The state (S) with empty valid indices, forces action (a) to be (-1) and the new state (S') that env transitions to will have next route intialized. 
-            # But we still need to call act() to get the value and log prob.
-            # 4. Always call the policy so PPO has log_prob and value
-            with torch.no_grad():
-                action_tensor, log_prob_tensor, value_tensor = model.act(batch, 
-                                                                    deterministic=False, 
-                                                                    valid_indices=valid_indices,
-                                                                    truncated=False)
-                print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
-                print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
-                print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
-            
+            # 3. Use the chosen action.
             action = action_tensor.cpu().item() 
             next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
 
@@ -257,7 +272,7 @@ def train(config: Dict[str, Any]) -> None:
                 'value': value_tensor.cpu().item(),
                 'log_prob': log_prob_tensor.cpu().item(),
                 'terminated': terminated,  # Episode end signal from env
-                'valid_indices': valid_indices.squeeze(0).cpu().tolist()  # Flatten to list[int] (single env)
+                'valid_mask': valid_mask.cpu() # 2D bool tensor of shape [1, num_nodes] as expected
             })
                     
             state = next_state
@@ -371,7 +386,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
     config["n_nodes"] = env.n_nodes
     policy_kwargs = get_policy_kwargs(config, node_feature_dim)
 
-    model = GATV2ActorCritic(num_actions, **policy_kwargs)
+    model = GATV2ActorCritic(**policy_kwargs)
     state_dict = torch.load(policy_path, map_location=config["device"])
     model.load_state_dict(state_dict)
     model.to(config["device"])
@@ -386,15 +401,26 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         data = pyg_converter.convert(state)
         batch = Batch.from_data_list([data])  # Data already on device
         valid_list = env._get_valid_indices()
-        mask_ids = valid_list if len(valid_list) > 0 else[env.NO_VALID_ACTION]
-        valid_indices = torch.tensor([mask_ids], dtype=torch.long, device=config["device"])
-        
-        with torch.no_grad():
-            action_tensor, _, _ = model.act(batch,
-            deterministic=True,
-            valid_indices=valid_indices,
-            truncated=False)
- 
+
+        if len(valid_list) > 0:
+            num_nodes = batch.num_nodes
+            valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=config["device"])
+            for local_idx in valid_list:
+                valid_mask[0, local_idx] = True
+            print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
+
+            with torch.no_grad():
+                action_tensor, _, _ = model.act(batch.x,
+                batch.edge_index,
+                batch.edge_attr,
+                batch.batch,
+                valid_mask=valid_mask,
+                stochastic=False) # Deterministic action at test time.
+            
+        else:
+            # When valid indices are empty
+            action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=config["device"])
+
         action = action_tensor.cpu().item()
         next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
         state = next_state
@@ -538,18 +564,22 @@ def set_global_seeds(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int) -> Dict[str, Any]:
+def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
     return {
-        "num_layers": config.get("num_layers", 4),
-        "gat_channels": config.get("gat_channels", [node_feature_dim, 16, 16, 16, 16]),
-        "num_heads": config.get("num_heads", [8, 4, 2, 1]),
-        "num_edge_features": config.get("num_edge_features", 2),
-        "dropout": config.get("dropout"),
-        # Global dimension (size of route_progress vector).
-        "global_dim": config.get("num_routes"), 
-        "activation": config.get("activation"),
-        "concat": config.get("concat_heads"),
-        "n_nodes": config.get("n_nodes"),
+        "n_node_features": node_feature_dim,
+        "proj_out": config.get("proj_out", 32),
+        "num_gat_blocks": config.get("num_gat_blocks", 3),
+        "gat_channels": config.get("gat_channels", [32, 16, 8]),
+        "num_heads": config.get("num_heads", [16, 8, 4]),
+        "attn_dropout": config.get("attn_dropout", [0.1, 0.1, 0.1]),
+        "feat_dropout": config.get("feat_dropout", [0.1, 0.1, 0.1]),
+        "actor_head_dropout": config.get("actor_head_dropout", 0.2),
+        "critic_head_dropout": config.get("critic_head_dropout", 0.2),
+        "concat": config.get("concat_heads", False),
+        "activation": config.get("activation", "leaky_relu"),
+        "n_edge_features": edge_feature_dim,
+        "actor_head_layers": config.get("actor_head_layers", [64, 32]),
+        "critic_head_layers": config.get("critic_head_layers", [64, 32]),
     }
 
 def build_arg_parser() -> argparse.ArgumentParser:
