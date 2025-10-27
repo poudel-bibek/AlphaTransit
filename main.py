@@ -384,9 +384,9 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
     """
     env = TransitEnv(config)
     node_feature_dim = env.N_NODE_FEATURES
-    num_actions = env.action_space.n
+    edge_feature_dim = env.N_EDGE_FEATURES
     config["n_nodes"] = env.n_nodes
-    policy_kwargs = get_policy_kwargs(config, node_feature_dim)
+    policy_kwargs = get_policy_kwargs(config, node_feature_dim, edge_feature_dim)
 
     model = GATV2ActorCritic(**policy_kwargs)
     state_dict = torch.load(policy_path, map_location=config["device"])
@@ -403,10 +403,11 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         data = pyg_converter.convert(state)
         batch = Batch.from_data_list([data])  # Data already on device
         valid_list = env._get_valid_indices()
-
+        
+        num_nodes = batch.num_nodes
+        valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=config["device"])
+        
         if len(valid_list) > 0:
-            num_nodes = batch.num_nodes
-            valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=config["device"])
             for local_idx in valid_list:
                 valid_mask[0, local_idx] = True
             print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
