@@ -303,16 +303,30 @@ class GATV2ActorCritic(nn.Module):
             num_nodes_i = end - start
             valid_mask_i = valid_mask[i, :num_nodes_i] # For the i-th graph, get the valid mask.
 
+            # Handle forced-end steps where no valid actions existed.
+            if not valid_mask_i.any():
+                local_idx = actions[i]
+                if int(local_idx.item()) != num_nodes_i:
+                    raise ValueError(
+                        f"Received action {local_idx.item()} despite empty valid mask for graph {i}"
+                    )
+
+                zero = logits.new_zeros(())
+                log_probs_list.append(zero)
+                entropies_list.append(zero)
+                continue
+
             # Logits for the current graph.
             graph_logits = logits[start:end]
             masked_logits = graph_logits.clone()
             masked_logits[~valid_mask_i] = -float('inf')
 
+            print(f"\nGraph {i} masked logits: \n{masked_logits}")
+
             # Sanity
             if masked_logits.numel() == 0:
                 raise ValueError(f"No valid logits in graph {i}")
 
-            print(f"\nGraph {i} masked logits: \n{masked_logits}")
             # Distribution over valid local indices in the current graph.
             dist = Categorical(logits=masked_logits)
             local_idx = actions[i] # The action that was chosen for the i-th graph (local index).

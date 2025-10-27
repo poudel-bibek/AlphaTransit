@@ -26,16 +26,23 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Each item[valid mask] is a boolean tensor [1, num_nodes]
     valid_masks = []
     for item in batch:
-        m = item['valid_mask']
+        m = item['valid_mask'].squeeze(0)
         valid_masks.append(m)
     batched_valid_mask = torch.stack(valid_masks, dim=0) # 2D tensor [B, num_nodes]
-
+    
     # 4) Stack the other tensors
     actions = torch.tensor([item['actions'] for item in batch], dtype=torch.long) # [B]
     log_probs = torch.tensor([item['log_probs'] for item in batch], dtype=torch.float32) # [B]
     advantages = torch.tensor([item['advantages'] for item in batch], dtype=torch.float32) # [B]
     returns = torch.tensor([item['returns'] for item in batch], dtype=torch.float32) # [B]
     values = torch.tensor([item['values'] for item in batch], dtype=torch.float32) # [B]
+    
+    print(f"\nActions: shape: {actions.shape}, value: {actions}, type: {type(actions)}")
+    print(f"\nLog probs: shape: {log_probs.shape}, value: {log_probs}, type: {type(log_probs)}")
+    print(f"\nAdvantages: shape: {advantages.shape}, value: {advantages}, type: {type(advantages)}")
+    print(f"\nReturns: shape: {returns.shape}, value: {returns}, type: {type(returns)}")
+    print(f"\nValues: shape: {values.shape}, value: {values}, type: {type(values)}")
+    print(f"\nValid mask: shape: {batched_valid_mask.shape}, value: {batched_valid_mask}, type: {type(batched_valid_mask)}")
 
     return {
         'obs': batched_obs,

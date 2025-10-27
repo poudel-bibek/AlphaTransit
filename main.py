@@ -245,6 +245,7 @@ def train(config: Dict[str, Any]) -> None:
 
                 # Zero log prob is a safe placeholder that avoids NaNs in PPO. 
                 log_prob_tensor = torch.tensor([0.0], dtype=torch.float32, device=config["device"])
+                valid_mask = torch.zeros(1, env.n_nodes, dtype=torch.bool, device=config["device"])
 
             print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
             print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
@@ -265,6 +266,7 @@ def train(config: Dict[str, Any]) -> None:
                 route_progress=data.route_progress.cpu()
             )
             
+            print(f"\n\nVALID MASK: shape: {valid_mask.shape}, value: {valid_mask}, type: {type(valid_mask)}\n\n")
             ppo.memory.store({
                 'obs': store_data,
                 'action': action,
