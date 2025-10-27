@@ -1,420 +1,482 @@
-from typing import Tuple, Optional
+import math
+import random
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.distributions import Categorical
+from typing import List, Optional
 from torch_geometric.nn import GATv2Conv, global_mean_pool
-from torch_geometric.data import Batch
+from torch_geometric.data import Data, Batch
+from torch.distributions import Categorical
 
+def count_module(module: nn.Module) -> int:
+    return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+def set_seed(seed=0):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+def make_activation(name: str) -> nn.Module:
+    name = name.lower()
+    if name == "relu": return nn.ReLU()
+    if name == "elu": return nn.ELU()
+    if name == "leaky_relu": return nn.LeakyReLU()
+    if name == "gelu": return nn.GELU()
+    if name == "tanh": return nn.Tanh()
+    raise ValueError(f"Unknown activation '{name}'")
+
+def _gain_from_activation(name: str) -> float:
+    """
+    Calculate the gain for the activation function.
+    - For ReLU, the gain is sqrt(2).
+    - For LeakyReLU, the gain is sqrt(2 / (1 + negative_slope^2)).
+    - For Tanh, the gain is 5/3.
+    - For GELU and ELU, the gain is 1.0.
+    """
+    name = name.lower()
+    if name == "relu":
+        return nn.init.calculate_gain("relu")
+    if name == "leaky_relu":
+        return nn.init.calculate_gain("leaky_relu", 0.01)
+    if name == "tanh":
+        return nn.init.calculate_gain("tanh")
+    if name in {"gelu", "elu"}:
+        return 1.0
+    return 1.0
+
+class GATBlock(nn.Module):
+    def __init__(self, **kwargs):
+        """
+        - Using two separate dropouts.
+            - First inside GATv2Conv (randomly drop attention coefficients)
+            - Second after each GATv2Conv block (randomly drop connections between GAT blocks)
+        """
+        super().__init__()
+        
+        self.concat = kwargs["concat"]
+        self.in_channels = kwargs["in_channels"]
+        self.out_channels = kwargs["out_channels"]
+        self.heads = kwargs["heads"]
+
+        self.conv = GATv2Conv(
+            in_channels = self.in_channels,
+            out_channels = self.out_channels,         # Per head
+            heads = self.heads,
+            dropout = kwargs["attn_dropout"],         # First dropout
+            concat = self.concat,                     # False means output dim = hidden channels, if True, output dim = hidden channels * heads
+            edge_dim = kwargs["edge_dim"],            # Edge features
+            add_self_loops = False,                   # In our case, edges have no self-loops.
+        )
+
+        self.norm = nn.LayerNorm(self.in_channels)    # pre norm on input width
+        self.feat_dropout = nn.Dropout(kwargs["feat_dropout"]) # Second dropout
+        self.activation = kwargs["activation"]
+
+        # Based on the concat setting, we will either project the output 
+        self._eff_out = self.out_channels * self.heads if self.concat else self.out_channels
+        self.residual = nn.Identity() if self.in_channels == self._eff_out else nn.Linear(self.in_channels, self._eff_out)
+    
+    def eff_out(self):
+        """
+        Function name is eff_out, variable name is _eff_out.
+        """
+        return self._eff_out
+
+    def forward(self, x, edge_index, edge_attr):
+        """
+        Each GAT block will have a residual skip connection. 
+        Pre-normalization:
+        - Normalize the input of the block then conv, activation, dropout
+        - Project the output to the effective output dimension then then add as residual.
+        """
+        xn = self.norm(x)
+        h = self.conv(xn, edge_index, edge_attr)
+        h = self.activation(h)   # Activation goes after normalization, before dropout
+        h = self.feat_dropout(h)
+        return self.residual(x) + h # residual added 
 
 class GATV2ActorCritic(nn.Module):
     """
-    Actor-Critic with shared GATv2 features with separate actor/critic heads.
-    - GATv2 processes graph-structured data (nodes, edges) to produce node embeddings, 
-      which are then aggregated into a graph-level features in readout layer, where we have a fixed sized vector.
-    - The route_progress is a vector that applies to the whole graph (global feature), which we concatentate after the graph-level features..
-    
-    To enable stacking without issues like vanishing gradients, we adopt a number of things for good "hygiene":
-    1. Residual connections. 
-    2. Layer normalization.
-    3. Dropout.
+    Actor-Critic with shared GATv2 backbone that produces node embeddings.
+    - Actor is permutation equivariant (decisions per node, output = logits per node).
+    - Critic is permutation invariant (decisions per graph, output = one scalar value per graph).
+    - Size of policy network is independent of the size of the graph (n_nodes).
+    - Before GAT blocks: Project node features
     """
-
-    def __init__( self, num_actions: int, **kwargs) -> None:
-        """
-        GATv2 backbone and actor-critic heads.
-        
-        Args:
-            node_feature_dim: used as in_channels in GATv2Conv layers
-            num_actions: Number of total nodes in the network
-            **kwargs: 
-                num_layers: Number of GATv2 layers (int)
-                gat_channels: Hidden dimension for GATv2 layers (list: [n_node_features, hidden_channels 1, hidden_channels 2, ..., output_dimension]) 
-                    - The first element is the number of node features.
-                    - The last element is the output dimension.
-                num_heads: Number of attention heads for each GATv2 layer (list: [num_heads 1, num_heads 2, ...])
-                num_edge_features: edge features (int)
-                dropout: Dropout probability (float)
-                global_dim: size of route_progress (float array)
-                activation: activation function (str: "elu", "tanh", "leaky_relu", "relu")
-
-        Notes: 
-        - No shared MLP layers between actor and critic.
-        - A custom layer init is used for GATv2 layers.
-        """
+    def __init__(self, **kwargs):
         super().__init__()
-        self.num_actions = num_actions  # n_nodes + 1 (for the NO_VALID_ACTION)
-        self.n_nodes = kwargs.get("n_nodes")
-        self.num_layers = kwargs.get("num_layers")
-        self.gat_channels = kwargs.get("gat_channels") # [in_dim, h1, ..., hL]
-        # Why heads = 1 in the last layer?
-        # Multi-head attention is used in the earlier layers to capture different aspects of the graph and the final layer consolidates this info.
-        self.num_heads = kwargs.get("num_heads") # [heads1, ..., headsL]
-        self.num_edge_features = kwargs.get("num_edge_features")
-        self.dropout = kwargs.get("dropout")
-        self.global_dim = kwargs.get("global_dim") 
-        self.concat = kwargs.get("concat")
 
-        act = kwargs.get("activation")
-        if act == "elu":
-            self.activation = nn.ELU()
-        elif act == "tanh":
-            self.activation = nn.Tanh()
-        elif act == "leaky_relu":
-            self.activation = nn.LeakyReLU()
-        elif act == "relu":
-            self.activation = nn.ReLU()
-        
-        # Only include the hidden dimensions.
-        actor_sizes = [512, 256] # [128, 64] 
-        critic_sizes = [256, 64] # [128, 64] 
+        # Projection
+        self.n_node_features = kwargs['n_node_features']
+        self.proj_out = kwargs['proj_out']
 
-        # Build GATv2 layers with residuals, LayerNorm, and dropout.
-        # E.g., For a 2 layer setup:
-        # First layer should output [num_nodes, hidden_gat_dims[0]*num_heads[0]] (concat = False)
-        # First layer should output [num_nodes, hidden_gat_dims[0]] (concat = True)
-        # concat = True by default: the output from different attn heads are concatenated to the output of size hidden_gat_dims[0]*num_heads[0]
-        # When concat = False, the output is the average of the attn heads.
-        # Concat reduces dimensionality, but loses too much information.
-        # Second layer should output [num_nodes, hidden_gat_dims[1]*num_heads[1]] (concat = False)
-        # Second layer should output [num_nodes, hidden_gat_dims[1]] (concat = True)
-        
-        gat_layers = []
-        res_projs = []
-        norms = []
+        # GAT blocks
+        self.num_gat_blocks = kwargs['num_gat_blocks']
+        self.gat_channels = kwargs['gat_channels']
+        self.num_heads = kwargs['num_heads']
+        self.n_edge_features = kwargs['n_edge_features']
+        self.activation_name = kwargs['activation']
+        self.activation = make_activation(self.activation_name)
+        self.attn_dropout = kwargs['attn_dropout']
+        self.feat_dropout = kwargs['feat_dropout']
+        self.actor_head_dropout = kwargs['actor_head_dropout']
+        self.critic_head_dropout = kwargs['critic_head_dropout']
+        self.concat = kwargs['concat']
 
-        for i in range(self.num_layers):
-            if i == 0:
-                # First layer always takes original node features
-                in_dim = self.gat_channels[0]
-            else:
-                # Subsequent layers depend on concat setting
-                if self.concat:
-                    # Previous layer output: out_channels * num_heads
-                    in_dim = self.gat_channels[i] * self.num_heads[i-1]
-                else:
-                    # Previous layer output: out_channels (averaged across heads)
-                    in_dim = self.gat_channels[i]
+        # A/ C
+        self.actor_head_layers = kwargs['actor_head_layers']
+        self.critic_head_layers = kwargs['critic_head_layers']
+
+        # Sanity checks
+        assert len(self.gat_channels) == self.num_gat_blocks
+        assert len(self.num_heads) == self.num_gat_blocks
+        assert len(self.attn_dropout) == self.num_gat_blocks
+        assert len(self.feat_dropout) == self.num_gat_blocks
+
+        # Layers
+        # Node features projection
+        self.proj = nn.Linear(self.n_node_features, self.proj_out)
+
+        # GAT blocks
+        blocks = []
+        in_dim = self.proj_out
+        for i in range(self.num_gat_blocks):
             
-            # Output dim per head and effective out dim after concat or mean
-            out_dim = self.gat_channels[i+1]
-            out_eff = out_dim * self.num_heads[i] if self.concat else out_dim
-            
-            conv = GATv2Conv(
+            block = GATBlock(
                 in_channels = in_dim,
-                out_channels = out_dim,
-                heads=self.num_heads[i],
-                dropout=self.dropout,
-                concat=self.concat,
-                edge_dim=self.num_edge_features 
+                out_channels = self.gat_channels[i],
+                heads = self.num_heads[i],
+                attn_dropout = self.attn_dropout[i],
+                feat_dropout = self.feat_dropout[i],
+                activation = self.activation,
+                edge_dim = self.n_edge_features,
+                concat = self.concat,
             )
-            conv = self.gat_layer_init(conv)  # Apply custom init
-            gat_layers.append(conv)
+            blocks.append(block)
+            # Next block input is going to be based on the effective output dimension
+            in_dim = block.eff_out()
 
-            # Residual projection if shapes differ.
-            if in_dim != out_eff:
-                res_projs.append(self.layer_init(nn.Linear(in_dim, out_eff)))
-            else: 
-                res_projs.append(nn.Identity())
+        self.gat_blocks = nn.ModuleList(blocks)
+        # The output dim after layers (GAT blocks) going to be in_dim.
+        self.backbone_out = in_dim
+
+        # Actor head
+        self.actor_head = self._make_head(self.actor_head_layers, self.actor_head_dropout)
+
+        # Critic head
+        self.critic_head = self._make_head(self.critic_head_layers, self.critic_head_dropout)
+
+    def _make_head(self, layers: List[int], dropout: float) -> nn.Sequential:
+        """
+        Make a head with the given layers and dropout.
+        """
+        dims = [self.backbone_out] + list(layers) + [1]
+        head = []
+        for i in range(len(dims) - 1):
+            head.append(nn.Linear(dims[i], dims[i + 1]))
+            if i < len(dims) - 2:
+                head.append(self.activation)
+                if dropout > 0:
+                    head.append(nn.Dropout(dropout))
+        return nn.Sequential(*head)
+
+    def _get_node_embeddings(self, x, edge_index, edge_attr):
+        """
+        Get the node embeddings from the GAT blocks.
+        """
+        # Input projection.
+        x = self.proj(x) # [n_nodes, proj_out]
+        # GAT stack 
+        for block in self.gat_blocks:
+            x = block(x, edge_index, edge_attr) # Edge attributes injected
+        return x 
+ 
+    def _get_ptr(self, batch_tensor):
+        """
+        Get the pointer indices for the batch tensor.
+        """
+        num_graphs = batch_tensor.max().item() + 1
+        ptr = torch.zeros(num_graphs + 1, dtype=torch.long, device=batch_tensor.device)
+        ptr[1:] = torch.cumsum(torch.bincount(batch_tensor), dim=0)
+        return ptr
+
+    def act(self, x, edge_index, edge_attr, batch, valid_indices, stochastic: bool = True):
+        """
+       valid_indices (NOT optional) is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
+       - Mask out nodes that are not valid.
+       - How batch works in PyG: 
+        - If graph 0 has [A, B, C] nodes, and graph 1 has [D, E, F] nodes
+        - Then PyG flattens them to a single graph with [A, B, C, D, E, F] nodes.
+        - Then batch will be [0, 0, 0, 1, 1, 1] with nodes A-F indexed as 0 to 5
+        - If you are allowed to pick [B, C] from graph 0 (local 1,2) and [D, F] from graph 1 (local 0,2), then valid_indices would be[[False, True, True], [True, False, True]].
+       The batch input is not the object but the batch tensot i.e., [0, 0, 0, 1, 1, 1...]
+       Build a categorical distribution (per graph) over the valid indices.
+       When stochastic is True, sample from the distribution otherwise return argmax
+       Returns: 
+       - actions: tensor [batch_size] of local node indices selected as actions
+       - log_probs: tensor [batch_size] of log probabilities of the selected actions
+       - values: tensor [batch_size] i.e., one value per graph.
+       """
+
+        z = self._get_node_embeddings(x, edge_index, edge_attr)
+        logits = self.actor_head(z).squeeze(-1)
+        g = self.critic_readout(z, batch)
+        values = self.critic_head(g).squeeze(-1)
+        num_graphs = batch.max().item() + 1
+        ptr = self._get_ptr(batch)
+
+        if valid_indices.dim() != 2 or valid_indices.shape[0] != num_graphs:
+            raise ValueError("valid_indices must be 2D bool tensor of shape [batch_size, max_nodes]")
+
+        actions_list = []
+        log_probs_list = []
+
+        for i in range(num_graphs):
+            start, end = ptr[i], ptr[i+1]
             
-            # Layer norm on the residual sum
-            norms.append(nn.LayerNorm(out_eff))
-            
-        self.gat_layers = nn.ModuleList(gat_layers)  # Use ModuleList to properly register modules
-        self.res_projs = nn.ModuleList(res_projs)
-        self.norms = nn.ModuleList(norms)
-        self.dropout_layer = nn.Dropout(self.dropout)
+            # Number of nodes in the current graph.
+            num_nodes_i = end - start
+            valid_mask = valid_indices[i, :num_nodes_i] # For the i-th graph, get the valid mask.
 
-        # Actor 
-        if self.concat:
-            actor_input = self.gat_channels[-1]*self.num_heads[-1]*self.n_nodes + self.global_dim
-        else:
-            actor_input = self.gat_channels[-1]*self.n_nodes + self.global_dim
-        
-        actor_layers = []
-        for hs in actor_sizes:
-            actor_layers.append(self.layer_init(nn.Linear(actor_input, hs)))
-            actor_layers.append(self.activation)
-            actor_input = hs
+            # Logits for the current graph.
+            graph_logits = logits[start:end]
+            masked_logits = graph_logits.clone()
+            masked_logits[~valid_mask] = -float('inf')
 
-        # Actor output layer with smaller gain (make actor start with close to uniform distribution i.e. not too confident on any particular action)
-        actor_layers.append(self.layer_init(nn.Linear(actor_sizes[-1], self.num_actions), std=0.01))
-        self.actor_net = nn.Sequential(*actor_layers)  # Changed from self.actor
+            # Sanity
+            if masked_logits.numel() == 0:
+                raise ValueError(f"No valid logits in graph {i}")
 
-        # Critic 
-        if self.concat:
-            critic_input = self.gat_channels[-1] * self.num_heads[-1] + self.global_dim
-        else:
-            critic_input = self.gat_channels[-1] + self.global_dim
-        
-        critic_layers = []
-        for hs in critic_sizes:
-            critic_layers.append(self.layer_init(nn.Linear(critic_input, hs)))
-            critic_layers.append(self.activation)
-            critic_input = hs
+            # Distribution has to be built over all local indices in the current graph but logits for invalid ones are masked to -inf.
+            # If we were to build a dist over only valid nodes (for example 3 valid nodes), then it would be over indices 0, 1, 2.
+            # This is a problem because although the valid nodes could be index 10 , 11, 12 in the graph the dist would have indices 0, 1, 2.
+            dist = Categorical(logits=masked_logits)
+            if stochastic:
+                local_idx = dist.sample()
+            else:
+                # local_idx = torch.argmax(masked_logits) # Select the node index with the highest logit.
+                local_idx = dist.probs.argmax() # Select the node index with the highest probability.
 
-        # Critic output layer with gain 1 (slightly smaller than sqrt(2))
-        critic_layers.append(self.layer_init(nn.Linear(critic_sizes[-1], 1), std=1.0))
-        self.critic_net = nn.Sequential(*critic_layers)  # Changed from self.critic
+            log_prob = dist.log_prob(local_idx)      # scalar value
+            actions_list.append(local_idx)
+            log_probs_list.append(log_prob)
 
-    def _mask_logits(self, logits: torch.Tensor, valid_indices: Optional[torch.Tensor]) -> torch.Tensor:
-        """
-        Mask invalid actions by setting their logits to -inf.
-        Handles batches: valid_indices [batch, max_valid] padded with -1.
-        Ignores -1 during masking.
+        actions = torch.stack(actions_list)
+        log_probs = torch.stack(log_probs_list)
 
-        If an empty valid_indices is passed, everything will be masked.
-        So, don't pass empty valid_indices.
-        """
-        if valid_indices is None:
-            return logits
-
-        MASK_VALUE = -float("inf") 
-        mask = torch.zeros_like(logits, dtype=torch.bool)
-
-        batch_size = logits.shape[0]
-        for b in range(batch_size):
-            valid = valid_indices[b]
-            valid = valid[valid >= 0]  # Ignore padding
-            if len(valid) > 0:
-                mask[b, valid] = True
-
-        # print("[DEBUG] Original logits:\n", logits)
-        # print("[DEBUG] Valid indices:\n", valid_indices)
-        # print("[DEBUG] Mask (True for valid):\n", mask)
-        masked = logits.masked_fill(~mask, MASK_VALUE)
-        # print("[DEBUG] Masked logits:\n", masked)
-        return masked
-
-    def gat_forward(self, graph_batch: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass through GAT layers
-        batch: Batch assignment for nodes (for pooling)
-        """
-        x = graph_batch.x  # Node features
-        edge_index = graph_batch.edge_index
-        edge_attr = graph_batch.edge_attr
-
-        # print(f"[DEBUG] Node features before GAT layers: {x.shape}")
-        # Pass through GAT layers
-        for i, conv in enumerate(self.gat_layers):
-            identity = x 
-            x = conv(x, edge_index, edge_attr=edge_attr)  # Inject edge features at each GATv2 layer
-            # print(f"[DEBUG] After GAT layer {i}, node features:\n{x.shape}")
-            # Apply activation except for last layer
-            if i < len(self.gat_layers) - 1:
-                x = self.activation(x)
-            x = self.dropout_layer(x)
-            x = x + self.res_projs[i](identity)
-            x = self.norms[i](x)
-        return x
-
-    def _compute_dist_and_value(self, 
-                                graph_batch: Batch, 
-                                valid_indices: Optional[torch.Tensor]
-                                ) -> Tuple[Categorical, torch.Tensor]:
-        """
-        Returns a dummy action (-1) if episode is truncated. Still need to return a value in this case.
-        """
-        # Compute GAT features once
-        node_features = self.gat_forward(graph_batch)
-        # print(f"[DEBUG] Node features - has NaN: {torch.isnan(node_features).any()}, shape: {node_features.shape}")
-        
-        # Use readout functions with shared node features
-        actor_features = self.actor_readout(node_features, graph_batch)
-        # print(f"[DEBUG] Actor features - has NaN: {torch.isnan(actor_features).any()}, shape: {actor_features.shape}")
-        
-        logits = self.actor_net(actor_features)
-        # print(f"[DEBUG] Logits - has NaN: {torch.isnan(logits).any()}, shape: {logits.shape}")
-        
-        critic_features = self.critic_readout(node_features, graph_batch)
-        values = self.critic_net(critic_features).squeeze(-1)
-        
-        masked_logits = self._mask_logits(logits, valid_indices)
-        # print(f"[DEBUG] Masked logits - has NaN: {torch.isnan(masked_logits).any()}, shape: {masked_logits.shape}")
-        dist = Categorical(logits=masked_logits)
-        # print("[DEBUG] Distribution probs:\n", dist.probs)
-        return dist, values
-
-    def layer_init(self, layer: nn.Linear, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Linear:
-        """
-        Orthogoal initialization of weights and Constant initialization of biases.
-        https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
-        """
-        nn.init.orthogonal_(layer.weight, std)
-        nn.init.constant_(layer.bias, bias_const)
-        return layer
-
-    def gat_layer_init(self, conv: GATv2Conv, std: float = np.sqrt(2), bias_const: float = 0.0) -> GATv2Conv:
-        """
-        Custom orthogonal initialization for GATv2Conv internal weights.
-        Potential safety issue: Direct access to conv.att (3D tensor) for orthogonal init may be inappropriate for attention weights.
-        Safer alternative: Avoid touching GAT internals at init (use PyG default).
-        """
-        # Safer approach: Only touch clearly linear 2D weights and biases by name
-        for name, param in conv.named_parameters(recurse=False):
-            if "lin" in name and param.dim() >= 2:
-                print(f"Initializing {name}: shape={param.shape}")
-                nn.init.orthogonal_(param, std)
-            elif "bias" in name and param is not None and param.dim() == 1:
-                print(f"Initializing {name}: shape={param.shape}")
-                nn.init.constant_(param, bias_const)
-        return conv
-
-    def actor_readout(self, node_features: torch.Tensor, graph_batch: Batch) -> torch.Tensor:
-        """
-        Readout: Aggregate node embeddings into graph-level features i.e., a way to get a fixed sized vector for the graph.
-        However, in this case we don't have a variable sized input (current routes are embedded as node features) 
-
-        Approaches: 
-            1. Global mean pooling: 
-            - Average the node features across all nodes in the graph.
-            - Example: node 1 features: [0.1, 0.2, 0.3], node 2: [0.4, 0.5, 0.6], node 3: [0.7, 0.8, 0.9]
-            - After pooling: Global node features = [0.4, 0.5, 0.6]
-            - Disadvantage: Severe loss of information.
-
-            2. Alternative: Global sort pooling:
-            - Sort the nodes according to their mean activation then take the top k nodes.
-            
-            3. Alternative: No pooling in Actor + Global mean pooling in Critic (Currently used).
-            - Just concatenate all node features from the last GATv2 layer.
-            - Justification: 
-                - Fundamentally, the task for the policy actor is `next node selection`.
-                - Global mean pooling reduces information too much, and forces the MLP to reconstruct node-specific probabilities from an average.
-                - This is likely suboptimal for node-selection task.
-                - If we remove pooling, actor logits would be computed directly from each node's embedding. 
-                - This avoids the averaging loss, allowing better differentiation between nodes/actions.
-                - At the same time, perhaps the critic benefits from pooling, as value estimation is inherently graph-level.
-                - route_progress is a global feature (not broadcasted to each node); maybe more important to the critic.
-            - Cons: 
-                - Changing node order changes the concatenated vector (Same graph, different node order = different results). 
-                    - However, for a given graph, the node order is fixed.
-                - Parameter count is higher because the MLP at input is larger.
-                    - No big deal.
-                - Probably the most prominent con of this approach is that this is not scalable to large networks.
-                    - When the number of nodes is large, the parameter count for actor MLP head is too high.
-
-            4. Alternative: Validity-Weighted Attention Readout
-            
-        """
-        # 1. Global mean pooling
-        # graph_features = global_mean_pool(node_features, batch)
-        # graph_features = torch.cat([graph_features, route_progress.view(-1, 1)], dim=1) # Concatenate global features (route_progress)
-        
-        # 3. No pooling.
-        # Flatten all node features per graph
-        batch_size = len(torch.unique(graph_batch.batch))  # Number of graphs in batch
-        emb_dim = node_features.shape[1]
-        num_nodes = node_features.shape[0] // batch_size  # Assumes fixed num_nodes per graph
-        # Reshape to [batch_size, num_nodes * emb_dim]
-        graph_features = node_features.view(batch_size, num_nodes * emb_dim)
-        # print(f"[DEBUG] Actor graph features shape: {graph_features.shape}")
-
-        route_progress = graph_batch.route_progress
-        # Route progress shape handling:
-        # - Single observation: [NUM_ROUTES] -> add batch dim -> [1, NUM_ROUTES]
-        # - Batched observations: [batch_size, NUM_ROUTES] (already correct)
-        if route_progress.dim() == 1:
-            route_progress = route_progress.unsqueeze(0)
-        # print(f"[DEBUG] Route progress shape: {route_progress.shape}")
-
-        # Concatenate global features (route_progress)
-        graph_features = torch.cat([graph_features, route_progress], dim=1)
-        # print(f"[DEBUG] Actor graph features shape after concatenation: {graph_features.shape}")
-
-        return graph_features
-
-    def critic_readout(self, node_features: torch.Tensor, graph_batch: Batch) -> torch.Tensor:
-        """
-        Critic readout: Global mean pooling for graph-level value estimation.
-        """
-        # 1. Global mean pooling 
-        graph_features = global_mean_pool(node_features, graph_batch.batch)
-        
-        # print(f"[DEBUG] Critic pooled features shape: {graph_features.shape}")
-        
-        route_progress = graph_batch.route_progress
-        # Route progress shape handling:
-        # - Single observation: [NUM_ROUTES] -> add batch dim -> [1, NUM_ROUTES]
-        # - Batched observations: [batch_size, NUM_ROUTES] (already correct)
-        if route_progress.dim() == 1:
-            route_progress = route_progress.unsqueeze(0)
-        # print(f"[DEBUG] Route progress shape: {route_progress.shape}")
-
-        # Concatenate global features (route_progress)
-        graph_features = torch.cat([graph_features, route_progress], dim=1)
-        # print(f"[DEBUG] Critic graph features shape after concatenation: {graph_features.shape}")
-
-        return graph_features
-    
-    def act(self, graph_batch: Batch, 
-            deterministic: bool = False, 
-            valid_indices: Optional[torch.Tensor] = None, 
-            truncated: bool = False
-            ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Select next node to add to route.
-        Samples stochastically during training, can be deterministic for eval.
-        Returns:
-            actions: Selected node indices
-            log_probs: Log probabilities of selections
-            values: Value estimates
-        """
-        
-        # # Handle truncation
-        # if truncated:
-        #     node_features = self.gat_forward(graph_batch)
-        #     critic_features = self.critic_readout(node_features, graph_batch)
-        #     values = self.critic_net(critic_features).squeeze(-1)
-        #     dummy_action = torch.tensor([-1], device=graph_batch.x.device)
-        #     dummy_log_prob = torch.tensor([0.0], device=graph_batch.x.device)
-        #     return dummy_action, dummy_log_prob, values
-        
-        dist, values = self._compute_dist_and_value(graph_batch, valid_indices)
-
-        # print(f"[DEBUG] Dist: {dist.logits.shape}")
-        # print(f"[DEBUG] Dist logits values: {dist.logits.detach().cpu().numpy()}")
-        # print(f"[DEBUG] Values: {values.detach().cpu().numpy()}")
-        
-        if deterministic:
-            actions = dist.logits.argmax(-1)
-            print(f"\n\tAction (Deterministic): {actions}\n")
-        else:
-            actions = dist.sample()
-            print(f"\n\tAction (Stochastic): {actions}\n")
-        
-        log_probs = dist.log_prob(actions)
-        # print(f"[DEBUG] Log probs: {log_probs}")
         return actions, log_probs, values
     
-    def evaluate(self, graph_batch: Batch, actions: torch.Tensor, valid_indices: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def critic_readout(self, z, batch):
         """
-        Compute log-probs, entropy, and values for PPO loss.
-        
-        Returns:
-            log_probs: Log probabilities of selected nodes
-            entropy: Policy entropy for exploration
-            values: Value estimates
+        Various pooling strategies can be used (pools over all nodes in a graph batch (which may contain multiple graphs)).
+        Currently used: Global mean pooling i.e., average the node embeddings across all nodes in the graph.
+        # TODO: Experiment with others.
         """
-        
-        dist, values = self._compute_dist_and_value(graph_batch, valid_indices)
-        
-        log_probs = dist.log_prob(actions)
-        entropy = dist.entropy()
-        
-        return log_probs, entropy, values
+        return global_mean_pool(z, batch) # [batch_size, D]   
 
-    def param_count(self):
+    def evaluate(self, x, edge_index, edge_attr, batch, valid_indices, actions):
         """
+        The input actions are local indices into the current graph i.e., a 2D tensor of shape [batch_size, 1], 1 corresponding to local index of node_chosen_for_graph_i.
+        valid_indices is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
+        Values (scalar values) are one value per graph.
+        Returns: log_probs, entropies, values
         """
-        shared_gat_params = sum(p.numel() for layer in self.gat_layers for p in layer.parameters() if p.requires_grad)
-        actor_params = sum(p.numel() for p in self.actor_net.parameters() if p.requires_grad)  # Changed to actor_net
-        critic_params = sum(p.numel() for p in self.critic_net.parameters() if p.requires_grad)  # Changed to critic_net
-        total_params = shared_gat_params + actor_params + critic_params
+        z = self._get_node_embeddings(x, edge_index, edge_attr) 
+        logits = self.actor_head(z).squeeze(-1)
+        num_graphs = batch.max().item() + 1
+        ptr = self._get_ptr(batch)
+        
+        if valid_indices.dim() != 2 or valid_indices.shape[0] != num_graphs:
+            raise ValueError("valid_indices must be 2D bool tensor of shape [batch_size, max_nodes]")
 
-        return {
-            "shared_gat": shared_gat_params,
-            "actor": actor_params,
-            "critic": critic_params,
-            "Grand total": total_params
-        }
+        g = self.critic_readout(z, batch)
+        values = self.critic_head(g).squeeze(-1)
+
+        log_probs_list = []
+        entropies_list = []
+
+        for i in range(num_graphs):
+            start, end = ptr[i], ptr[i+1]
+
+            # Number of nodes in the current graph.
+            num_nodes_i = end - start
+            valid_mask = valid_indices[i, :num_nodes_i] # For the i-th graph, get the valid mask.
+
+            # Logits for the current graph.
+            graph_logits = logits[start:end]
+            masked_logits = graph_logits.clone()
+            masked_logits[~valid_mask] = -float('inf')
+
+            # Sanity
+            if masked_logits.numel() == 0:
+                raise ValueError(f"No valid logits in graph {i}")
+
+            # Distribution over valid local indices in the current graph.
+            dist = Categorical(logits=masked_logits)
+            local_idx = actions[i] # The action that was chosen for the i-th graph (local index).
+
+            # Sanity 
+            if local_idx >= num_nodes_i or not valid_mask[local_idx]:
+                raise ValueError(f"Invalid action {local_idx} in graph {i}")
+
+            log_prob = dist.log_prob(local_idx)
+            entropy = dist.entropy()
+
+            log_probs_list.append(log_prob)
+            entropies_list.append(entropy)
+
+        log_probs = torch.stack(log_probs_list)
+        entropies = torch.stack(entropies_list)
+        return log_probs, entropies, values
+
+    @torch.no_grad()
+    def apply_orthogonal_init(self, hidden_gain: Optional[float] = None,
+                              bias_const: float = 0.0,
+                              actor_final_gain: float = 0.01,
+                              critic_final_gain: float = 1.0):
+        """
+        Orthogonal initialization of weights and Constant initialization of biases.
+        https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+
+        LayerNorm gets weight 1 and bias 0.
+        Final actor and critic layers use their own gains.
+        """
+        if hidden_gain is None:
+            hidden_gain = _gain_from_activation(self.activation_name)
+        else:
+            hidden_gain = hidden_gain
+        
+        # Pass 1: initialize every Linear and LayerNorm
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=hidden_gain)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, bias_const)
+            elif isinstance(m, nn.LayerNorm):
+                if m.weight is not None:
+                    nn.init.constant_(m.weight, 1.0)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
+        # Pass 2: override the very last Linear of each head
+        def _reset_last_linear(seq: nn.Sequential, gain: float):
+            for layer in reversed(seq):
+                if isinstance(layer, nn.Linear):
+                    nn.init.orthogonal_(layer.weight, gain=gain)
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, bias_const)
+                    break
+
+        _reset_last_linear(self.actor_head, actor_final_gain)
+        _reset_last_linear(self.critic_head, critic_final_gain)
+        
+    
+    def count_params(self):
+        proj_params = count_module(self.proj)
+        block_params = sum(count_module(b) for b in self.gat_blocks)
+        actor_params = count_module(self.actor_head)
+        critic_params = count_module(self.critic_head)
+        total = proj_params + block_params + actor_params + critic_params
+        lines = ["Parameter breakdown", "--------------------"]
+        lines.append(f"Projection: {proj_params:,}")
+        lines.append(f"GAT blocks total: {block_params:,}")
+        lines.append(f"Actor head: {actor_params:,}")
+        lines.append(f"Critic head: {critic_params:,}")
+        lines.append(f"Total trainable: {total:,}")
+        print("\n".join(lines))
+        print("--------------------")
+
+if __name__ == "__main__":
+    set_seed(0)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    cfg = dict(
+        n_node_features=12,
+        proj_out=32,
+        num_gat_blocks=3,
+        gat_channels=[32, 16, 8],
+        num_heads=[16, 8, 4],
+        attn_dropout=[0.1, 0.1, 0.1],
+        feat_dropout=[0.1, 0.1, 0.1],
+        actor_head_dropout=0.2,
+        critic_head_dropout=0.2,
+        concat=False,
+        activation="leaky_relu",
+        n_edge_features=2,
+        actor_head_layers=[64, 32],
+        critic_head_layers=[64, 32],
+    )
+
+    print("Initializing model...")
+    model = GATV2ActorCritic(**cfg).to(device)
+    model.apply_orthogonal_init(
+        hidden_gain=None,         # auto from activation
+        bias_const=0.0,
+        actor_final_gain=0.01,    # small gain to keep initial policy high-entropy
+        critic_final_gain=1.0,
+    )
+    model.count_params()
+
+    # Graph 0: 10 nodes, fully connected for simplicity (edges between all pairs)
+    num_nodes0 = 10
+    x0 = torch.randn(num_nodes0, cfg["n_node_features"])
+    ei0 = torch.combinations(torch.arange(num_nodes0), r=2).t()  # All pairs
+    ei0 = torch.cat([ei0, ei0.flip(0)], dim=1)  # Undirected
+    ea0 = torch.randn(ei0.size(1), cfg["n_edge_features"])
+    g0 = Data(x=x0, edge_index=ei0, edge_attr=ea0)
+
+    # Graph 1: 15 nodes, fully connected
+    num_nodes1 = 15
+    x1 = torch.randn(num_nodes1, cfg["n_node_features"])
+    ei1 = torch.combinations(torch.arange(num_nodes1), r=2).t()  # All pairs
+    ei1 = torch.cat([ei1, ei1.flip(0)], dim=1)  # Undirected
+    ea1 = torch.randn(ei1.size(1), cfg["n_edge_features"])
+    g1 = Data(x=x1, edge_index=ei1, edge_attr=ea1)
+
+    # Batch the graphs
+    batch = Batch.from_data_list([g0, g1]).to(device)
+    print(f"\nBatch created with {batch.num_graphs} graphs:")
+    print(f"Graph 0: {g0.num_nodes} nodes, global indices [0 to {g0.num_nodes-1}]")
+    print(f"Graph 1: {g1.num_nodes} nodes, global indices [{g0.num_nodes} to {g0.num_nodes + g1.num_nodes - 1}]")
+    print(f"Total nodes in batch: {batch.num_nodes}")
+
+    # Define valid local indices for each graph
+    valid_locals = [
+        [2, 4, 5, 7, 9],  # For graph 0 (local indices)
+        [0, 3, 6, 8, 10, 12, 14]  # For graph 1
+    ]
+    max_num_nodes = max(g0.num_nodes, g1.num_nodes)  # 15
+    valid_indices = torch.zeros(2, max_num_nodes, dtype=torch.bool, device=device)
+    for i, locals in enumerate(valid_locals):
+        print(f"Graph {i} valid local indices: {locals}")
+        for idx in locals:
+            valid_indices[i, idx] = True
+
+    # Test act() - stochastic sampling
+    print("\nTesting act() with stochastic=True:")
+    actions, log_probs, values = model.act(
+        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices, stochastic=True
+    )
+    for i in range(batch.num_graphs):
+        global_idx = actions[i].item() + (0 if i == 0 else g0.num_nodes)
+        print(f"Graph {i}: Selected local action {actions[i].item()} (global {global_idx}), log_prob {log_probs[i].item():.4f}, value {values[i].item():.4f}")
+
+    # Test act() - deterministic (argmax)
+    print("\nTesting act() with stochastic=False (deterministic):")
+    actions_det, log_probs_det, values_det = model.act(
+        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices, stochastic=False
+    )
+    for i in range(batch.num_graphs):
+        global_idx = actions_det[i].item() + (0 if i == 0 else g0.num_nodes)
+        print(f"Graph {i}: Selected local action {actions_det[i].item()} (global {global_idx}), log_prob {log_probs_det[i].item():.4f}, value {values_det[i].item():.4f}")
+
+    # Simulate past actions (local indices, assuming they were taken and are valid)
+    past_actions = torch.tensor([4, 6], dtype=torch.long, device=device)  # Local 4 for graph0, 6 for graph1
+    print("\nTesting evaluate() with past actions (local): {past_actions.tolist()}")
+    for i, act in enumerate(past_actions):
+        global_idx = act.item() + (0 if i == 0 else g0.num_nodes)
+        print(f"Graph {i}: Past local action {act.item()} (global {global_idx})")
+    log_probs_eval, entropies, values_eval = model.evaluate(
+        batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices, past_actions
+    )
+    for i in range(batch.num_graphs):
+        print(f"Graph {i}: Eval log_prob {log_probs_eval[i].item():.4f}, entropy {entropies[i].item():.4f}, value {values_eval[i].item():.4f}")
