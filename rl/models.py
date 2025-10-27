@@ -264,7 +264,6 @@ class GATV2ActorCritic(nn.Module):
 
         actions = torch.stack(actions_list)
         log_probs = torch.stack(log_probs_list)
-
         return actions, log_probs, values
     
     def critic_readout(self, z, batch):
@@ -307,9 +306,7 @@ class GATV2ActorCritic(nn.Module):
             if not valid_mask_i.any():
                 local_idx = actions[i]
                 if int(local_idx.item()) != num_nodes_i:
-                    raise ValueError(
-                        f"Received action {local_idx.item()} despite empty valid mask for graph {i}"
-                    )
+                    raise ValueError(f"Received action {local_idx.item()} despite empty valid mask for graph {i}")
 
                 zero = logits.new_zeros(())
                 log_probs_list.append(zero)
@@ -337,7 +334,6 @@ class GATV2ActorCritic(nn.Module):
 
             log_prob = dist.log_prob(local_idx)
             entropy = dist.entropy()
-
             log_probs_list.append(log_prob)
             entropies_list.append(entropy)
 
