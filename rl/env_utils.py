@@ -172,7 +172,11 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
             )
 
     nf_df = pd.DataFrame(node_features, index=self.node_list, columns=feature_names)
-    with pd.option_context('display.max_rows', resolved_max_nodes, 'display.max_columns', 8, 'display.width', 120):
+    with pd.option_context(
+        'display.max_rows', resolved_max_nodes,
+        'display.max_columns', len(feature_names),
+        'display.width', 120,
+    ):
         print("\nNode features (sample):\n", nf_df.round(4))
 
     # Edges

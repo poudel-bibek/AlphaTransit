@@ -500,17 +500,18 @@ class TransitEnv(gym.Env):
         
         # Dymanic node features (5-6, route-aware demands to current route):
         current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route]) # Set of nodes in the path
+        # print(f"\nCurrent route: {self.current_route}\nCurrent route indices: {current_route_indices}\n")
         demand_out_current_route = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
         demand_in_current_route = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
         node_features[:, 5] = demand_out_current_route / self.max_demand # d_out_current_route
         node_features[:, 6] = demand_in_current_route / self.max_demand # d_in_current_route
         
         # Dynamic node features (7-8, route-aware demands to completed routes)
-        # NOTE: If the node is not connected to the completed routes, it cannot be served yet. So would be 0.
+        # NOTE: If the node is not connected to the completed routes, it cannot be served yet. So it should be 0.
         completed_routes_indices_set = set()  # Unique indices across all completed routes
         for route in self.all_routes:
             completed_routes_indices_set.update(self.node_to_idx[node] for node in route)  # Generator for efficiency, no list/array needed
-
+        print(f"\nAll routes: {self.all_routes}\nCompleted routes indices set: {completed_routes_indices_set}\n")
         completed_routes_indices = np.array(list(completed_routes_indices_set)) if completed_routes_indices_set else np.array([])
 
         demand_out_completed_routes = self.od_matrix[:, completed_routes_indices].sum(axis=1) if len(completed_routes_indices) > 0 else np.zeros(self.n_nodes)  # Sum of all O-D flows emanating from node i to nodes within the path
@@ -1283,94 +1284,123 @@ class TransitEnv(gym.Env):
         ------------------------------------------------------------------------------------------------
         FOR PARTIAL ROUTES:
         A proxy reward for partial routes during route construction.
-        - Component 1: demand coverage potential = wanting_to_onboard / total_demand [0-1]
+        The magnitude of this needs to be significant enough to drive learning but not so large that it dominates the final or complete route reward.
+        - Component 1: demand coverage potential = wanting_to_onboard / total_demand [0 to 1]
             - wanting_to_onboard = Σ_{served ODs} (volume_per_hour * horizon_hours * alpha)
             - total_demand = Σ_{all ODs} (volume_per_hour * horizon_hours)
-            - This is an appropriate measure: 
+            - This is an appropriate measure:
                 - cheap to compute from route topology and the OD matrix only (no full sim required)
                 - un-affected by dynamics like service frequency
-        - The magnitute of this needs to be significant enough to drive learning but not so large that it dominates the final/ complete route reward.
+            - In code: taken from sim_result['demand_coverage_potential'] which is precomputed without a full sim.
         
         - Component 2: Route overlap ratio
             - Number of overlapped edges / total number of edges in the shorter route
+            - In code: sim_result['route_overlap_ratio'] in [0 to 1].
+
+        - Forced end penalty during construction
+            - If the route is forcibly terminated while still partial (is_forced_end is True and is_route_end is False), apply a penalty:
+                forced_end_penalty = 1 - (len(current_route) / MAX_ROUTE_LENGTH)
 
         ------------------------------------------------------------------------------------------------
         FOR COMPLETED ROUTES:
 
-        Design routes that serve the full demand (100% coverage) with high passenger travel efficiency.
-        In addition to route performance, we will use some components to help the agent design better routes i.e., complete routes, minimal overlaps.
-    
-        Encourage: 
+        Design routes that serve the highest possible demand (as close to 100 percent coverage as possible) with high passenger travel efficiency.
+        In addition to route performance, we use components that help the agent design better routes, that is complete routes with minimal overlaps.
+
+        Encourage:
             1. Higher demand coverage potential.
-                - This encourages agent to select include O-D pairs that have high demand.
-            2. Higher service rate (demand coverage actual/ demand coverage potential)
+                - This encourages the agent to include O-D pairs that have high demand.
+                - In code: sim_result['demand_coverage_potential'] in [0 to 1].
+            2. Higher service rate = demand coverage actual / demand coverage potential.
                 - This is related to frequency of service as well.
-            
-        Penalize: 
-        1. Total travel time (in-vehicle time + wait time) i.e., we want higher passenger travel efficiency.
-        2. Overlap between routes: some minimal overlaps are necessary for transfers (and 100% demand coverage)
-            but high overlaps mean duplication of service (waste of resources).
-        2. Forced end: 
-            - Early termination: Each route should be designed upto the full max_route_length. This represents poor planning from agent.
-            - When invalid (masked) action slips through.
-            - Not getting the route force end penalty is equivalent to getting a bonus for completion.
+                - In code: sim_result['service_rate'] in [0 to 1].
+
+        Penalize:
+            1. Average passenger travel time (in-vehicle time plus wait time) to improve passenger travel efficiency.
+                - In code: average over completed and ongoing passengers
+                    total_travel = total_travel_completed + total_travel_ongoing
+                    served = completed_passengers + ongoing_passengers
+                    avg_travel_seconds = total_travel / served, then normalized by 3600 and capped at 1.0.
+            2. Overlap between routes: some minimal overlaps are necessary for transfers and full demand coverage,
+               but high overlaps mean duplication of service and waste of resources.
+            3. Forced end:
+                - The penalty is applied when a route is forcibly terminated during construction, as described in the partial routes section.
+                  There is no additional forced end penalty at route end in the current implementation.
+                - Not getting the route force end penalty is equivalent to a bonus for completion.
 
         TODO: Should I add a final reward at the end of the episode? Based on final performace metrics?
-    
-        As of now do not care about, operator side metrics like: 
+
+        As of now do not care about, operator side metrics like:
         - route_efficiency: Passengers served per km of route (passengers/km)
             - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
-        - bus_utilization: Average bus capacity utilization (0-100%)
+        - bus_utilization: Average bus capacity utilization (0 to 100 percent)
             - Forces agent to choose routes with actual demand, preventing gaming via low-demand routes
-        - fleet cost: 
-            - Some multiple of len(all_routes) * SERVICE_FREQUENCY 
+        - fleet cost:
+            - Some multiple of len(all_routes) * SERVICE_FREQUENCY
         ---------
-    
-        reward = β₀ × demand_coverage_potential + β₁ × service_rate - β₂ × travel_time - β₃ × overlap_penalty - β₄ × forced_end_penalties
-        
-        - Units are normalized: 
-            - demand_coverage_potential: [0 to 1] (divide by 100)
-            - service_rate: [0 to 1] (divide by 100)
-            - travel_time: [0 to perhaps >1] (normalize by max_travel_time = 1 hour)
-            - route_overlap_ratio: [0 to 1] (normalize by max_route_length i.e., max overlap = entire route overlap)
-            - forced_end_penalty: [0 to 1] 
-                - i.e., early termination penalty: 1 - (current route ended at what length/ max_route_length)
+
+        Reward formulation in code:
+
+        For partial routes (is_route_end is False):
+            reward_partial =
+                40.0 * demand_coverage_potential
+              - 20.0 * route_overlap_ratio
+              - 15.0 * forced_end_penalty   (only if is_forced_end is True; otherwise this term is 0)
+
+        For completed routes (is_route_end is True):
+            reward_final =
+                30.0 * demand_coverage_potential
+              + 15.0 * service_rate
+              - 15.0 * avg_travel_time_norm
+              - 10.0 * route_overlap_ratio
+
+        The function returns reward_partial while constructing a route and reward_final when a route ends.
+        There is no mixing of the two in a single step.
+
+        - Units are normalized:
+            - demand_coverage_potential: [0 to 1], provided by sim_result (already normalized, no divide by 100).
+            - service_rate: [0 to 1], provided by sim_result (already normalized, no divide by 100).
+            - avg_travel_time_norm: [0 to 1], computed as min(average passenger travel time in seconds / 3600, 1).
+            - route_overlap_ratio: [0 to 1], where 1 means the route is fully overlapped by another.
+            - forced_end_penalty: [0 to 1]
+                - early termination penalty: 1 - (current route length / MAX_ROUTE_LENGTH)
                 - TODO: For invalid action: Not done for now (the probability is very low)
 
         ---------
-        TODO: On further normalizing the reward: 
+        TODO: On further normalizing the reward:
         - Applying the Welford Normalization to the returns (not the absolute reward values).
-        - Normalizing raw rewards can be a problem, example: 
-            - Episode 1: Total travel time = 1000s → reward = -1000
-            - Episode 100: Total travel time = 500s → reward = -500
-            - Without normalization: Clear improvement! (-500 > -1000)
-            - With normalization: Both might map to ~0 (relative to running mean)
-            - The agent can't tell it's improving!
+        - Normalizing raw rewards can be a problem, example:
+            - Episode 1: avg_travel_time_norm = 1.0 → travel time term = -15.0
+            - Episode 100: avg_travel_time_norm = 0.5 → travel time term = -7.5
+            - Without normalization of returns: Clear improvement observed (-7.5 > -15.0)
+            - With normalization of raw rewards: The improvement could be flattened relative to the running mean
+              and the agent may not see a strong learning signal.
         ---------
-        Potential pitfalls: 
+        Potential pitfalls:
         1. If the rewards are too small like 0.0001, then gradients are too small to be effective.
         2. An improper reward formulation could lead to reward hacking
-           
+
         ---------
         Reward ranges (on route end):
             Max reward:
-            - 100% demand coverage: +50
-            - 100% service rate: +30
-            - 0 travel time penalty: +0  (realistically this will not be zero)
+            - 100 percent demand coverage: +30
+            - 100 percent service rate: +15
+            - 0 travel time penalty: +0
             - No overlaps: +0
-            - No forced ends: +0
-            → Total: +80
-            
+            - No forced ends at route end: +0
+            → Total: +45
+
             Min reward:
-            - 0% demand coverage: +0 (If the demand coverage is 0 then perhaps routes terminated early and overlaps are low)
-            - 0% service rate: +0
-            - Max travel time penalty: -30
-            - Overlap penalty: -5
-            - forced ends: -15
-            → Total: -50
-            
-            Typical range: [-50, +80] 
+            - 0 percent demand coverage: +0
+            - 0 percent service rate: +0
+            - Max travel time penalty: -15
+            - Overlap penalty: -10
+            - forced ends: 0 at route end in current implementation
+            → Total: -25
+
+            Typical range: [-25, +45]
         """
+
         
         incremental_reward = 0.0
         BETA_0 = 40.0      # Demand coverage potential

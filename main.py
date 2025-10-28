@@ -201,12 +201,12 @@ def train(config: Dict[str, Any]) -> None:
         print(f"\n=== Episode {episode} ===")
         
         state, _ = env.reset()
-        pretty_print_state(env, state)
         episode_steps = 0
         terminated = False
         bootstrap_value = None  # Initialize outside loop
 
         while not terminated:
+            pretty_print_state(env, state)
             data = pyg_converter.convert(state)
             print("\nStep data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
@@ -406,7 +406,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         
         num_nodes = batch.num_nodes
         valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=config["device"])
-        
+
         if len(valid_list) > 0:
             for local_idx in valid_list:
                 valid_mask[0, local_idx] = True
