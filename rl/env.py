@@ -299,6 +299,7 @@ class TransitEnv(gym.Env):
             "edge_index": gym.spaces.Box(low=0, high=self.n_nodes - 1, shape=self.edge_index.shape, dtype=np.int64), # int64 so torch.from_numpy(...).long() matches PyG expectations
             "edge_features": gym.spaces.Box(low=0.0, high=1.0, shape=self.edge_features.shape, dtype=np.float32), # Per-edge features must be normalized to [0,1] prior to insertion (e.g., length_norm, u_norm)
             "route_progress": gym.spaces.Box(low=0.0, high=1.0, shape=(self.NUM_ROUTES,), dtype=np.float32), # Normalized to 0-1
+            "frontier_index": gym.spaces.Discrete(self.n_nodes),  # Index of current frontier node
         })
         
     @property
@@ -552,11 +553,13 @@ class TransitEnv(gym.Env):
             route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
         
         # Return the state as a dict
+        frontier_idx = self.node_to_idx[self.current_route[-1]]
         state: Dict[str, Any] = {
             "node_features": node_features,
             "edge_index": self.edge_index,
             "edge_features": self.edge_features,
-            "route_progress": route_progress
+            "route_progress": route_progress,
+            "frontier_index": np.int64(frontier_idx)
         }
         
         return state

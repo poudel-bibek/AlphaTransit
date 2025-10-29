@@ -160,24 +160,24 @@ class GATV2ActorCritic(nn.Module):
         self.backbone_out = in_dim
 
         # Actor head
-        self.actor_head = self._make_head(self.actor_head_layers, self.actor_head_dropout)
+        self.actor_head = self._make_mlp(self.actor_head_layers, 1, self.actor_head_dropout)
 
         # Critic head
-        self.critic_head = self._make_head(self.critic_head_layers, self.critic_head_dropout)
+        self.critic_head = self._make_mlp(self.critic_head_layers, 1, self.critic_head_dropout)
 
-    def _make_head(self, layers: List[int], dropout: float) -> nn.Sequential:
+    def _make_mlp(self, layers: List[int], out_dim: int, dropout: float) -> nn.Sequential:
         """
-        Make a head with the given layers and dropout.
+        Make a MLP with the given layers and dropout.
         """
-        dims = [self.backbone_out] + list(layers) + [1]
-        head = []
+        dims = [self.backbone_out] + list(layers) + [out_dim]
+        mlp = []
         for i in range(len(dims) - 1):
-            head.append(nn.Linear(dims[i], dims[i + 1]))
+            mlp.append(nn.Linear(dims[i], dims[i + 1]))
             if i < len(dims) - 2:
-                head.append(self.activation)
+                mlp.append(self.activation)
                 if dropout > 0:
-                    head.append(nn.Dropout(dropout))
-        return nn.Sequential(*head)
+                    mlp.append(nn.Dropout(dropout))
+        return nn.Sequential(*mlp)
 
     def _get_node_embeddings(self, x, edge_index, edge_attr):
         """
