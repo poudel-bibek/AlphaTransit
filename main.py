@@ -570,10 +570,10 @@ def set_global_seeds(seed: int) -> None:
 def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
     return {
         "n_node_features": node_feature_dim,
-        "proj_out": config.get("proj_out", 32),
+        "proj_out": config.get("proj_out", 64),
         "num_gat_blocks": config.get("num_gat_blocks", 4),
-        "gat_channels": config.get("gat_channels", [32, 32, 32, 32]),
-        "num_heads": config.get("num_heads", [16, 8, 8, 8]),
+        "gat_channels": config.get("gat_channels", [64, 64, 64, 64]),
+        "num_heads": config.get("num_heads", [16, 16, 16, 16]),
         "attn_dropout": config.get("attn_dropout", [0.1, 0.1, 0.1, 0.1]),
         "feat_dropout": config.get("feat_dropout", [0.1, 0.1, 0.1, 0.1]),
         "actor_head_dropout": config.get("actor_head_dropout", 0.2),
@@ -581,8 +581,8 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_featur
         "concat": config.get("concat_heads", False),
         "activation": config.get("activation", "leaky_relu"),
         "n_edge_features": edge_feature_dim,
-        "actor_head_layers": config.get("actor_head_layers", [128, 64, 32]),
-        "critic_head_layers": config.get("critic_head_layers", [128, 64, 32]),
+        "actor_head_layers": config.get("actor_head_layers", [256, 128, 64, 32]),
+        "critic_head_layers": config.get("critic_head_layers", [256, 128, 64, 32]),
     }
 
 def build_arg_parser() -> argparse.ArgumentParser:
