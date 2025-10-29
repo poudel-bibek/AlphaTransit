@@ -246,7 +246,7 @@ class GATV2ActorCritic(nn.Module):
             masked_logits = graph_logits.clone()
             masked_logits[~valid_mask_i] = -float('inf')
 
-            print(f"\nGraph {i} masked logits: \n{masked_logits}")
+            # print(f"\nGraph {i} masked logits: \n{masked_logits}")
             # Distribution has to be built over all local indices in the current graph but logits for invalid ones are masked to -inf.
             # If we were to build a dist over only valid nodes (for example 3 valid nodes), then it would be over indices 0, 1, 2.
             # This is a problem because although the valid nodes could be index 10 , 11, 12 in the graph the dist would have indices 0, 1, 2.
@@ -318,7 +318,7 @@ class GATV2ActorCritic(nn.Module):
             masked_logits = graph_logits.clone()
             masked_logits[~valid_mask_i] = -float('inf')
 
-            print(f"\nGraph {i} masked logits: \n{masked_logits}")
+            # print(f"\nGraph {i} masked logits: \n{masked_logits}")
 
             # Sanity
             if masked_logits.numel() == 0:

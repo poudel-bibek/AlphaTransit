@@ -490,12 +490,12 @@ class TransitEnv(gym.Env):
         completed_routes_indices_set = set()  # Unique indices across all completed routes
         for route in self.all_routes:
             completed_routes_indices_set.update(self.node_to_idx[node] for node in route)  # Generator for efficiency, no list/array needed
-        print(f"\nAll routes: {self.all_routes}\nCompleted routes indices set: {completed_routes_indices_set}\n")
+        # print(f"\nAll routes: {self.all_routes}\nCompleted routes indices set: {completed_routes_indices_set}\n")
         completed_routes_indices = (np.array(list(completed_routes_indices_set), dtype=np.int64) if completed_routes_indices_set else np.empty(0, dtype=np.int64))
-        print(f"\nCompleted routes indices: {completed_routes_indices}\n")
+        # print(f"\nCompleted routes indices: {completed_routes_indices}\n")
 
         completed_and_current_route_indices = np.concatenate([completed_routes_indices, current_route_indices]).astype(np.int64)
-        print(f"\nCompleted and current route indices: {completed_and_current_route_indices}\n")
+        # print(f"\nCompleted and current route indices: {completed_and_current_route_indices}\n")
         # Dymanic node features (5-6, local route-aware demands to valid neighbors):
         d_out_current_route_local = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
         d_in_current_route_local = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
