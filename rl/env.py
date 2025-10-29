@@ -169,20 +169,6 @@ class TransitEnv(gym.Env):
     @property
     def observation_space(self) -> gym.Space:
         """
-        State (size is network dependent and fixed per selected network): 
-        Need to encode the following: 
-        - The network graph: 
-            - Nodes with node features (x, y)
-            - Links with link features (length, free_flow_speed)
-            - Total demand (raw) with demand features (orig, dest, start_t, end_t, q)
-        - Current path (partial path so far):
-            - Path nodes
-        - Budget state:
-            - Remaining number of nodes to add.
-
-        We want the policy to be conditioned on the: frontier node and the routes designed so far (completed and current)
-        
-        ##########
         1. For each node in the network (12): 
             Static (5): 
                 - coordinates (x, y) - min-max normalized
@@ -191,117 +177,108 @@ class TransitEnv(gym.Env):
                 - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
             
             Dynamic:
-                - Related to demand (4):  
-                    
-                    - d_out_current_route: sum of all O-D flows emanating from node i to nodes within the current route - divide by max demand in the network
-                        - "If I add node i to the current route, how much demand from i could be served by the current route nodes?"
-
-                    - d_in_current_route: sum of all O-D flows arriving at node i from nodes within the current route - divide by max demand in the network
-                        - "If I add node i to the current route, how much demand from nodes in current route could be reach node i?"
-
-                    - d_out_completed_routes: sum of all O-D flows emanating from node i to nodes within all completed routes - divide by max demand in the network   
-                        - "If I add node i to the current route, how much demand from i could be served by the completed route nodes?"
-                        - Ridership potential of each node i.e., if I add this node 5 to the current route, how many passengers who start from node 5 want to go to nodes that are already in the completed routes?
-                    
-                    - d_in_completed_routes: sum of all O-D flows arriving at node i from nodes within all completed routes - divide by max demand in the network
-                        - "If I add node i to the current route, how much demand from nodes in completed routes could be reach node i?"
-                         - Attractiveness of the node i.e., if I add this node 5 to the current route, how many passengers from the completed route nodes want to go to node 5?
-                
-                - Related to route:
-                    - Related to current route (2):
-
-                        - in_current_route_flag: binary (1 if node is in the current route, else 0). 
+                * Related to demand (4):  
+                - The dynamic demand features are deliberately designed to evaluate the prospective value of adding a candidate node to the current route.
+                - Make the policy "demand-aware". The policy does not get the O-D demand matrix as input, so it cannot directly reason about the demand.
+                - How to expose the policy to the demand-aware features?
+                    - Since the selection of next node can only be made if its connected to current frontier, the _current_route features are zeroed out for unreachable (invalid) nodes.
+                    - This removes the necessity of is_valid_next flag, the gating itself encodes the validity of the next node. But still keeping this flag for now (harmless).
+                    - For _completed_routes features:
+                        - Approach 1: Similar to _current_route features, but for completed routes
+                        - Approach 2: Check whether the current routes is connected to completed routes. If not, the _completed_routes features could be zeroed out.
+                        - Approach 3: Use Approach 1 but add 2 more features (e.g., d_out_completed_routes_unconditional, d_in_completed_routes_unconditional) which helps the policy to reason about the demand even if the current route is not connected to completed routes.
                         
-                        - is_valid_next: binary (1 if adjacent to current frontier and not in current route, else 0)
-                            - inform the policy about the validity of next nodes to select
-                            - Not allowed if:
-                                - Node is already in the current route.
-                                - Node is not adjacent to the current frontier.
+                - d_out_current_route: sum of all O-D flows emanating from node i to nodes within the current route - divide by max demand in the network
+                    - "If I add node i to the current route, how much demand from i could be served by the current route nodes?"
 
-                    - Related to completed routes (1):
-                        - in_completed_routes_flag: A single node can be in multiple routes.
-                            - A fraction to indicate how many completed routes the node is in. 0.0 = not in any completed routes. 1.0 = in all completed routes.
-                            - a value like 1/3 would mean that this is a potential node to expand as a transfer node.
+                - d_in_current_route: sum of all O-D flows arriving at node i from nodes within the current route - divide by max demand in the network
+                    - "If I add node i to the current route, how much demand from nodes in current route could reach node i?"
+
+                - d_out_completed_routes: sum of all O-D flows emanating from node i to nodes within all completed routes - divide by max demand in the network   
+                    - "If I add node i to the current route, how much demand from i could be served by the completed route nodes?"
+                    - Ridership potential of each node i.e., if I add this node 5 to the current route, how many passengers who start from node 5 want to go to nodes that are already in the completed routes?
+                
+                - d_in_completed_routes: sum of all O-D flows arriving at node i from nodes within all completed routes - divide by max demand in the network
+                    - "If I add node i to the current route, how much demand from nodes in completed routes could reach node i?"
+                        - Attractiveness of the node i.e., if I add this node 5 to the current route, how many passengers from the completed route nodes want to go to node 5?
+                
+                * Related to current and completed routes (3):
+                - A combination of in_current_route_flag and in_completed_routes provides information about overlaps and transfers.
+                    - in_current_route_flag: binary (1 if node is in the current route, else 0). 
+                    - in_completed_routes: A single node can be in multiple routes.
+                        - A fraction to indicate how many completed routes the node is in. 0.0 = not in any completed routes. 1.0 = in all completed routes.
+                    - is_valid_next_flag: binary (1 if node is valid to select as next node, else 0).
+                    
 
         2. For each edge in the network: 
-            - Edge index (to indicate connectivity):
-                - For policy networks like GATv2, edge index is required. edge_index = a compact list of directed edges using node indices.
-                (https://pytorch-geometric.readthedocs.io/en/2.6.1/generated/torch_geometric.nn.conv.GATv2Conv.html)
-                - Shape (2, E) where E is the number of edges in the graph.
-                - If the road is bidirectional, include both directions: 
-                    - e.g., nodes = ["1","5","8"] → indices 0,1,2
-                    - if edges 1→5, 5→1, 5→8, and 8→5 then edge_index: src: [0,1,1,2], dst: [1,0,2,1]
-            - Edge features:
-                - Since the policy network is a GAT, edge features can be provided.
-                - Edge features (2):
-                    - length
-                    - free_flow_speed (u)
+            Edge index (to indicate connectivity):
+            - For policy networks like GATv2, edge index is required. edge_index = a compact list of directed edges using node indices.
+            (https://pytorch-geometric.readthedocs.io/en/2.6.1/generated/torch_geometric.nn.conv.GATv2Conv.html)
+            - Shape (2, E) where E is the number of edges in the graph.
+            - If the road is bidirectional, include both directions: 
+                - e.g., nodes = ["1","5","8"] → indices 0,1,2
+                - if edges 1→5, 5→1, 5→8, and 8→5 then edge_index: src: [0,1,1,2], dst: [1,0,2,1]
 
-        3. Episode completion (self.NUM_ROUTES):
+            Edge features (2):
+            - Since the policy network is a GAT, edge features can be injected at each GAT layer.
+            - l: length
+            - u: free_flow_speed
+
+        3. Route completion progress (self.NUM_ROUTES):
+            - To strengthen the policy's conditioning on the routes designed so far (completed and current) we use a vector of length self.NUM_ROUTES.
             - For example if self.NUM_ROUTES = 3,[0.5, 0.9, 0.1] means route 1 was terminated after 50% completion, route 2 90% and current route 3 is 10% complete.
             - Fractions indicate the completion of each route i.e., steps completed upto max_route_length.
         
-        - Total: 12 + 2 + 3 = 17
-        - The edge features injected at each GAT layer
-        - Episode completion features injected at the readout layer.
+        Total: 12 + 2 + self.NUM_ROUTES = 14 + self.NUM_ROUTES
 
+        ----------------------------
         Notes: 
-        - d_out_path and d_in_path are "path-aware" demand service vectors
         - How to enforce the action mask?
-            # Option 1: Enforce it simulation level i.e., by simply disallowing the action (when it is selected). However, this is not a good idea for several reasons.
-                1. Hurts learning stability: 
-                - PPO computes log_probs from policy's distribution, if samples are rejected (and env substitutes the action for another) then the log_probs are not valid.
-                
-                2. Hurts sample efficiency.
-                - For discrete action spaces, entropy is calculated over the full action set.
-                    - Lets say there were 24 actions (N=24) among which only 3 were valid, entropy for categorial policy is -sum_0^(N)(p_i * log(p_i))
-                    
-                    - When there is no mask, earlier in the learning process, policy network makes all logits similar (uniform distribution across actions).
-                    - i.e., each action gets (1/24) of the probability mass. However (21/24)= 87.5% of the probability mass is wasted (not useful for learning).
-                    - Most samples hit invalid actions, policy gradient increases probability of actions that cannot execute.
-                    - P.S. 21 out of 24 nodes being invalid is a realistic scenario.
-                    
-                    - On the other hand, when a mask is used, each valid action initially gets (1/3) of the probability mass and all of the mass (100%) is useful for learning.
-                    - Every sample is actionable and gradients focus among feasible choices. 
-                    
-                    - When there is waste, more samples are needed to learn.
-                
-                3. Leads to incorrect credit assignment: 
-                - The reward is credited to the actions the policy did not choose (this injects bias and noise in the learning process).
-
-            # Option 2: Enforce using an action_mask (without agent awareness).
-                - Keep action space fixed: Discrete(N) where N is the number of nodes in the network.
-                - When constructing a categorical distribution from the policy output, mask out the logits related to invalid actions i.e., logits[invalid] = -inf (or a large negative)
-                - So that this action has a near zero probability of being sampled this masked distribution.
-                - Compute log probabilities from the masked distribution. Use the masked distribution in the act, evaluate as necessary.
-                - Print a warning if invalid action slips through (In practice, with proper masking, this shouldn't happen and I dont expect this, but due to incorrect implementation, it could happen).
-                - However, this is also a problem for several reasons:
-                    - The policy is not aware of the mask (because it is not a part of the observation space).
-                    - Without a negative feedback from the reward function, it does not truly know (and learn) that it assigned a higher logit to an invalid action.
-                        - Since we assigned a zero probability to the invalid action, this action is never sampled and the policy has no "practice" of selecting it.
+        * Option 1: Enforce it simulation level i.e., by simply disallowing the action (when it is selected). 
+          However, this:
+            1. Hurts learning stability: 
+            - PPO computes log_probs from policy's distribution, if samples are rejected (and env substitutes the action for another) then the log_probs are not valid.
             
-            # Option 3: Supply validity as a part of node feature in the observation space.
-                - Keep action space fixed: Discrete(N) where N is the number of nodes in the network.
-                - Use a binary flag (feature is_valid_next) in the observation to inform the policy about the feasible set.
-                - Add a large negative penalty in the reward function for selecting an invalid action and truncate the episode based on these conditions: 
-                    - New node selected is not connected to the current frontier 
-                    - New node is connected to the current frontier but is already in the path.
-                    - New node is the same as the current frontier.
-                - Theoritically this is good. But requires a lot of samples to learn to select valid actions.
-
-            # Option 4: A combination of option 2 and 3.
-                - However: 
-                    - If I am doing action masking, invalid actions are simply not sampled. 
-                    - So what is the point of including option 3 with option 2?
-                        - Episodes are not going to get truncated.
-                        - Agent is not going to get a reward for bad actions anyway.. so its not going to learn to select valid actions.
-                    - We need a solution that is scalable to large networks. Option 3 is not scalable. Option 2 is scalable. Option 4 is not scalable.
+            2. Hurts sample efficiency.
+            - For discrete action spaces, entropy is calculated over the full action set.
+                - Lets say there were 24 actions (N=24) among which only 3 were valid, entropy for categorial policy is -sum_0^(N)(p_i * log(p_i))
                 
-            # Finally, Option 2 is chosen and some components of option 3 are included (without the reward penalty i.e., just including the is_valid_next flag).
-            - This is the way to go, validated: https://arxiv.org/pdf/2006.14171
+                - When there is no mask, earlier in the learning process, policy network makes all logits similar (uniform distribution across actions).
+                - i.e., each action gets (1/24) of the probability mass. However (21/24)= 87.5% of the probability mass is wasted (not useful for learning).
+                - Most samples hit invalid actions, policy gradient increases probability of actions that cannot execute.
+                - P.S. 21 out of 24 nodes being invalid is a realistic scenario.
+                
+                - On the other hand, when a mask is used, each valid action initially gets (1/3) of the probability mass and all of the mass (100%) is useful for learning.
+                - Every sample is actionable and gradients focus among feasible choices. 
+                
+                - When there is waste, more samples are needed to learn.
+            
+            3. Leads to incorrect credit assignment: 
+            - The reward is credited to the actions the policy did not choose (this injects bias and noise in the learning process).
+
+        * Option 2: Enforce using an action_mask (without agent awareness).
+            - Keep action space fixed: Discrete(N) where N is the number of nodes in the network.
+            - When constructing a categorical distribution from the policy output, mask out the logits related to invalid actions i.e., logits[invalid] = -inf
+            - So that this action has a zero probability of being sampled this masked distribution.
+            - Compute log probabilities from the masked distribution. Use the masked distribution in the act, evaluate as necessary.
+            - Print a warning if invalid action slips through (In practice, this should not happen with good implementation).
+            - However, this is also a problem for several reasons:
+                - The policy is not aware of the mask (because it is not a part of the observation space).
+                - Without a negative feedback from the reward function, it does not truly know (and learn) that it assigned a higher logit to an invalid action.
+                    - Since we assigned a zero probability to the invalid action, this action is never sampled and the policy has no "practice" of selecting it.
+        
+        * Option 3: Fix problems with option 2 by supplying validity as a part of node features.
+            - Use a binary flag (feature is_valid_next) in the observation to inform the policy about the feasible set.
+            - Add a large negative penalty in the reward function for selecting an invalid action and truncate the episode based on these conditions: 
+                - New node selected is not connected to the current frontier 
+                - New node is connected to the current frontier but is already in the path.
+                - New node is the same as the current frontier.
+            
+        * Finally, Option 3 is chosen (validation: https://arxiv.org/pdf/2006.14171)
 
         Important:
-        - edge_index dtype/ordering: Use int64 here so converting to torch tensors naturally yields torch.long, as required by PyG. Keep columns aligned with edge_features rows so edge_attr[i] corresponds to edge_index[:, i].
+        - edge_index dtype/ordering: Use int64 here so converting to torch tensors naturally yields torch.long, as required by PyG. 
+        - Keep columns aligned with edge_features rows so edge_attr[i] corresponds to edge_index[:, i].
         - edge_features normalization: Perform per-edge normalization (e.g., length_norm, u_norm, t_ff_norm scaled to [0,1]) to keep feature magnitudes comparable and stabilize attention/optimization.
         """
         
@@ -359,10 +336,6 @@ class TransitEnv(gym.Env):
                 - A frequency of 6 buses/hour is a bad choice for a 2-node route but might be an excellent choice for a 10-node route. 
                   The agent would have to learn a completely different frequency preference for step 1, step 2, step 3.. which is extremely difficult.
                 - Using (next node, frequency) as the action space would also increase the action space significantly. Increasing the difficulty of learning.
-                - 
-            - Solution: 
-
-
         """
         return gym.spaces.Discrete(self.n_nodes + 1) # extra action (NO_VALID_ACTION) for when valid actions are empty
     
@@ -501,10 +474,18 @@ class TransitEnv(gym.Env):
         # Dymanic node features (5-6, route-aware demands to current route):
         current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route]) # Set of nodes in the path
         # print(f"\nCurrent route: {self.current_route}\nCurrent route indices: {current_route_indices}\n")
+
+        frontier = self.current_route[-1] 
+        current_route_set = set(self.current_route)  # O(1) lookup
+        valid_neighbors = self.adj[frontier] - current_route_set  # Set difference 
+        valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
+
         demand_out_current_route = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
         demand_in_current_route = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
-        node_features[:, 5] = demand_out_current_route / self.max_demand # d_out_current_route
-        node_features[:, 6] = demand_in_current_route / self.max_demand # d_in_current_route
+
+        if len(valid_indices) > 0:
+            node_features[valid_indices, 5] = demand_out_current_route[valid_indices] / self.max_demand # d_out_current_route
+            node_features[valid_indices, 6] = demand_in_current_route[valid_indices] / self.max_demand # d_in_current_route
         
         # Dynamic node features (7-8, route-aware demands to completed routes)
         # NOTE: If the node is not connected to the completed routes, it cannot be served yet. So it should be 0.
@@ -534,23 +515,18 @@ class TransitEnv(gym.Env):
         # 9: in_current_route flag
         node_features[current_route_indices, 9] = 1.0 
         
-        # 10: is_valid_next flag
-        frontier = self.current_route[-1]
-        route_set = set(self.current_route)  # O(1) lookup
-        valid_neighbors = self.adj.get(frontier, set()) - route_set  # Set difference with safe lookup
-        valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
-        if len(valid_indices) > 0:
-            node_features[valid_indices, 10] = 1.0 
-
-        # 11: in_completed_routes flag
-        # Expressed as fraction.
+        # 10: in_completed_routes fraction
         completed_count_per_node = np.zeros(self.n_nodes, dtype=np.float32)
         for route in self.all_routes:
             for node in route:
                 idx = self.node_to_idx[node]
                 completed_count_per_node[idx] += 1.0
 
-        node_features[:, 11] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
+        node_features[:, 10] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
+
+        # 11: is_valid_next flag
+        if len(valid_indices) > 0:
+            node_features[valid_indices, 11] = 1.0 
 
         # Edge index and edge features dont dynamically change. Already set in __init__.
         # Route progress for self.NUM_ROUTES (including completed and current route)
