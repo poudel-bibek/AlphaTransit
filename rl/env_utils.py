@@ -159,9 +159,11 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     # Node features
     feature_names = [
         "x_norm", "y_norm", "degree_norm", "d_out_norm", "d_in_norm",
-        "d_out_current_route", "d_in_current_route",
-        "d_out_completed_routes", "d_in_completed_routes",
-        "in_current_route_flag", "is_valid_next", "in_completed_routes_flag",
+        "d_out_current_route_local", "d_in_current_route_local",
+        "d_out_completed_routes_local", "d_in_completed_routes_local",
+        "d_out_current_route_global", "d_in_current_route_global",
+        "d_out_completed_routes_global", "d_in_completed_routes_global",
+        "in_current_route", "in_completed_routes", "is_valid_next",
     ]
     node_feature_dim = node_features.shape[1]
     if node_feature_dim != len(feature_names):

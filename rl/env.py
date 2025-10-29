@@ -51,7 +51,7 @@ class TransitEnv(gym.Env):
         self.current_route = []        # Currently active route being built
         self.current_route_index = 0   # Index of route currently being built (0 to NUM_ROUTES-1)
         self.is_baseline = False       # Flag to indicate if this is baseline evaluation mode
-        self.N_NODE_FEATURES = 12
+        self.N_NODE_FEATURES = 16
         self.N_EDGE_FEATURES = 2
 
         # Lookup dicts for efficient queries:
@@ -169,7 +169,7 @@ class TransitEnv(gym.Env):
     @property
     def observation_space(self) -> gym.Space:
         """
-        1. For each node in the network (12): 
+        1. For each node in the network (16): 
             Static (5): 
                 - coordinates (x, y) - min-max normalized
                 - degree - divide by max degree in the network
@@ -177,31 +177,43 @@ class TransitEnv(gym.Env):
                 - d_in: sum of all O-D flows arriving at node i - divide by max demand in the network
             
             Dynamic:
-                * Related to demand (4):  
+                * Related to demand (8):  
                 - The dynamic demand features are deliberately designed to evaluate the prospective value of adding a candidate node to the current route.
                 - Make the policy "demand-aware". The policy does not get the O-D demand matrix as input, so it cannot directly reason about the demand.
                 - How to expose the policy to the demand-aware features?
-                    - Since the selection of next node can only be made if its connected to current frontier, the _current_route features are zeroed out for unreachable (invalid) nodes.
-                    - This removes the necessity of is_valid_next flag, the gating itself encodes the validity of the next node. But still keeping this flag for now (harmless).
-                    - For _completed_routes features:
-                        - Approach 1: Similar to _current_route features, but for completed routes
-                        - Approach 2: Check whether the current routes is connected to completed routes. If not, the _completed_routes features could be zeroed out.
-                        - Approach 3: Use Approach 1 but add 2 more features (e.g., d_out_completed_routes_unconditional, d_in_completed_routes_unconditional) which helps the policy to reason about the demand even if the current route is not connected to completed routes.
+                    - Approach 1: Globally expose the current route and completed routes demand-aware features to the policy i.e. for all nodes in the network, these features are present, always.
+                    - Approach 2: Selectively expose: 
+                        - For example:
+                        - Option 1: Expose only the _current_route features for the nodes that are the next valid nodes (zero out otherwise). Expose the _completed_routes features for nodes in the completed routes.
+                        - This removes the necessity of is_valid_next flag, the gating itself encodes the validity of the next node. But still keeping this flag for now (harmless).
+                    - Approach 3: Hybrid i.e., both local and global features 
+                        - Add 4 features for global (e.g., d_out_completed_routes_global, d_in_completed_routes_global, d_out_current_route_global, d_in_current_route_global) which helps the policy to reason about the demand even if the current route is not connected to completed routes.
+                        - Add 4 features for local similar to Approach 2.
                         
-                - d_out_current_route: sum of all O-D flows emanating from node i to nodes within the current route - divide by max demand in the network
+                - d_out_current_route_local: sum of all O-D flows emanating from node i to nodes within the current route - divide by max demand in the network
                     - "If I add node i to the current route, how much demand from i could be served by the current route nodes?"
+                    - Only visible to nodes in the current route, zeroed out otherwise.
 
-                - d_in_current_route: sum of all O-D flows arriving at node i from nodes within the current route - divide by max demand in the network
+                - d_in_current_route_local: sum of all O-D flows arriving at node i from nodes within the current route - divide by max demand in the network
                     - "If I add node i to the current route, how much demand from nodes in current route could reach node i?"
+                    - Only visible to nodes in the current route, zeroed out otherwise.
 
-                - d_out_completed_routes: sum of all O-D flows emanating from node i to nodes within all completed routes - divide by max demand in the network   
+                - d_out_completed_routes_local: sum of all O-D flows emanating from node i to nodes within all completed routes - divide by max demand in the network   
                     - "If I add node i to the current route, how much demand from i could be served by the completed route nodes?"
                     - Ridership potential of each node i.e., if I add this node 5 to the current route, how many passengers who start from node 5 want to go to nodes that are already in the completed routes?
-                
-                - d_in_completed_routes: sum of all O-D flows arriving at node i from nodes within all completed routes - divide by max demand in the network
+                    - Only visible to nodes in the completed routes and current route, zeroed out otherwise.
+
+                - d_in_completed_routes_local: sum of all O-D flows arriving at node i from nodes within all completed routes - divide by max demand in the network
                     - "If I add node i to the current route, how much demand from nodes in completed routes could reach node i?"
-                        - Attractiveness of the node i.e., if I add this node 5 to the current route, how many passengers from the completed route nodes want to go to node 5?
-                
+                    - Attractiveness of the node i.e., if I add this node 5 to the current route, how many passengers from the completed route nodes want to go to node 5?
+                    - Only visible to nodes in the completed routes and current route, zeroed out otherwise.
+
+                - d_out_current_route_global: same as d_out_current_route_local, but for all nodes in the network.
+                - d_in_current_route_global: same as d_in_current_route_local, but for all nodes in the network.
+
+                - d_out_completed_routes_global: same as d_out_completed_routes_local, but for all nodes in the network.
+                - d_in_completed_routes_global: same as d_in_completed_routes_local, but for all nodes in the network.
+
                 * Related to current and completed routes (3):
                 - A combination of in_current_route_flag and in_completed_routes provides information about overlaps and transfers.
                     - in_current_route_flag: binary (1 if node is in the current route, else 0). 
@@ -229,7 +241,7 @@ class TransitEnv(gym.Env):
             - For example if self.NUM_ROUTES = 3,[0.5, 0.9, 0.1] means route 1 was terminated after 50% completion, route 2 90% and current route 3 is 10% complete.
             - Fractions indicate the completion of each route i.e., steps completed upto max_route_length.
         
-        Total: 12 + 2 + self.NUM_ROUTES = 14 + self.NUM_ROUTES
+        Total: 16 + 2 + self.NUM_ROUTES = 18 + self.NUM_ROUTES
 
         ----------------------------
         Notes: 
@@ -452,13 +464,9 @@ class TransitEnv(gym.Env):
         """
         Build observation state as a dict
         Normalize as necessary.
-        
         The agent is designing route for a bus, however, both demands in the state are total demands.
         - Total demand does not reflect what can be influenced by the agent.
         - However, since the total demand is split by a fixed alpha, higher total demand means higher bus demand as well. 
-        - So the current setup should work out.
-        - Or we can show only the capturable demand in the path-aware demands?
-        - TODO: add this alpha multuplier as optional argument later.
         """
         
         # Nodes and node features:
@@ -471,62 +479,67 @@ class TransitEnv(gym.Env):
         node_features[:, 3] = self.demand_out / self.max_demand # d_out
         node_features[:, 4] = self.demand_in / self.max_demand # d_in
         
-        # Dymanic node features (5-6, route-aware demands to current route):
-        current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route]) # Set of nodes in the path
-        # print(f"\nCurrent route: {self.current_route}\nCurrent route indices: {current_route_indices}\n")
-
+        # Calculations for dynamic node features:
+        current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route], dtype=np.int64) 
+        
         frontier = self.current_route[-1] 
         current_route_set = set(self.current_route)  # O(1) lookup
         valid_neighbors = self.adj[frontier] - current_route_set  # Set difference 
-        valid_indices = [self.node_to_idx[node] for node in valid_neighbors]
-
-        demand_out_current_route = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
-        demand_in_current_route = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
-
-        if len(valid_indices) > 0:
-            node_features[valid_indices, 5] = demand_out_current_route[valid_indices] / self.max_demand # d_out_current_route
-            node_features[valid_indices, 6] = demand_in_current_route[valid_indices] / self.max_demand # d_in_current_route
+        valid_neighbor_indices = [self.node_to_idx[node] for node in valid_neighbors]
         
-        # Dynamic node features (7-8, route-aware demands to completed routes)
-        # NOTE: If the node is not connected to the completed routes, it cannot be served yet. So it should be 0.
         completed_routes_indices_set = set()  # Unique indices across all completed routes
         for route in self.all_routes:
             completed_routes_indices_set.update(self.node_to_idx[node] for node in route)  # Generator for efficiency, no list/array needed
         print(f"\nAll routes: {self.all_routes}\nCompleted routes indices set: {completed_routes_indices_set}\n")
-        completed_routes_indices = np.array(list(completed_routes_indices_set)) if completed_routes_indices_set else np.array([])
+        completed_routes_indices = (np.array(list(completed_routes_indices_set), dtype=np.int64) if completed_routes_indices_set else np.empty(0, dtype=np.int64))
+        print(f"\nCompleted routes indices: {completed_routes_indices}\n")
 
-        demand_out_completed_routes = self.od_matrix[:, completed_routes_indices].sum(axis=1) if len(completed_routes_indices) > 0 else np.zeros(self.n_nodes)  # Sum of all O-D flows emanating from node i to nodes within the path
-        demand_in_completed_routes = self.od_matrix[completed_routes_indices, :].sum(axis=0) if len(completed_routes_indices) > 0 else np.zeros(self.n_nodes)  # Sum of all O-D flows arriving at node i from nodes within the path
+        completed_and_current_route_indices = np.concatenate([completed_routes_indices, current_route_indices]).astype(np.int64)
+        print(f"\nCompleted and current route indices: {completed_and_current_route_indices}\n")
+        # Dymanic node features (5-6, local route-aware demands to valid neighbors):
+        d_out_current_route_local = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
+        d_in_current_route_local = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the path
 
-        # Apply connectivity check (reuse existing current_route_indices from earlier in _get_state)
-        current_route_indices_set = set(current_route_indices)  # O(N) but N small; indices are ints
-        # If current route overlaps with any completed indices, it means the current route is connected to completed routes.
-        # In this case, demands to/from completed are meaningful (can be served via transfers).
-        # Otherwise, set to 0 across all nodes (no service to completed possible yet).
-        is_connected = bool(current_route_indices_set & completed_routes_indices_set)
-        if not is_connected:
-            demand_out_completed_routes = np.zeros(self.n_nodes)
-            demand_in_completed_routes = np.zeros(self.n_nodes)
+        if len(valid_neighbor_indices) > 0:
+            node_features[valid_neighbor_indices, 5] = d_out_current_route_local[valid_neighbor_indices] / self.max_demand # d_out_current_route_local
+            node_features[valid_neighbor_indices, 6] = d_in_current_route_local[valid_neighbor_indices] / self.max_demand # d_in_current_route_local
+        
+        # Dynamic node features (7-8, local route-aware demands to completed routes and current route)
+        # Only visible to nodes in the completed routes and current route, zeroed out otherwise.
+        d_out_completed_routes_local = self.od_matrix[:, completed_and_current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the completed routes and current route
+        d_in_completed_routes_local = self.od_matrix[completed_and_current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the completed routes and current route
+        if len(completed_and_current_route_indices) > 0:
+            node_features[completed_and_current_route_indices, 7] = d_out_completed_routes_local[completed_and_current_route_indices] / self.max_demand # d_out_completed_routes_local
+            node_features[completed_and_current_route_indices, 8] = d_in_completed_routes_local[completed_and_current_route_indices] / self.max_demand # d_in_completed_routes_local
 
-        node_features[:, 7] = demand_out_completed_routes / self.max_demand # d_out_completed_routes
-        node_features[:, 8] = demand_in_completed_routes / self.max_demand # d_in_completed_routes
+        # Dynamic node features (9-10, global route-aware demands from nodes in current route to all nodes in the network)
+        d_out_current_route_global = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the current route
+        d_in_current_route_global = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the current route
+        node_features[:, 9] = d_out_current_route_global / self.max_demand # d_out_current_route_global
+        node_features[:, 10] = d_in_current_route_global / self.max_demand # d_in_current_route_global
+
+        # Dynamic node features (11-12, global route-aware demands from nodes in completed  routes to all nodes in the network)
+        d_out_completed_routes_global = self.od_matrix[:, completed_routes_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the completed routes
+        d_in_completed_routes_global = self.od_matrix[completed_routes_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the completed routes
+        node_features[:, 11] = d_out_completed_routes_global / self.max_demand # d_out_completed_routes_global
+        node_features[:, 12] = d_in_completed_routes_global / self.max_demand # d_in_completed_routes_global
 
         # Node features that are Binary flags/ fractions (9-11):
-        # 9: in_current_route flag
-        node_features[current_route_indices, 9] = 1.0 
+        # 13: in_current_route flag
+        node_features[current_route_indices, 13] = 1.0 
         
-        # 10: in_completed_routes fraction
+        # 14: in_completed_routes fraction
         completed_count_per_node = np.zeros(self.n_nodes, dtype=np.float32)
         for route in self.all_routes:
             for node in route:
                 idx = self.node_to_idx[node]
                 completed_count_per_node[idx] += 1.0
 
-        node_features[:, 10] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
+        node_features[:, 14] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
 
         # 11: is_valid_next flag
-        if len(valid_indices) > 0:
-            node_features[valid_indices, 11] = 1.0 
+        if len(valid_neighbor_indices) > 0:
+            node_features[valid_neighbor_indices, 15] = 1.0 
 
         # Edge index and edge features dont dynamically change. Already set in __init__.
         # Route progress for self.NUM_ROUTES (including completed and current route)

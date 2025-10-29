@@ -206,7 +206,7 @@ def train(config: Dict[str, Any]) -> None:
         bootstrap_value = None  # Initialize outside loop
 
         while not terminated:
-            pretty_print_state(env, state)
+            # pretty_print_state(env, state)
             data = pyg_converter.convert(state)
             print("\nStep data: ")
             print(f"\tData: type: {type(data)}, value: {data}")
