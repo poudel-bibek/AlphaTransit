@@ -36,6 +36,7 @@ def build_sweep_config() -> Dict[str, Any]:
             # "beta3": {"distribution": "uniform", "min": 10, "max": 40},  # Utilization
 
             # Some other params to be set as fixed values
+            "gpu": {"value": True},
             "anneal_lr": {"value": True},
             "num_episodes": {"value": 250},
         },

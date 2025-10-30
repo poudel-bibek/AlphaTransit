@@ -724,6 +724,6 @@ python main.py --mode=baseline --baseline_type=demand_cover --save_animations --
 python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=1.0
 python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
 
-python main.py --gpu --anneal_lr
+python main.py --gpu --anneal_lr --gpu
 
 """
