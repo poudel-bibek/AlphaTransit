@@ -208,8 +208,8 @@ def train(config: Dict[str, Any]) -> None:
         while not terminated:
             # pretty_print_state(env, state)
             data = pyg_converter.convert(state)
-            print("\nStep data: ")
-            print(f"\tData: type: {type(data)}, value: {data}")
+            # print("\nStep data: ")
+            # print(f"\tData: type: {type(data)}, value: {data}")
             batch = Batch.from_data_list([data])  # Data already on device]
             
             # 1. Build a boolean valid mask of shape [num_graphs, max_nodes].
@@ -223,7 +223,7 @@ def train(config: Dict[str, Any]) -> None:
             if len(valid_list) > 0:
                 for local_idx in valid_list:
                     valid_mask[0, local_idx] = True
-                print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
+                # print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
                 
                 with torch.no_grad():
                     action_tensor, log_prob_tensor, value_tensor = model.act(
@@ -247,9 +247,9 @@ def train(config: Dict[str, Any]) -> None:
                 # Zero log prob is a safe placeholder that avoids NaNs in PPO. 
                 log_prob_tensor = torch.tensor([0.0], dtype=torch.float32, device=config["device"])
 
-            print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
-            print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
-            print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
+            # print(f"\tAction tensor: shape: {action_tensor.shape}, value: {action_tensor}")
+            # print(f"\tLog prob tensor: shape: {log_prob_tensor.shape}, value: {log_prob_tensor}")
+            # print(f"\tValue tensor: shape: {value_tensor.shape}, value: {value_tensor}")
             
             # 3. Use the chosen action.
             action = action_tensor.cpu().item() 
