@@ -37,12 +37,12 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     returns = torch.tensor([item['returns'] for item in batch], dtype=torch.float32) # [B]
     values = torch.tensor([item['values'] for item in batch], dtype=torch.float32) # [B]
     
-    print(f"\nActions: shape: {actions.shape}, value: {actions}, type: {type(actions)}")
-    print(f"\nLog probs: shape: {log_probs.shape}, value: {log_probs}, type: {type(log_probs)}")
-    print(f"\nAdvantages: shape: {advantages.shape}, value: {advantages}, type: {type(advantages)}")
-    print(f"\nReturns: shape: {returns.shape}, value: {returns}, type: {type(returns)}")
-    print(f"\nValues: shape: {values.shape}, value: {values}, type: {type(values)}")
-    print(f"\nValid mask: shape: {batched_valid_mask.shape}, value: {batched_valid_mask}, type: {type(batched_valid_mask)}")
+    # print(f"\nActions: shape: {actions.shape}, value: {actions}, type: {type(actions)}")
+    # print(f"\nLog probs: shape: {log_probs.shape}, value: {log_probs}, type: {type(log_probs)}")
+    # print(f"\nAdvantages: shape: {advantages.shape}, value: {advantages}, type: {type(advantages)}")
+    # print(f"\nReturns: shape: {returns.shape}, value: {returns}, type: {type(returns)}")
+    # print(f"\nValues: shape: {values.shape}, value: {values}, type: {type(values)}")
+    # print(f"\nValid mask: shape: {batched_valid_mask.shape}, value: {batched_valid_mask}, type: {type(batched_valid_mask)}")
 
     return {
         'obs': batched_obs,
