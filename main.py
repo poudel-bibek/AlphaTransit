@@ -594,7 +594,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Simulation setup: 
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--seed", type=int, default=99, help="Random seed")
     parser.add_argument("--gpu", action="store_true", help="Use CUDA if available. Pass --gpu to enable.")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
@@ -617,8 +617,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end with no demand (0.0-0.5)")
-    parser.add_argument("--path_init", type=str, default="transit_center", help="Initialize path using various schemes (possible: random, highest demand node, transit_center)")
-    parser.add_argument("--transit_center_node", type=str, default="96", help="Node identifier to use when path_init is 'transit_center'")
+    parser.add_argument("--route_init", type=str, default="transit_center", help="Initialize path using various schemes (possible: random, highest demand node, transit_center)")
+    parser.add_argument("--transit_center_node", type=str, default="96", help="Node identifier to use when route_init is 'transit_center'")
     
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
@@ -707,11 +707,14 @@ if __name__ == "__main__":
 
 """
 Scripts: 
-python main.py --mode=baseline --baseline_type=demand_cover --save_animations
-python main.py --mode=baseline --baseline_type=random_walk --save_animations
-python main.py --mode=baseline --baseline_type=shortest_path --save_animations
-python main.py --mode=baseline --baseline_type=reward_max --save_animations
-python main.py --mode=baseline --baseline_type=real_world --save_animations
+python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=transit_center
+python main.py --mode=baseline --baseline_type=real_world --save_animations --route_init=transit_center
+
+python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=random
+python main.py --mode=baseline --baseline_type=demand_cover --save_animations --route_init=random
+python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random
+python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random
+
 
 python main.py --gpu --concat_heads
 

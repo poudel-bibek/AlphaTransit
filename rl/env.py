@@ -37,7 +37,7 @@ class TransitEnv(gym.Env):
         self.unserved_as_cars = False if self.config.get("ignore_unserved") else True
         self.comfort_threshold = self.config.get("comfort_threshold")
         self.radius = self.config.get("radius")
-        self.path_init = self.config.get("path_init")
+        self.route_init = self.config.get("route_init")
         self.transit_center_node = str(self.config.get("transit_center_node"))
         
         # Constraints:

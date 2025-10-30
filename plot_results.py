@@ -1,7 +1,6 @@
 import os
 import json
 import argparse
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -67,7 +66,7 @@ METRIC_INFO = {
     }
 }
 
-def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_comparison.png"):
+def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_comparison.png", mode='transit_center'):
     # Get metric information in the right order
     ordered_metrics = [
         'service_rate',
@@ -83,23 +82,21 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     fig = plt.figure(figsize=(18, 8.5), dpi=300)  # Larger, more impactful size
 
     # Create main grid with better spacing for visual appeal
-    gs = fig.add_gridspec(2, 4, hspace=0.35, wspace=0.2)
-                         
+    outer_gs = fig.add_gridspec(2, 1, hspace=0.35)
 
-    # Main plots (2 rows, 4 cols, but skip last position in second row for legend)
+    # Sub-grids keep the top row at 4 columns; bottom row uses spacer columns so axes stay centered and equally sized
+    top_gs = outer_gs[0].subgridspec(1, 4, wspace=0.2)
+    bottom_gs = outer_gs[1].subgridspec(1, 5, wspace=0.2, width_ratios=[0.5, 1, 1, 1, 0.5])
+
     axes = []
-    for i in range(2):  # 2 rows
-        row_axes = []
-        for j in range(4):  # 4 cols
-            if i == 1 and j == 3:  # Skip last position in second row for legend
-                row_axes.append(None)  # Placeholder for the skipped position
-            else:
-                ax = fig.add_subplot(gs[i, j])
-                row_axes.append(ax)
-        axes.append(row_axes)
 
-    # Convert to numpy array, handling the None placeholder
-    axes = np.array(axes, dtype=object)  # Use object dtype to handle None
+    # Main plots for the top row (4 columns)
+    for col in range(4):
+        axes.append(fig.add_subplot(top_gs[0, col]))
+
+    # Bottom row plots (3 columns) now centered using spacer columns
+    for col in range(1, 4):
+        axes.append(fig.add_subplot(bottom_gs[0, col]))
 
     # Font size variable for consistency
     fs = 13
@@ -109,28 +106,28 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
 
     # Method styling dictionary - simple and clear
     # Remaining colors for future methods: '#C73E1D', '#4A90A4', '#7B68EE', '#FF6347'
-    method_styles = {
-        'demand_cover': {'color': '#2E86AB', 'marker': 'o', 'display_name': 'Demand Cover'},     # Blue, circle
-        'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
-        'real_world': {'color': '#F18F01', 'marker': 'D', 'display_name': 'Real World'},       # Orange, diamond
-        'shortest_path': {'color': '#32CD32', 'marker': '^', 'display_name': 'Shortest Path'},    # Green, triangle (as requested)
-    }
+    if mode == 'transit_center':
+        method_styles = {
+            # Demand cover, shortest path, and reward max dont make sense for designing routes from a single starting node.
+            'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
+            'real_world': {'color': '#F18F01', 'marker': 'D', 'display_name': 'Real World'},       # Orange, diamond
+            'rl': {'color': '#4A90A4', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Teal, star marker
+        }
+    elif mode == 'random_initialization':
+        method_styles = {
+            # Real world does not make sense for random initialization.
+            'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
+            'reward_max': {'color': '#C73E1D', 'marker': 'X', 'display_name': 'Rew. Max'},           # Red, X marker
+            'rl': {'color': '#4A90A4', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Teal, star marker
+            'demand_cover': {'color': '#2E86AB', 'marker': 'o', 'display_name': 'Demand Cover'},     # Blue, circle
+            'shortest_path': {'color': '#32CD32', 'marker': '^', 'display_name': 'Shortest Path'},    # Green, triangle (as requested)
+        }
 
     # x-tick positions and their TeX labels for all subplots
     x = [0.25, 0.75]  # Closer together
     xtick_labels = [r'$\alpha = 0.3$', r'$\alpha = 1.0$']
 
-    # Map subplot indices to actual positions in the 2x4 grid
-    subplot_positions = [
-        (0, 0), (0, 1), (0, 2), (0, 3),  # First row - all 4 positions
-        (1, 0), (1, 1), (1, 2)  # Second row - first 3 positions only
-    ]
-
-    for subplot_idx in range(7):
-        row, col = subplot_positions[subplot_idx]
-        ax = axes[row, col]
-        if ax is None:  # Skip None placeholders
-            continue
+    for subplot_idx, ax in enumerate(axes):
 
         # Remove background color, keep only left and bottom spines
         ax.patch.set_alpha(0)  # Make background transparent
@@ -164,13 +161,19 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         for result in alpha_03_results:
             for method_name, method_data in result.items():
                 if metric_key in method_data.get('results', {}):
-                    all_values.append(method_data['results'][metric_key]['avg'])
+                    value = method_data['results'][metric_key]['avg']
+                    if metric_info['unit'] == '%' and metric_info['range'][1] > 1 and value <= 1:
+                        value *= 100
+                    all_values.append(value)
 
         # Alpha 1.0 data
         for result in alpha_10_results:
             for method_name, method_data in result.items():
                 if metric_key in method_data.get('results', {}):
-                    all_values.append(method_data['results'][metric_key]['avg'])
+                    value = method_data['results'][metric_key]['avg']
+                    if metric_info['unit'] == '%' and metric_info['range'][1] > 1 and value <= 1:
+                        value *= 100
+                    all_values.append(value)
 
         if all_values:
             # Calculate dynamic range with 20% padding
@@ -183,8 +186,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             y_max = data_max + padding
 
             # Round to integers for cleaner appearance, but ensure y_min is not negative
-            y_min = max(0, int(y_min))  # Ensure minimum is 0
-            y_max = int(y_max) + 1  # Add 1 to ensure we go above the max value
+            y_min = max(0, int(y_min))
+            y_max = int(y_max) + 1
 
             ax.set_ylim(y_min, y_max)
 
@@ -194,8 +197,6 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
 
             # Use float positions but display rounded integer labels
             ax.set_yticks(y_tick_positions)
-
-            # Create rounded integer labels for display
             y_tick_labels = [str(int(round(pos))) for pos in y_tick_positions]
             ax.set_yticklabels(y_tick_labels)
         else:
@@ -203,10 +204,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             ax.set_ylim(metric_info['range'])
             y_range = metric_info['range']
             y_min, y_max = y_range
-            y_tick_step = (y_max - y_min) / 4
-            y_tick_positions = [y_min + i * y_tick_step for i in range(5)]
+            y_tick_positions = [y_min + (y_max - y_min) * i / 4 for i in range(5)]
 
-            # Use float positions but display rounded integer labels
             ax.set_yticks(y_tick_positions)
             y_tick_labels = [str(int(round(pos))) for pos in y_tick_positions]
             ax.set_yticklabels(y_tick_labels)
@@ -225,6 +224,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             for method_name, method_data in result.items():
                 if metric_key in method_data.get('results', {}):
                     avg_value = method_data['results'][metric_key]['avg']
+                    if metric_info['unit'] == '%' and metric_info['range'][1] > 1 and avg_value <= 1:
+                        avg_value *= 100
                     alpha_03_values.append(avg_value)
                     alpha_03_names.append(method_name)
 
@@ -236,14 +237,16 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             for method_name, method_data in result.items():
                 if metric_key in method_data.get('results', {}):
                     avg_value = method_data['results'][metric_key]['avg']
+                    if metric_info['unit'] == '%' and metric_info['range'][1] > 1 and avg_value <= 1:
+                        avg_value *= 100
                     alpha_10_values.append(avg_value)
                     alpha_10_names.append(method_name)
 
         # Plot alpha 0.3 data as stunning points (position 0.4)
         if alpha_03_values:
             for method_name, value in zip(alpha_03_names, alpha_03_values):
-                if method_name in method_styles:
-                    style = method_styles[method_name]
+                style = method_styles.get(method_name)
+                if style:
                     ax.scatter([x[0]], [value], c=[style['color']], marker=style['marker'], s=marker_size, alpha=0.9,
                               edgecolors=style['color'], linewidth=1, zorder=10)
 
@@ -267,8 +270,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         # Plot alpha 1.0 data as stunning points (position 0.6)
         if alpha_10_values:
             for method_name, value in zip(alpha_10_names, alpha_10_values):
-                if method_name in method_styles:
-                    style = method_styles[method_name]
+                style = method_styles.get(method_name)
+                if style:
                     ax.scatter([x[1]], [value], c=[style['color']], marker=style['marker'], s=marker_size, alpha=0.9,
                               edgecolors=style['color'], linewidth=1, zorder=10)
 
@@ -288,11 +291,11 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     legend_elements = []
 
     # Put Real World first, then sort the rest
-    remaining_methods = [m for m in method_styles.keys() if m != 'real_world']
+    remaining_methods = [m for m in method_styles.keys() if m not in {'real_world', 'rl'}]
     sorted_remaining = sorted(remaining_methods)
 
-    # Order: Real World first, then alphabetical
-    ordered_methods = ['real_world'] + sorted_remaining
+    # Order: Real World first, then alphabetical baselines, RL last
+    ordered_methods = ['real_world'] + sorted_remaining + ['rl']
 
     for method_name in ordered_methods:
         style = method_styles[method_name]
@@ -302,7 +305,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         )
 
     # Add clean legend at the bottom
-    legend = fig.legend(handles=legend_elements, loc='lower center', ncol=4,
+    legend = fig.legend(handles=legend_elements, loc='lower center', ncol=len(legend_elements),
                        fontsize=fs+1, frameon=True, fancybox=False, shadow=False,
                        bbox_to_anchor=(0.5, 0.04), columnspacing=1.5, handletextpad=0.8)
 
@@ -313,37 +316,58 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     legend.get_frame().set_alpha(1.0)
 
     plt.tight_layout()
+
+    output_path = Path(output_file)
+    stem = output_path.stem
+    output_file = str(output_path.with_name(f"{stem}_{mode}.png"))
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Stunning plot saved to: {output_file}")
-    # plt.show()  # Uncomment if you want to display the plot as well
 
 def load_results(folder):
-    with open(os.path.join(folder, 'results_summary.json'), 'r') as f:
+    with open(os.path.join(folder, 'eval_results_summary.json'), 'r') as f:
         results = json.load(f)
     method_name = '_'.join(folder.split('/')[-1].split('_')[0:2])
     return {method_name: results}
 
 def main():
     # Folders for alpha = 0.3
-    alpha_03_dir = 'training_data/alpha_0.3/'
+    alpha_03_dir_center = 'training_data/transit_center/alpha_0.3/'
     alpha_03_folders = [
-        str(os.path.join(alpha_03_dir, name))
-        for name in os.listdir(alpha_03_dir)
-        if os.path.isdir(os.path.join(alpha_03_dir, name))
+        str(os.path.join(alpha_03_dir_center, name))
+        for name in os.listdir(alpha_03_dir_center)
+        if os.path.isdir(os.path.join(alpha_03_dir_center, name))
+    ]
+
+    alpha_03_dir_random = 'training_data/random_initialization/alpha_0.3/'
+    alpha_03_folders_random = [
+        str(os.path.join(alpha_03_dir_random, name))
+        for name in os.listdir(alpha_03_dir_random)
+        if os.path.isdir(os.path.join(alpha_03_dir_random, name))
     ]
 
     # Folders with alpha = 1.0
-    alpha_10_dir = 'training_data/alpha_1.0/'
+    alpha_10_dir_center = 'training_data/transit_center/alpha_1.0/'
     alpha_10_folders = [
-        str(os.path.join(alpha_10_dir, name))
-        for name in os.listdir(alpha_10_dir)
-        if os.path.isdir(os.path.join(alpha_10_dir, name))
+        str(os.path.join(alpha_10_dir_center, name))
+        for name in os.listdir(alpha_10_dir_center)
+        if os.path.isdir(os.path.join(alpha_10_dir_center, name))
     ]
 
-    alpha_03_results = [load_results(folder) for folder in alpha_03_folders] # List of dicts
-    alpha_10_results = [load_results(folder) for folder in alpha_10_folders]
+    alpha_10_dir_random = 'training_data/random_initialization/alpha_1.0/'
+    alpha_10_folders_random = [
+        str(os.path.join(alpha_10_dir_random, name))
+        for name in os.listdir(alpha_10_dir_random)
+        if os.path.isdir(os.path.join(alpha_10_dir_random, name))
+    ]
 
-    main_results_plot(alpha_03_results, alpha_10_results)
+    alpha_03_results_center = [load_results(folder) for folder in alpha_03_folders] # List of dicts
+    alpha_10_results_center = [load_results(folder) for folder in alpha_10_folders]
+
+    alpha_03_results_random = [load_results(folder) for folder in alpha_03_folders_random] # List of dicts
+    alpha_10_results_random = [load_results(folder) for folder in alpha_10_folders_random]
+
+    main_results_plot(alpha_03_results_center, alpha_10_results_center, mode='transit_center')
+    # main_results_plot(alpha_03_results_random, alpha_10_results_random, mode='random_initialization')
 
 if __name__ == "__main__":
     main()

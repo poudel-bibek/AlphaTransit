@@ -559,13 +559,31 @@ class RewardMaximization:
 
                 for neighbor in valid_neighbors:
                     temp_route = current_route + [neighbor]
+                    
+                    temp_route_set = set(temp_route)
+                    next_valid_neighbors = [nxt for nxt in self.env.adj[neighbor] if nxt not in temp_route_set]
+                    is_route_end = len(temp_route) >= self.env.MAX_ROUTE_LENGTH
+                    is_forced_end = (not is_route_end) and (len(next_valid_neighbors) == 0)
 
-                    # Temporarily set path and simulate
-                    self.env.current_route = temp_route
+                    # Back up environment state (compatible with RL stepping logic)
+                    saved_world = self.env.world
+                    saved_all_routes = list(self.env.all_routes)
+                    saved_current_route = list(self.env.current_route)
+
+                    # Simulate with the candidate route appended
+                    self.env.all_routes.append(temp_route)
+                    self.env.current_route = list(temp_route)
                     self.env.world = self.env.build_world(self.env.config.get("network"))
                     self.env._apply_action() # is_baseline in this case is not set to True
                     sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
-                    reward = self.env.compute_reward(sim_result)
+                    
+                    reward = self.env.compute_reward(sim_result, is_route_end, is_forced_end)
+
+                    # Restore environment state
+                    self.env.world = saved_world
+                    self.env.all_routes = saved_all_routes
+                    self.env.current_route = saved_current_route
+
                     print(f"\nReward obtained from choice of {neighbor} = {reward}\n")
                     if reward > best_reward:
                         best_reward = reward
@@ -573,6 +591,7 @@ class RewardMaximization:
 
                 # Restore original path after evaluations
                 current_route.append(best_node)
+                self.env.current_route = current_route.copy()
                 print(f"\nRoute so far: {current_route}\n")
 
             self.env.all_routes.append(current_route)
