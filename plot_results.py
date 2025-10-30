@@ -290,15 +290,20 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     # Use the space below the plots for legend
     plt.subplots_adjust(bottom=0.15)  # Make room for legend
 
-    # Create enhanced legend entries using method styles (Real World first)
+    # Create enhanced legend entries using method styles (Real World first when available)
     legend_elements = []
 
     # Put Real World first, then sort the rest
     remaining_methods = [m for m in method_styles.keys() if m not in {'real_world', 'rl'}]
     sorted_remaining = sorted(remaining_methods)
 
-    # Order: Real World first, then alphabetical baselines, RL last
-    ordered_methods = ['real_world'] + sorted_remaining + ['rl']
+    # Order: Real World first when defined, then alphabetical baselines, RL last when defined
+    ordered_methods = []
+    if 'real_world' in method_styles:
+        ordered_methods.append('real_world')
+    ordered_methods.extend(sorted_remaining)
+    if 'rl' in method_styles:
+        ordered_methods.append('rl')
 
     for method_name in ordered_methods:
         style = method_styles[method_name]
