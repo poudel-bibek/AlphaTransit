@@ -3,9 +3,6 @@ import wandb
 from main import get_config, train, set_global_seeds
 from typing import Any, Dict
 
-
-DEFAULT_SWEEP_EPISODES = 250
-
 def build_sweep_config() -> Dict[str, Any]:
     """
     Define the sweep search space 
@@ -18,11 +15,11 @@ def build_sweep_config() -> Dict[str, Any]:
                    "goal": "maximize"},
 
         "parameters": {
-            "lr": {"values": [5e-5, 5e-4]},
+            "lr": {"values": [0.00005, 0.0005]},
             "update_frequency": {"values": [64, 256]},
             "entropy_coef": {"values": [0.01, 0.05]},
             "clip_frac": {"values": [0.1, 0.3]},
-            
+
             # "clip_frac": {"values": [0.1, 0.2, 0.3]},
             # "gae_lambda": {"values": [0.9, 0.95, 0.98]},
             # "gamma": {"values": [0.9, 0.95, 0.99]},
@@ -37,6 +34,10 @@ def build_sweep_config() -> Dict[str, Any]:
             # "beta1": {"distribution": "uniform", "min": 10, "max": 40},  # Wait penalty
             # "beta2": {"distribution": "uniform", "min": 10, "max": 30},  # Efficiency
             # "beta3": {"distribution": "uniform", "min": 10, "max": 40},  # Utilization
+
+            # Some other params to be set as fixed values
+            "anneal_lr": {"value": True},
+            "num_episodes": {"value": 250},
         },
     }
 
@@ -52,7 +53,6 @@ def agent_train() -> None:
         # Get defaults and merge with sampled
         base_config = get_config()
         config = {**base_config, **sampled_params}
-        config["num_episodes"] = sampled_params.get("num_episodes", DEFAULT_SWEEP_EPISODES)
         
         set_global_seeds(config["seed"]) # Although sweep config changes, the seed is still set to the same value.
         device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")

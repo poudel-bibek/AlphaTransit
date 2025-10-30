@@ -538,6 +538,8 @@ class RewardMaximization:
                 the forced-end simulation, apply the same penalty as RL, and advance to
                 the next route.
         Step 4: Repeat until all routes reach MAX_ROUTE_LENGTH or terminate early.
+
+        * Because the route ending candidates need full simulation to choose between them, takes long time to finish,
         """
 
         def snapshot_env_state():

@@ -369,7 +369,7 @@ def main():
     alpha_10_results_random = [load_results(folder) for folder in alpha_10_folders_random]
 
     main_results_plot(alpha_03_results_center, alpha_10_results_center, mode='transit_center')
-    # main_results_plot(alpha_03_results_random, alpha_10_results_random, mode='random_initialization')
+    main_results_plot(alpha_03_results_random, alpha_10_results_random, mode='random_initialization')
 
 if __name__ == "__main__":
     main()

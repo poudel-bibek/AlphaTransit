@@ -604,7 +604,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
     parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
-    parser.add_argument("--eval_every", type=int, default=5, help="Evaluate every N updates to the policy")
+    parser.add_argument("--eval_every", type=int, default=10, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of runs (over which we average the results) for both evaluation and baselines")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
@@ -627,17 +627,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_route_length", type=int, default=2, help="Minimum path length")
 
     # PPO params: 
-    parser.add_argument("--K_epochs", type=int, default=8, help="Number of PPO epochs")
-    parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
+    parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")
+    parser.add_argument("--batch_size", type=int, default=32, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio for policy loss")
-    parser.add_argument("--vf_clip_param", type=float, default=50.0, help="PPO clipping ratio for value loss")
+    parser.add_argument("--vf_clip_param", type=float, default=10.0, help="PPO clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
     parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate ")
+    parser.add_argument("--lr", type=float, default=0.0005, help="Learning rate")
+    parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate over training episodes")
     
     parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
@@ -724,6 +724,6 @@ python main.py --mode=baseline --baseline_type=demand_cover --save_animations --
 python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=1.0
 python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
 
-python main.py --gpu 
+python main.py --gpu --anneal_lr
 
 """
