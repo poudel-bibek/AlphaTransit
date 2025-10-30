@@ -79,9 +79,9 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
     else:
         choice_nodes = all_nodes
 
-    strategy = env.path_init 
+    strategy = env.route_init 
     if strategy not in {"random", "highest_demand", "transit_center"}:
-        raise ValueError(f"Invalid path initialization strategy: {strategy}")
+        raise ValueError(f"Invalid route initialization strategy: {strategy}")
 
     elif strategy == "random":
         choice = random.choice(choice_nodes)

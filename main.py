@@ -715,7 +715,6 @@ python main.py --mode=baseline --baseline_type=demand_cover --save_animations --
 python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random
 python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random
 
-
-python main.py --gpu --concat_heads
+python main.py --gpu 
 
 """

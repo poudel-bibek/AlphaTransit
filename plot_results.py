@@ -99,7 +99,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         axes.append(fig.add_subplot(bottom_gs[0, col]))
 
     # Font size variable for consistency
-    fs = 13
+    fs = 14
 
     # Marker size (independent of font size)
     marker_size = 40  # Fixed size for main plots
@@ -211,8 +211,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             ax.set_yticklabels(y_tick_labels)
 
         # Set consistent tick font sizes
-        ax.tick_params(axis='x', labelsize=fs-2)
-        ax.tick_params(axis='y', labelsize=fs-2)
+        ax.tick_params(axis='x', labelsize=fs-1)
+        ax.tick_params(axis='y', labelsize=fs-1)
 
         # Extract data for this metric from both alpha results
 
