@@ -266,7 +266,7 @@ def train(config: Dict[str, Any]) -> None:
                 route_progress=data.route_progress.cpu()
             )
             
-            print(f"\n\nVALID MASK: shape: {valid_mask.shape}, value: {valid_mask}, type: {type(valid_mask)}\n\n")
+            # print(f"\n\nVALID MASK: shape: {valid_mask.shape}, value: {valid_mask}, type: {type(valid_mask)}\n\n")
             ppo.memory.store({
                 'obs': store_data,
                 'action': action,
@@ -410,7 +410,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         if len(valid_list) > 0:
             for local_idx in valid_list:
                 valid_mask[0, local_idx] = True
-            print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
+            # print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
 
             with torch.no_grad():
                 action_tensor, _, _ = model.act(batch.x,
