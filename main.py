@@ -572,17 +572,18 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_featur
         "n_node_features": node_feature_dim,
         "proj_out": config.get("proj_out", 64),
         "num_gat_blocks": config.get("num_gat_blocks", 4),
-        "gat_channels": config.get("gat_channels", [64, 64, 64, 64]),
-        "num_heads": config.get("num_heads", [16, 16, 16, 16]),
+        "gat_channels": config.get("gat_channels", [128, 128, 128, 128]),
+        "num_heads": config.get("num_heads", [8, 8, 8, 8]),
         "attn_dropout": config.get("attn_dropout", [0.1, 0.1, 0.1, 0.1]),
         "feat_dropout": config.get("feat_dropout", [0.1, 0.1, 0.1, 0.1]),
         "actor_head_dropout": config.get("actor_head_dropout", 0.2),
         "critic_head_dropout": config.get("critic_head_dropout", 0.2),
         "concat": config.get("concat_heads", False),
-        "activation": config.get("activation", "leaky_relu"),
+        "activation": config.get("activation", "elu"),
         "n_edge_features": edge_feature_dim,
-        "actor_head_layers": config.get("actor_head_layers", [256, 128, 64, 32]),
-        "critic_head_layers": config.get("critic_head_layers", [256, 128, 64, 32]),
+        "actor_head_layers": config.get("actor_head_layers", [256, 128, 64]),
+        "critic_head_layers": config.get("critic_head_layers", [256, 128, 64]),
+        "critic_readout_type": config.get("critic_readout_type", "sum"),
     }
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -638,7 +639,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate ")
     
-    parser.add_argument("--activation", type=str, default="tanh", help="Activation function")
+    parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
     
@@ -707,13 +708,21 @@ if __name__ == "__main__":
 
 """
 Scripts: 
-python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=transit_center
-python main.py --mode=baseline --baseline_type=real_world --save_animations --route_init=transit_center
+python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=transit_center --alpha=0.3
+python main.py --mode=baseline --baseline_type=real_world --save_animations --route_init=transit_center --alpha=0.3
 
-python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=random
-python main.py --mode=baseline --baseline_type=demand_cover --save_animations --route_init=random
-python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random
-python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random
+python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=random --alpha=0.3
+python main.py --mode=baseline --baseline_type=demand_cover --save_animations --route_init=random --alpha=0.3
+python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=0.3
+python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=0.3
+
+python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=transit_center --alpha=1.0
+python main.py --mode=baseline --baseline_type=real_world --save_animations --route_init=transit_center --alpha=1.0
+
+python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=random --alpha=1.0
+python main.py --mode=baseline --baseline_type=demand_cover --save_animations --route_init=random --alpha=1.0
+python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=1.0
+python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
 
 python main.py --gpu 
 

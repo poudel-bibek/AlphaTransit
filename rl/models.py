@@ -3,7 +3,7 @@ import random
 import torch
 import torch.nn as nn
 from typing import List, Optional
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_mean_pool, global_max_pool
 from torch_geometric.data import Data, Batch
 from torch.distributions import Categorical
 
@@ -121,6 +121,7 @@ class GATV2ActorCritic(nn.Module):
         self.actor_head_dropout = kwargs['actor_head_dropout']
         self.critic_head_dropout = kwargs['critic_head_dropout']
         self.concat = kwargs['concat']
+        self.critic_readout_type = kwargs['critic_readout_type']
 
         # A/ C
         self.actor_head_layers = kwargs['actor_head_layers']
@@ -157,19 +158,28 @@ class GATV2ActorCritic(nn.Module):
 
         self.gat_blocks = nn.ModuleList(blocks)
         # The output dim after layers (GAT blocks) going to be in_dim.
-        self.backbone_out = in_dim
+        actor_input_dim = in_dim
+        
+        if self.critic_readout_type == "mean":
+            critic_input_dim = in_dim
+        elif self.critic_readout_type == "max":
+            critic_input_dim = in_dim
+        elif self.critic_readout_type == "sum":
+            critic_input_dim = in_dim * 2
+        else:
+            raise ValueError(f"Invalid critic readout type: {self.critic_readout_type}")
 
         # Actor head
-        self.actor_head = self._make_mlp(self.actor_head_layers, 1, self.actor_head_dropout)
+        self.actor_head = self._make_mlp(actor_input_dim, self.actor_head_layers, 1, self.actor_head_dropout)
 
         # Critic head
-        self.critic_head = self._make_mlp(self.critic_head_layers, 1, self.critic_head_dropout)
+        self.critic_head = self._make_mlp(critic_input_dim, self.critic_head_layers, 1, self.critic_head_dropout)
 
-    def _make_mlp(self, layers: List[int], out_dim: int, dropout: float) -> nn.Sequential:
+    def _make_mlp(self, input_dim: int, layers: List[int], out_dim: int, dropout: float) -> nn.Sequential:
         """
         Make a MLP with the given layers and dropout.
         """
-        dims = [self.backbone_out] + list(layers) + [out_dim]
+        dims = [input_dim] + list(layers) + [out_dim]
         mlp = []
         for i in range(len(dims) - 1):
             mlp.append(nn.Linear(dims[i], dims[i + 1]))
@@ -269,10 +279,19 @@ class GATV2ActorCritic(nn.Module):
     def critic_readout(self, z, batch):
         """
         Various pooling strategies can be used (pools over all nodes in a graph batch (which may contain multiple graphs)).
-        Currently used: Global mean pooling i.e., average the node embeddings across all nodes in the graph.
+        - Global mean pooling i.e., average the node embeddings across all nodes in the graph.
+        - Global max pooling i.e., take the maximum node embedding across all nodes in the graph.
+        - A sum of Global mean and Global max pooling. Sum pool is potentially a richer representation than just mean or max.
         # TODO: Experiment with others.
         """
-        return global_mean_pool(z, batch) # [batch_size, D]   
+        if self.critic_readout_type == "mean":
+            return global_mean_pool(z, batch) # [batch_size, D]  
+        elif self.critic_readout_type == "max":
+            return global_max_pool(z, batch) # [batch_size, D]  
+        elif self.critic_readout_type == "sum":
+            return torch.cat([global_mean_pool(z, batch), global_max_pool(z, batch)], dim=1) # [batch_size, 2*D]  
+        else:
+            raise ValueError(f"Invalid critic readout type: {self.critic_readout_type}")
 
     def evaluate(self, x, edge_index, edge_attr, batch, valid_mask, actions):
         """

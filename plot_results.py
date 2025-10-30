@@ -247,7 +247,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             for method_name, value in zip(alpha_03_names, alpha_03_values):
                 style = method_styles.get(method_name)
                 if style:
-                    ax.scatter([x[0]], [value], c=[style['color']], marker=style['marker'], s=marker_size, alpha=0.9,
+                    size = marker_size + 2 if method_name == 'rl' else marker_size
+                    ax.scatter([x[0]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
                               edgecolors=style['color'], linewidth=1, zorder=10)
 
         # Draw connecting lines between alpha 0.3 and alpha 1.0 points for each method
@@ -272,7 +273,9 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             for method_name, value in zip(alpha_10_names, alpha_10_values):
                 style = method_styles.get(method_name)
                 if style:
-                    ax.scatter([x[1]], [value], c=[style['color']], marker=style['marker'], s=marker_size, alpha=0.9,
+                    size = marker_size + 40 if method_name == 'rl' else marker_size # Just for RL to be slightly larger in legend
+
+                    ax.scatter([x[1]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
                               edgecolors=style['color'], linewidth=1, zorder=10)
 
 
@@ -299,10 +302,9 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
 
     for method_name in ordered_methods:
         style = method_styles[method_name]
-        legend_elements.append(
-            plt.scatter([], [], c=[style['color']], marker=style['marker'], s=marker_size - 4,
-                       edgecolors=style['color'], linewidth=1, label=style['display_name'])
-        )
+        legend_size = marker_size + 40 if method_name == 'rl' else marker_size # Just for RL to be slightly larger in legend
+        legend_elements.append( plt.scatter([], [], c=[style['color']], marker=style['marker'], s=legend_size,
+                       edgecolors=style['color'], linewidth=1, label=style['display_name']))
 
     # Add clean legend at the bottom
     legend = fig.legend(handles=legend_elements, loc='lower center', ncol=len(legend_elements),
