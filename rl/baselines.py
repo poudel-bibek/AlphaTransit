@@ -392,6 +392,7 @@ class DemandCoverage:
 
             # Initialize current route (exactly like RL env initialization)
             current_route = initialize_route(self.env)
+            self.env.current_route = current_route.copy()
 
             while len(current_route) < self.env.MAX_ROUTE_LENGTH:
 
@@ -529,18 +530,40 @@ class RewardMaximization:
         """
         Algorithm:
         Step 1: Initialization (same initialization as RL), happens in main at reset.
-        Step 2: At each step, from valid neighboring nodes
-            - Calculate the reward that would be obtained by adding that node to the path.
-                - This needs simulating each possible choice at each step.
-            - Select the node with the highest reward.
-        Step 3: Repeat step 2 until reaching the max path length.
+        Step 2: For each valid neighbor, score the candidate using the exact reward
+                formulation from RL training. Partial routes rely on fast metrics only;
+                full simulations are triggered when the candidate completes or forces the
+                route to end.
+        Step 3: If the chosen node leads to a forced termination (no continuations), run
+                the forced-end simulation, apply the same penalty as RL, and advance to
+                the next route.
+        Step 4: Repeat until all routes reach MAX_ROUTE_LENGTH or terminate early.
         """
+
+        def snapshot_env_state():
+            return {
+                "world": self.env.world,
+                "all_routes": [route.copy() for route in self.env.all_routes],
+                "current_route": self.env.current_route.copy(),
+                "current_route_index": self.env.current_route_index,
+                "is_baseline": self.env.is_baseline,
+            }
+
+        def restore_env_state(snapshot):
+            self.env.world = snapshot["world"]
+            self.env.all_routes = [route.copy() for route in snapshot["all_routes"]]
+            self.env.current_route = snapshot["current_route"].copy()
+            self.env.current_route_index = snapshot["current_route_index"]
+            self.env.is_baseline = snapshot["is_baseline"]
+
         current_route_index = 0
         while current_route_index < self.env.NUM_ROUTES:
             print(f"\n=== Building Route {current_route_index + 1} ===")
 
             # Initialize current route (exactly like RL env initialization)
             current_route = initialize_route(self.env)
+            self.env.current_route = current_route.copy()
+            self.env.current_route_index = current_route_index
 
             while len(current_route) < self.env.MAX_ROUTE_LENGTH:
 
@@ -556,47 +579,73 @@ class RewardMaximization:
 
                 best_reward = -np.inf
                 best_node = None
+                best_is_route_end = False
+                best_is_forced_end = False
 
                 for neighbor in valid_neighbors:
-                    temp_route = current_route + [neighbor]
-                    
+                    temp_route = [str(node) for node in current_route + [neighbor]]
+                    is_route_end = len(temp_route) >= self.env.MAX_ROUTE_LENGTH
                     temp_route_set = set(temp_route)
                     next_valid_neighbors = [nxt for nxt in self.env.adj[neighbor] if nxt not in temp_route_set]
-                    is_route_end = len(temp_route) >= self.env.MAX_ROUTE_LENGTH
                     is_forced_end = (not is_route_end) and (len(next_valid_neighbors) == 0)
 
-                    # Back up environment state (compatible with RL stepping logic)
-                    saved_world = self.env.world
-                    saved_all_routes = list(self.env.all_routes)
-                    saved_current_route = list(self.env.current_route)
+                    snapshot = snapshot_env_state()
 
-                    # Simulate with the candidate route appended
-                    self.env.all_routes.append(temp_route)
-                    self.env.current_route = list(temp_route)
-                    self.env.world = self.env.build_world(self.env.config.get("network"))
-                    self.env._apply_action() # is_baseline in this case is not set to True
-                    sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
-                    
-                    reward = self.env.compute_reward(sim_result, is_route_end, is_forced_end)
+                    self.env.current_route = temp_route.copy()
+                    self.env.current_route_index = current_route_index
 
-                    # Restore environment state
-                    self.env.world = saved_world
-                    self.env.all_routes = saved_all_routes
-                    self.env.current_route = saved_current_route
+                    if is_route_end or is_forced_end:
+                        self.env.all_routes = [route.copy() for route in snapshot["all_routes"]]
+                        self.env.all_routes.append(temp_route.copy())
+                        self.env.world = self.env.build_world(self.env.config.get("network"))
+                        self.env._apply_action()
+                        sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
+                        sim_result['route_completed'] = is_route_end
+                        sim_result['route_forced_end'] = is_forced_end
+                        reward = self.env.compute_reward(sim_result, is_route_end, is_forced_end)
+                    else:
+                        partial_metrics = self.env._get_partial_route_metrics()
+                        sim_result = {
+                            'wanting_to_onboard': partial_metrics['wanting_to_onboard'],
+                            'total_demand': partial_metrics['total_demand'],
+                            'demand_coverage_potential': partial_metrics['demand_coverage_potential'],
+                            'route_overlap_ratio': partial_metrics['route_overlap_ratio'],
+                            'route_completed': False,
+                            'route_forced_end': False,
+                        }
+
+                        reward = self.env.compute_reward(sim_result, False, False)
+
+                    restore_env_state(snapshot)
 
                     print(f"\nReward obtained from choice of {neighbor} = {reward}\n")
                     if reward > best_reward:
                         best_reward = reward
                         best_node = neighbor
+                        best_is_route_end = is_route_end
+                        best_is_forced_end = is_forced_end
+
+                if best_node is None:
+                    print("No valid neighbor produced a reward; stopping route construction.")
+                    break
 
                 # Restore original path after evaluations
                 current_route.append(best_node)
                 self.env.current_route = current_route.copy()
                 print(f"\nRoute so far: {current_route}\n")
 
-            self.env.all_routes.append(current_route)
+                if best_is_route_end:
+                    print("Reached max route length; completing route.")
+                    break
+
+                if best_is_forced_end:
+                    print("No valid continuations remain after this node; forcing route to end.")
+                    break
+
+            self.env.all_routes.append(current_route.copy())
             print(f"Route {current_route_index + 1} completed: {current_route}")
             current_route_index += 1
+            self.env.current_route_index = current_route_index
 
         print(f"\nAll routes completed: {self.env.all_routes}")
         return self.env.all_routes

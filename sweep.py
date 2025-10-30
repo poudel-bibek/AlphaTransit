@@ -3,22 +3,25 @@ import wandb
 from main import get_config, train, set_global_seeds
 from typing import Any, Dict
 
+
+DEFAULT_SWEEP_EPISODES = 250
+
 def build_sweep_config() -> Dict[str, Any]:
     """
     Define the sweep search space 
     """
 
     return {
-        "method": "bayes",
+        "method": "grid",
         
                 "metric": {"name": "eval/episode_final_reward", 
                    "goal": "maximize"},
 
         "parameters": {
-            "lr": {"values": [0.0005, 0.001, 0.005]}, 
-            "batch_size": {"values": [16, 32]},   
-            "entropy_coef": {"values": [0.01, 0.05, 0.1]}, 
-            "update_frequency": {"values": [64, 128, 256]},
+            "lr": {"values": [5e-5, 5e-4]},
+            "update_frequency": {"values": [64, 256]},
+            "entropy_coef": {"values": [0.01, 0.05]},
+            "clip_frac": {"values": [0.1, 0.3]},
             
             # "clip_frac": {"values": [0.1, 0.2, 0.3]},
             # "gae_lambda": {"values": [0.9, 0.95, 0.98]},
@@ -49,8 +52,9 @@ def agent_train() -> None:
         # Get defaults and merge with sampled
         base_config = get_config()
         config = {**base_config, **sampled_params}
+        config["num_episodes"] = sampled_params.get("num_episodes", DEFAULT_SWEEP_EPISODES)
         
-        set_global_seeds(config["seed"])
+        set_global_seeds(config["seed"]) # Although sweep config changes, the seed is still set to the same value.
         device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
         config["device"] = device
         
@@ -67,7 +71,7 @@ def main() -> None:
         project=base_config["wandb_project"], 
         entity=base_config["wandb_entity"]
     )
-    wandb.agent(sweep_id, function=agent_train, count=20)  
+    wandb.agent(sweep_id, function=agent_train, count=16)  
 
 if __name__ == "__main__":
     main()

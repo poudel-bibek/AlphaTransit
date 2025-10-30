@@ -627,7 +627,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_route_length", type=int, default=2, help="Minimum path length")
 
     # PPO params: 
-    parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")
+    parser.add_argument("--K_epochs", type=int, default=8, help="Number of PPO epochs")
     parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=50.0, help="PPO clipping ratio for value loss")
