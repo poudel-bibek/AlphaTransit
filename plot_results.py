@@ -246,10 +246,9 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         if alpha_03_values:
             for method_name, value in zip(alpha_03_names, alpha_03_values):
                 style = method_styles.get(method_name)
-                if style:
-                    size = marker_size + 2 if method_name == 'rl' else marker_size
-                    ax.scatter([x[0]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
-                              edgecolors=style['color'], linewidth=1, zorder=10)
+                size = marker_size + 45 if method_name == 'rl' else marker_size
+                ax.scatter([x[0]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
+                            edgecolors=style['color'], linewidth=1, zorder=10)
 
         # Draw connecting lines between alpha 0.3 and alpha 1.0 points for each method
         if alpha_03_values and alpha_10_values:
@@ -272,11 +271,9 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         if alpha_10_values:
             for method_name, value in zip(alpha_10_names, alpha_10_values):
                 style = method_styles.get(method_name)
-                if style:
-                    size = marker_size + 40 if method_name == 'rl' else marker_size # Just for RL to be slightly larger in legend
-
-                    ax.scatter([x[1]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
-                              edgecolors=style['color'], linewidth=1, zorder=10)
+                size = marker_size + 45 if method_name == 'rl' else marker_size # Just for RL to be slightly larger in legend
+                ax.scatter([x[1]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
+                            edgecolors=style['color'], linewidth=1, zorder=10)
 
 
         # Add subtle grid for better readability

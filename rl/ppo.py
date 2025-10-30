@@ -226,6 +226,9 @@ class PPO:
         """
         Update learning rate according to a linear schedule based on episodes.
         """
+        if total_episodes <= 0:
+            return
+
         progress = current_episode / total_episodes
         new_lr = self.lr * (1 - progress)
 

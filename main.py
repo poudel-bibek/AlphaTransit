@@ -22,6 +22,7 @@ from rl.env_utils import (
 )
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 
+
 class CachedPyGConverter:
     """
     Cache static PyG components to avoid recreating tensors every step.
@@ -330,7 +331,7 @@ def train(config: Dict[str, Any]) -> None:
         
         # Update PPO when we have enough samples in memory
         if len(ppo.memory) >= config["update_frequency"]:
-            perform_ppo_update(ppo, episode, steps_elapsed, config.get("anneal_lr"), config)
+            perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config)
             update_count += 1
 
             # Save policy after every update.
