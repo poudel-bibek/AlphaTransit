@@ -214,6 +214,7 @@ def train(config: Dict[str, Any]) -> None:
                 # print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
                 
                 with torch.no_grad():
+                    model.eval() # Set policy to eval mode.
                     action_tensor, log_prob_tensor, value_tensor = model.act(
                                                                         batch.x, 
                                                                         batch.edge_index, 
@@ -221,7 +222,7 @@ def train(config: Dict[str, Any]) -> None:
                                                                         batch.batch, 
                                                                         valid_mask=valid_mask,
                                                                         stochastic=True)
-            
+                    model.train() # Continue training mode.
             else: 
                 # When valid indices are empty, the policy gets a bad reward without ever having to call act() or simulate. 
                 # The state (S) with empty valid indices, forces action (a) to be (env.NO_VALID_ACTION) and the new state (S') that env transitions to will have next route intialized. 
