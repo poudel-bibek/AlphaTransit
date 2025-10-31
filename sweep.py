@@ -39,7 +39,7 @@ def build_sweep_config() -> Dict[str, Any]:
             # Some other params to be set as fixed values
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
-            "num_episodes": {"value": 250},
+            "num_episodes": {"value": 300},
         },
     }
 
