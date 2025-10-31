@@ -58,16 +58,16 @@ def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bo
     mean_buffer_reward: average per-step rewards stored in the current memory buffer.
     Is not a true measure of the policy's performance.
     """
-    print("\n==================\n")
-    print("Memory contents:")
-    print(f"\tNumber of transitions: {len(ppo.memory)}")
-    print(f"\tRewards: {ppo.memory.rewards}")
-    print(f"\tActions: {ppo.memory.actions}")
-    print(f"\tLog probs: {ppo.memory.log_probs}")
-    print(f"\tValues: {ppo.memory.values}")
-    print(f"\tDones: {ppo.memory.dones}")
-    print(f"\tEpisode boundaries: {ppo.memory.episode_boundaries}")
-    print(f"\tBootstrap values: {ppo.memory.bootstrap_values}")
+    # print("\n==================\n")
+    # print("Memory contents:")
+    # print(f"\tNumber of transitions: {len(ppo.memory)}")
+    # print(f"\tRewards: {ppo.memory.rewards}")
+    # print(f"\tActions: {ppo.memory.actions}")
+    # print(f"\tLog probs: {ppo.memory.log_probs}")
+    # print(f"\tValues: {ppo.memory.values}")
+    # print(f"\tDones: {ppo.memory.dones}")
+    # print(f"\tEpisode boundaries: {ppo.memory.episode_boundaries}")
+    # print(f"\tBootstrap values: {ppo.memory.bootstrap_values}")
 
     if anneal_lr:
         ppo.update_learning_rate(episode, config["num_episodes"])
