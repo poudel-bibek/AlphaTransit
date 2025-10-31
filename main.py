@@ -53,19 +53,6 @@ class CachedPyGConverter:
         data.route_progress = route_progress
         return data
 
-# def state_to_pyg(state: Dict[str, Any]) -> Data:
-#     """
-#     """
-#     # Use from_numpy for better performance when possible
-#     x = torch.from_numpy(state["node_features"]).float()
-#     edge_index = torch.from_numpy(state["edge_index"]).long() 
-#     edge_attr = torch.from_numpy(state["edge_features"]).float()
-#     steps_left = torch.from_numpy(state["steps_left"]).float()
-    
-#     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-#     data.steps_left = steps_left
-#     return data
-
 def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """
     mean_buffer_reward: average per-step rewards stored in the current memory buffer.
@@ -195,7 +182,7 @@ def train(config: Dict[str, Any]) -> None:
 
     # PyG converter
     pyg_converter = CachedPyGConverter(config["device"])
-    episode, steps_elapsed, update_count = 0, 0, 0
+    episode, steps_elapsed, update_count, policy_path = 0, 0, 0, None
 
     while episode < config["num_episodes"]:
         episode += 1
@@ -211,7 +198,7 @@ def train(config: Dict[str, Any]) -> None:
             data = pyg_converter.convert(state)
             # print("\nStep data: ")
             # print(f"\tData: type: {type(data)}, value: {data}")
-            batch = Batch.from_data_list([data])  # Data already on device]
+            batch = Batch.from_data_list([data]).to(config["device"])  # Data already on device
             
             # 1. Build a boolean valid mask of shape [num_graphs, max_nodes].
             # We have one graph per step, so this is [1, num_nodes]
@@ -277,18 +264,44 @@ def train(config: Dict[str, Any]) -> None:
                 'terminated': terminated,  # Episode end signal from env
                 'valid_mask': valid_mask.cpu() # 2D bool tensor of shape [1, num_nodes] as expected
             })
-                    
+                
+            # State needs to be updated before bootstrapping.
             state = next_state
-            
-        # Truncation is not possible. Simplified bootstrapping. 
+
+            if len(ppo.memory) >= config["update_frequency"]:
+                update_count += 1 # Important to increment before calling perform_ppo_update()
+
+                if terminated: # Although rare, this (same step termination + update) can still happen
+                    bootstrap_value = 0.0
+                    print(f"\nEpisode terminated naturally - bootstrap value: {bootstrap_value}\n")
+                else:
+                    
+                    # Since we may update the policy mid-episode, we need to get the bootstrap value for the next state.
+                    bs_data = pyg_converter.convert(next_state)
+                    bs_batch = Batch.from_data_list([bs_data]).to(config["device"])
+
+                    model.eval() # Set policy to eval mode.
+                    with torch.no_grad():
+                        bootstrap_value = model.get_bootstrap_value(bs_batch.x, bs_batch.edge_index, bs_batch.edge_attr, bs_batch.batch)
+                        print(f"\nBootstrap value at update: {bootstrap_value}\n")
+                    model.train() # Continue training mode.
+
+                # Mark a boundary with bootstrap value (to seal the current rollout segment) so that GAE sees the boundary.
+                ppo.memory.mark_episode_end(bootstrap_value)
+                
+                perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config) # This also clears the memory.
+                policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_ep_{episode}.pth") # Latest policy path.
+                torch.save(model.state_dict(), policy_path)
+                
+        # Handle true episode ends (natural termination of episode). 
+        # Mark episode end if we haven't already done so inside the loop (if its was already done, memory is empty). Prevent double marking.
         bootstrap_value = 0.0
-        print(f"\nEpisode terminated naturally - bootstrap value: {bootstrap_value}\n")
+        if len(ppo.memory) > 0:
+            ppo.memory.mark_episode_end(bootstrap_value)
+            print(f"\nBootstrap value at episode end: {bootstrap_value}\n")
 
         # only render at the end of the episode.
         env.render(training_save_dir, f"ep_{episode}.png")
-
-        # Mark episode boundary with bootstrap value.
-        ppo.memory.mark_episode_end(bootstrap_value)
 
         # The reward after the entire route has been built. 
         episode_final_reward = reward 
@@ -329,17 +342,18 @@ def train(config: Dict[str, Any]) -> None:
             "episode/bus_utilization": sim_result['bus_utilization'],
             }, step=episode)
         
-        # Update PPO when we have enough samples in memory
-        if len(ppo.memory) >= config["update_frequency"]:
-            perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config)
-            update_count += 1
+        # Check for evaluation at the end of every episode (and not immediately after an update). It is unlikely that multiple updates happen in a single episode.
+        if update_count % config["eval_every"] == 0 and policy_path is not None:
+            eval(config, policy_path, episode, training_save_dir)
+            policy_path = None
 
-            # Save policy after every update.
-            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_ep_{episode}.pth")
-            torch.save(model.state_dict(), policy_path)
-
-            if update_count % config["eval_every"] == 0:
-                eval(config, policy_path, episode, training_save_dir)
+    # Flush after the training while loop ends. It would have already gotten a bootstrap value for the last episode end.
+    if len(ppo.memory) > 0:
+        update_count += 1
+        perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config)
+        policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_ep_{episode}.pth") # Latest policy path.
+        torch.save(model.state_dict(), policy_path)
+        
     
 def execute_eval_runs(
     config: Dict[str, Any],
@@ -603,7 +617,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples")
+    parser.add_argument("--update_frequency", type=int, default=1024, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=10, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")

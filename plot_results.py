@@ -109,7 +109,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     if mode == 'transit_center':
         method_styles = {
             # Demand cover, shortest path, and reward max dont make sense for designing routes from a single starting node.
-            'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
+            # 'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
             'real_world': {'color': '#F18F01', 'marker': 'D', 'display_name': 'Real World'},       # Orange, diamond
             'rl': {'color': '#4A90A4', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Teal, star marker
         }
@@ -246,6 +246,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         if alpha_03_values:
             for method_name, value in zip(alpha_03_names, alpha_03_values):
                 style = method_styles.get(method_name)
+                if style is None:
+                    continue
                 size = marker_size + 45 if method_name == 'rl' else marker_size
                 ax.scatter([x[0]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
                             edgecolors=style['color'], linewidth=1, zorder=10)
@@ -271,6 +273,8 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         if alpha_10_values:
             for method_name, value in zip(alpha_10_names, alpha_10_values):
                 style = method_styles.get(method_name)
+                if style is None:
+                    continue
                 size = marker_size + 45 if method_name == 'rl' else marker_size # Just for RL to be slightly larger in legend
                 ax.scatter([x[1]], [value], c=[style['color']], marker=style['marker'], s=size, alpha=0.9,
                             edgecolors=style['color'], linewidth=1, zorder=10)

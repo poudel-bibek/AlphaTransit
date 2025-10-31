@@ -71,7 +71,7 @@ class TransitEnv(gym.Env):
         self.node_to_idx = {node: idx for idx, node in enumerate(self.node_list)}
         self.idx_to_node = {idx: node for idx, node in enumerate(self.node_list)}
         
-        self.NO_VALID_ACTION = self.n_nodes # The last id is the action to be taken when valid actions are empty
+        self.NO_VALID_ACTION = int(self.n_nodes) # The last id is the action to be taken when valid actions are empty
         # Cache demand DataFrame to avoid reading CSV every step
         self.demand_df_cached = df_demand
 

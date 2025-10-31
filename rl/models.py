@@ -360,6 +360,14 @@ class GATV2ActorCritic(nn.Module):
         entropies = torch.stack(entropies_list)
         return log_probs, entropies, values
 
+    def get_bootstrap_value(self, x, edge_index, edge_attr, batch):
+        """
+        Get the bootstrap value for the given node embeddings and batch.
+        """
+        z = self._get_node_embeddings(x, edge_index, edge_attr)
+        g = self.critic_readout(z, batch)
+        return self.critic_head(g).squeeze(-1).item()
+
     @torch.no_grad()
     def apply_orthogonal_init(self, hidden_gain: Optional[float] = None,
                               bias_const: float = 0.0,
