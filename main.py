@@ -644,7 +644,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="Mini-batch size")
+    parser.add_argument("--batch_size", type=int, default=64, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=10.0, help="PPO clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")

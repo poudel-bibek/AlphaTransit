@@ -19,6 +19,7 @@ def build_sweep_config() -> Dict[str, Any]:
             "update_frequency": {"values": [1024, 2048]},
             "entropy_coef": {"values": [0.01, 0.05]},
             "clip_frac": {"values": [0.1, 0.3]},
+            "batch_size": {"values": [64, 128]},
 
             # "clip_frac": {"values": [0.1, 0.2, 0.3]},
             # "gae_lambda": {"values": [0.9, 0.95, 0.98]},
@@ -72,7 +73,7 @@ def main() -> None:
         project=base_config["wandb_project"], 
         entity=base_config["wandb_entity"]
     )
-    wandb.agent(sweep_id, function=agent_train, count=16)  
+    wandb.agent(sweep_id, function=agent_train, count=32)  
 
 if __name__ == "__main__":
     main()
