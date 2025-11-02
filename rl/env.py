@@ -1359,14 +1359,10 @@ class TransitEnv(gym.Env):
                 - TODO: For invalid action: Not done for now (the probability is very low)
 
         ---------
-        TODO: On further normalizing the reward:
-        - Applying the Welford Normalization to the returns (not the absolute reward values).
-        - Normalizing raw rewards can be a problem, example:
-            - Episode 1: avg_travel_time_norm = 1.0 → travel time term = -15.0
-            - Episode 100: avg_travel_time_norm = 0.5 → travel time term = -7.5
-            - Without normalization of returns: Clear improvement observed (-7.5 > -15.0)
-            - With normalization of raw rewards: The improvement could be flattened relative to the running mean
-              and the agent may not see a strong learning signal.
+        TODO: On Applying the Welford Normalization to the returns (not the reward).
+        - Current setup: Normalize rewards at per step level. 
+        - Partial routes and complete routes have different reward magnitudes (and ranges), this can make normalizer stats biased.
+        - Solution: Normalize returns (cumulative rewards).
         ---------
         Potential pitfalls:
         1. If the rewards are too small like 0.0001, then gradients are too small to be effective.

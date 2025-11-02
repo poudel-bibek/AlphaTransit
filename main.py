@@ -590,9 +590,9 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_featur
         "n_node_features": node_feature_dim,
         "proj_out": config.get("proj_out", 64),
         "num_gat_blocks": config.get("num_gat_blocks", 4),
-        "gat_channels": config.get("gat_channels", [128, 128, 128, 128]),
-        "num_heads": config.get("num_heads", [8, 8, 8, 8]),
-        "attn_dropout": config.get("attn_dropout", [0.1, 0.1, 0.1, 0.1]),
+        "gat_channels": config.get("gat_channels", [128, 128, 64, 64]),
+        "num_heads": config.get("num_heads", [8, 8, 4, 4]),
+        "attn_dropout": config.get("attn_dropout", [0.0, 0.05, 0.1, 0.1]), # Increase dropout in deeper layers
         "feat_dropout": config.get("feat_dropout", [0.1, 0.1, 0.1, 0.1]),
         "actor_head_dropout": config.get("actor_head_dropout", 0.05),
         "critic_head_dropout": config.get("critic_head_dropout", 0.05),
@@ -620,9 +620,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples")
+    parser.add_argument("--update_frequency", type=int, default=256, help="Update PPO when memory has N samples") # Set this value so that policy does not update mid-episode always. 
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
-    parser.add_argument("--eval_every", type=int, default=2, help="Evaluate every N updates to the policy")
+    parser.add_argument("--eval_every", type=int, default=10, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of runs (over which we average the results) for both evaluation and baselines")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
@@ -649,7 +649,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO clipping ratio for value loss")
-    parser.add_argument("--gamma", type=float, default=0.96, help="Discount factor")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
     parser.add_argument("--entropy_coef", type=float, default=0.02, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
