@@ -15,7 +15,7 @@ def build_sweep_config() -> Dict[str, Any]:
                    "goal": "maximize"},
 
         "parameters": {
-            "lr": {"values": [0.00005, 0.0005]},
+            "lr": {"values": [0.00005, 0.0005, 0.0001]},
             "update_frequency": {"values": [128, 256]},
             "entropy_coef": {"values": [0.01, 0.05]},
             "clip_frac": {"values": [0.1, 0.3]},

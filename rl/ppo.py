@@ -42,7 +42,11 @@ class PPO:
 
         raw_reward = transition['raw_reward']
         reward_arr = np.array([[raw_reward]], dtype=np.float64)
-        normalized_reward = float(self.reward_normalizer.normalize(reward_arr)[0, 0])
+        if self.reward_normalizer.count < 1 or np.any(self.reward_normalizer.var < 1e-8):
+            normalized_reward = raw_reward
+        else:
+            normalized_reward = float(self.reward_normalizer.normalize(reward_arr)[0, 0])
+
         self.reward_normalizer.update(reward_arr) # Normalize and then update. i.e., each reward shouldn't be normalized using statistics that already include itself.
 
         prepared = dict(transition)
