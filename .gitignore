@@ -111,3 +111,6 @@ results_comparison.png
 ./results_comparison_random_initialization.png
 results_comparison_transit_center.png
 results_comparison_random_initialization.png
+
+.cursor/
+.cursor/*
