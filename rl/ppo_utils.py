@@ -63,7 +63,8 @@ class Memory:
         self.obs: List[Any] = []
         self.actions: List[Any] = []
         self.log_probs: List[float] = []
-        self.rewards: List[float] = []
+        self.norm_rewards: List[float] = []
+        self.raw_rewards: List[float] = []
         self.values: List[float] = []
         self.dones: List[bool] = []  # True for terminated episodes only
         self.valid_mask: List[torch.BoolTensor] = []
@@ -83,7 +84,8 @@ class Memory:
         """
         self.obs.append(transition['obs'])
         self.actions.append(transition['action'])
-        self.rewards.append(transition['reward'])
+        self.norm_rewards.append(transition['norm_reward'])
+        self.raw_rewards.append(transition['raw_reward'])
         self.values.append(transition['value'])
         self.log_probs.append(transition['log_prob'])
         self.dones.append(transition['terminated'])  # Only terminated!
@@ -102,7 +104,8 @@ class Memory:
         """
         self.obs.clear()
         self.actions.clear()
-        self.rewards.clear()
+        self.norm_rewards.clear()
+        self.raw_rewards.clear()
         self.values.clear()
         self.log_probs.clear()
         self.dones.clear()

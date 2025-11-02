@@ -61,7 +61,7 @@ def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bo
     # print("\n==================\n")
     # print("Memory contents:")
     # print(f"\tNumber of transitions: {len(ppo.memory)}")
-    # print(f"\tRewards: {ppo.memory.rewards}")
+    # print(f"\tNormalized rewards: {ppo.memory.norm_rewards}")
     # print(f"\tActions: {ppo.memory.actions}")
     # print(f"\tLog probs: {ppo.memory.log_probs}")
     # print(f"\tValues: {ppo.memory.values}")
@@ -82,7 +82,6 @@ def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bo
     print(f"Value Loss: {stats['value_loss']:.4f}")
     print(f"Entropy Loss: {stats['entropy_loss']:.4f}")
     print(f"Clipping Frequency: {stats['clipping_frequency']:.4f}")
-    print(f"Mean Buffer Reward: {stats['mean_buffer_reward']:.4f}")
     print(f"Approx KL: {stats['approx_kl']:.4f}")
     print(f"Mean Clip Ratio: {stats['mean_clip_ratio']:.4f}")
     print("==================\n")
@@ -91,7 +90,6 @@ def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bo
         "ppo/value_loss": stats['value_loss'],
         "ppo/entropy_loss": stats['entropy_loss'],
         "ppo/clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
-        "ppo/mean_buffer_reward": stats['mean_buffer_reward'],
         "ppo/approx_kl": stats['approx_kl'],
         "ppo/mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
         "ppo/learning_rate": ppo.optimizer.param_groups[0]['lr'], # Current learning rate after annealing
@@ -190,6 +188,7 @@ def train(config: Dict[str, Any]) -> None:
         
         state, _ = env.reset()
         episode_steps = 0
+        episode_total_reward = 0.0
         terminated = False
         bootstrap_value = None  # Initialize outside loop
 
@@ -246,6 +245,7 @@ def train(config: Dict[str, Any]) -> None:
 
             episode_steps += 1
             steps_elapsed += 1
+            episode_total_reward += reward
 
             # Store transition
             store_data = Data(
@@ -256,10 +256,10 @@ def train(config: Dict[str, Any]) -> None:
             )
             
             # print(f"\n\nVALID MASK: shape: {valid_mask.shape}, value: {valid_mask}, type: {type(valid_mask)}\n\n")
-            ppo.memory.store({
+            ppo.store_transition({
                 'obs': store_data,
                 'action': action,
-                'reward': reward,
+                'raw_reward': reward,
                 'value': value_tensor.cpu().item(),
                 'log_prob': log_prob_tensor.cpu().item(),
                 'terminated': terminated,  # Episode end signal from env
@@ -290,7 +290,7 @@ def train(config: Dict[str, Any]) -> None:
                 # Mark a boundary with bootstrap value (to seal the current rollout segment) so that GAE sees the boundary.
                 ppo.memory.mark_episode_end(bootstrap_value)
                 
-                perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config) # This also clears the memory.
+                perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config) # This also clears the memory. No need to return, in-place update.
                 policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_ep_{episode}.pth") # Latest policy path.
                 torch.save(model.state_dict(), policy_path)
                 
@@ -304,11 +304,10 @@ def train(config: Dict[str, Any]) -> None:
         # only render at the end of the episode.
         env.render(training_save_dir, f"ep_{episode}.png")
 
-        # The reward after the entire route has been built. 
-        episode_final_reward = reward 
-        # This makes sense for episodes that terminate naturally (with complete routes).
+        # Sum of rewards obtained across the episode
+        episode_total_reward = float(episode_total_reward)
         
-        print(f"Episode {episode} finished after {episode_steps} steps. Reward: {episode_final_reward:.2f}")
+        print(f"Episode {episode} finished after {episode_steps} steps. Total reward: {episode_total_reward:.2f}")
         
         # time calculations
         served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
@@ -319,9 +318,11 @@ def train(config: Dict[str, Any]) -> None:
         combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
 
         wandb.log({
-            "episode/episode_final_reward": episode_final_reward,
+            "episode/episode_total_reward": episode_total_reward,
             "episode/episode_length": episode_steps, # Length of routes
             "episode/steps_elapsed": steps_elapsed, # Total steps across all episodes
+            "episode/reward_normalizer_mean": float(ppo.reward_normalizer.mean),
+            "episode/reward_normalizer_std": float(np.sqrt(ppo.reward_normalizer.var)),
 
             # reward related and others
             "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
@@ -362,7 +363,7 @@ def execute_eval_runs(
     num_runs: int,
     base_seed: int,
     save_dir: str,
-) -> tuple[list, dict]:
+    ) -> tuple[list, dict]:
     """
     Evaluate a trained policy for multiple runs.
     - Load a saved policy
@@ -374,7 +375,7 @@ def execute_eval_runs(
     - During eval episode, agent constructs a route path step by step
     - The results are only meaningful at the end of the episode.
     -----
-    episode_final_reward: this should be a true measure of the policy's performance.
+    episode_total_reward: this should capture the summed per-step rewards for the episode.
     """
     print(f"Evaluating policy: {policy_path} for {num_runs} runs starting at seed: {base_seed}")
     
@@ -415,9 +416,10 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
     state, _ = env.reset()
     terminated = False
     eval_episode_steps = 0
+    episode_total_reward = 0.0
     while not terminated:
         data = pyg_converter.convert(state)
-        batch = Batch.from_data_list([data])  # Data already on device
+        batch = Batch.from_data_list([data]).to(config["device"])  # Data already on device
         valid_list = env._get_valid_indices()
         
         num_nodes = batch.num_nodes
@@ -444,7 +446,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
         state = next_state
         eval_episode_steps += 1
-    episode_final_reward = reward
+        episode_total_reward += reward
 
     # Calculate combined metrics
     served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
@@ -472,7 +474,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         )
 
     return {
-        'episode_final_reward': episode_final_reward,
+        'episode_total_reward': float(episode_total_reward),
         'episode_length': eval_episode_steps,
         'demand_coverage_potential': sim_result['demand_coverage_potential'],
         'demand_coverage_actual': sim_result['demand_coverage_actual'],
@@ -516,7 +518,7 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     - During eval episode, agent constructs a route path step by step
     - The results are only meaningful at the end of the episode.
     -----
-    episode_final_reward: this should be a true measure of the policy's performance.
+    episode_total_reward: this should capture the summed per-step rewards for the episode.
     """
     print("Evaluating policy: ", policy_path)
 
@@ -534,8 +536,8 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str) 
     # Log averaged results to wandb (for single run, this is just the single result)
     if not config.get("wandb_off"):
         wandb.log({
-            # Final reward (after a full path has been constructed)
-            "eval/episode_final_reward": aggregated['episode_final_reward'],
+            # Total reward accumulated across the episode
+            "eval/episode_total_reward": aggregated['episode_total_reward'],
             "eval/episode_length": aggregated['episode_length'],
             "eval/steps_elapsed": aggregated['episode_length'],
 
@@ -592,10 +594,10 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_featur
         "num_heads": config.get("num_heads", [8, 8, 8, 8]),
         "attn_dropout": config.get("attn_dropout", [0.1, 0.1, 0.1, 0.1]),
         "feat_dropout": config.get("feat_dropout", [0.1, 0.1, 0.1, 0.1]),
-        "actor_head_dropout": config.get("actor_head_dropout", 0.2),
-        "critic_head_dropout": config.get("critic_head_dropout", 0.2),
+        "actor_head_dropout": config.get("actor_head_dropout", 0.05),
+        "critic_head_dropout": config.get("critic_head_dropout", 0.05),
         "concat": config.get("concat_heads", False),
-        "activation": config.get("activation", "elu"),
+        "activation": config.get("activation", "tanh"),
         "n_edge_features": edge_feature_dim,
         "actor_head_layers": config.get("actor_head_layers", [256, 128, 64]),
         "critic_head_layers": config.get("critic_head_layers", [256, 128, 64]),
@@ -618,7 +620,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=1024, help="Update PPO when memory has N samples")
+    parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples")
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=2, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
@@ -643,19 +645,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_route_length", type=int, default=2, help="Minimum path length")
 
     # PPO params: 
-    parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")
-    parser.add_argument("--batch_size", type=int, default=64, help="Mini-batch size")
+    parser.add_argument("--K_epochs", type=int, default=8, help="Number of PPO epochs")
+    parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio for policy loss")
-    parser.add_argument("--vf_clip_param", type=float, default=10.0, help="PPO clipping ratio for value loss")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO clipping ratio for value loss")
+    parser.add_argument("--gamma", type=float, default=0.96, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
+    parser.add_argument("--entropy_coef", type=float, default=0.02, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=0.0005, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate over training episodes")
     
-    parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?
+    # parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
     

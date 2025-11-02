@@ -1,10 +1,10 @@
-from typing import Dict
+from typing import Any, Dict
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
-from rl.ppo_utils import DatasetClass, Memory, collate_fn
+from rl.ppo_utils import DatasetClass, Memory, WelfordNormalizer, collate_fn
 
 
 class PPO:
@@ -32,6 +32,23 @@ class PPO:
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
         self.memory = Memory()
+        self.reward_normalizer = WelfordNormalizer(shape=())
+
+    def store_transition(self, transition: Dict[str, Any]) -> None:
+        """
+        Normalize rewards when enabled.
+        Store the transition in rollout memory.
+        """
+
+        raw_reward = transition['raw_reward']
+        reward_arr = np.array([[raw_reward]], dtype=np.float64)
+        normalized_reward = float(self.reward_normalizer.normalize(reward_arr)[0, 0])
+        self.reward_normalizer.update(reward_arr) # Normalize and then update. i.e., each reward shouldn't be normalized using statistics that already include itself.
+
+        prepared = dict(transition)
+        prepared['norm_reward'] = normalized_reward
+
+        self.memory.store(prepared)
 
     def update(self) -> Dict[str, float]:
         """
@@ -56,21 +73,21 @@ class PPO:
             for batch_data in dataloader:
 
                 obs = batch_data['obs'].to(self.device)
-                print(f"Type of obs: {type(obs)}, value: {obs}")
+                # print(f"Type of obs: {type(obs)}, value: {obs}")
                 actions = batch_data['actions'].to(self.device)
                 old_log_probs = batch_data['log_probs'].to(self.device)
                 advantages = batch_data['advantages'].to(self.device)
                 returns = batch_data['returns'].to(self.device)
                 valid_mask = batch_data['valid_mask'].to(self.device)
                 
-                print({
-                    "x": tuple(obs.x.shape),
-                    "edge_index": tuple(obs.edge_index.shape),
-                    "edge_attr": tuple(getattr(obs, "edge_attr", torch.empty(0)).shape),
-                    "batch_vec": tuple(obs.batch.shape),
-                    "valid_mask": tuple(valid_mask.shape),
-                    "actions": tuple(actions.shape),
-                })
+                # print({
+                #     "x": tuple(obs.x.shape),
+                #     "edge_index": tuple(obs.edge_index.shape),
+                #     "edge_attr": tuple(getattr(obs, "edge_attr", torch.empty(0)).shape),
+                #     "batch_vec": tuple(obs.batch.shape),
+                #     "valid_mask": tuple(valid_mask.shape),
+                #     "actions": tuple(actions.shape),
+                # })
 
                 # Get current policy outputs
                 log_probs, entropy, values = self.model.evaluate(obs.x,          # Node features [sum_n_i, D]
@@ -83,7 +100,7 @@ class PPO:
                 # Normalize advantages (per batch; similar to cleanRL)
                 # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero
                 # Due to variable length of episodes, sometimes batch size is 1, so using correction=0 to use N in std calculation instead of N-1.
-                advantages = (advantages - advantages.mean()) / (advantages.std(correction=0) + 1e-8) 
+                advantages = (advantages - advantages.mean()) / (advantages.std(correction=0) + 1e-8) # Comment this out to use raw advantages
 
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
@@ -119,7 +136,6 @@ class PPO:
                 entropy_losses.append(entropy_loss.item())
                 clipping_frequencies.append(((ratio - 1).abs() > self.clip_frac).float().mean().item())
         
-        mean_buffer_reward = np.mean(self.memory.rewards)
         # Clear memory after update
         self.memory.clear()
         
@@ -129,7 +145,6 @@ class PPO:
             'value_loss': np.mean(value_losses),
             'entropy_loss': np.mean(entropy_losses),
             'clipping_frequency': np.mean(clipping_frequencies),
-            'mean_buffer_reward': mean_buffer_reward,
             'approx_kl': np.mean(approx_kls),
             'mean_clip_ratio': np.mean(clip_ratios)
         }
@@ -149,7 +164,7 @@ class PPO:
 
         with torch.no_grad():
             # Get potentially multi-episode data.
-            all_rewards = torch.tensor(self.memory.rewards, dtype=torch.float32)
+            all_rewards = torch.tensor(self.memory.norm_rewards, dtype=torch.float32) # Use normalized rewards
             all_values = torch.tensor(self.memory.values, dtype=torch.float32)
             all_dones = torch.tensor(self.memory.dones, dtype=torch.float32)
             all_advantages = torch.zeros_like(all_rewards)

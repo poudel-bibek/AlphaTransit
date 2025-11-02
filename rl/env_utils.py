@@ -527,7 +527,7 @@ def aggregate_results(results_list: List[Dict[str, Any]]) -> Dict[str, Any]:
 
             total_served = res['completed_passengers'] + res['ongoing_passengers']
             per_run_stats.append({
-                'episode_final_reward': res['episode_final_reward'],
+                'episode_total_reward': res['episode_total_reward'],
                 'served_passengers': total_served,
                 'combined_wait_seconds': res['combined_avg_wait_minutes'] * 60 * total_served,
                 'combined_travel_seconds': res['combined_avg_travel_minutes'] * 60 * total_served,

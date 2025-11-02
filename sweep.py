@@ -11,15 +11,15 @@ def build_sweep_config() -> Dict[str, Any]:
     return {
         "method": "grid",
         
-                "metric": {"name": "eval/episode_final_reward", 
+                "metric": {"name": "eval/episode_total_reward", 
                    "goal": "maximize"},
 
         "parameters": {
             "lr": {"values": [0.00005, 0.0005]},
-            "update_frequency": {"values": [1024, 2048]},
+            "update_frequency": {"values": [128, 256]},
             "entropy_coef": {"values": [0.01, 0.05]},
             "clip_frac": {"values": [0.1, 0.3]},
-            "batch_size": {"values": [64, 128]},
+            "batch_size": {"values": [16, 32]},
 
             # "clip_frac": {"values": [0.1, 0.2, 0.3]},
             # "gae_lambda": {"values": [0.9, 0.95, 0.98]},
