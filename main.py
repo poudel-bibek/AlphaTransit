@@ -613,7 +613,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Simulation setup: 
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
-    parser.add_argument("--seed", type=int, default=99, help="Random seed")
+    parser.add_argument("--seed", type=int, default=100, help="Random seed")
     parser.add_argument("--gpu", action="store_true", help="Use CUDA if available. Pass --gpu to enable.")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
