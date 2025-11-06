@@ -12,16 +12,15 @@ This repository builds on top of [UXsim](https://github.com/toruseo/UXsim) to st
 
 ## Installation
 
-1. (Optional) create an isolated environment:
-   ```
-   conda create -n transit python=3.12 -y
-   conda activate transit
-   ```
-2. Install the project in editable mode:
-   ```
-   pip install -e .
-   ```
-   The editable install pulls every dependency—including PyTorch, PyG, and Gymnasium—directly from `pyproject.toml`, so no additional requirements files are needed.
+- Create an isolated environment (optional):
+  ```
+  conda create -n transit python=3.12 -y
+  conda activate transit
+  ```
+- Install the project in editable mode:
+  ```
+  pip install -e .
+  ```
 
 ## Quick Start
 
@@ -39,7 +38,7 @@ conda activate transit
 python main.py --mode=baseline --baseline_type=demand_cover --network=bloomington --num_eval_runs=1 --save_animations
 ```
 
-This runs a single evaluation on the Bloomington network, generates 16 candidate routes (the default), and writes animation frames to `training_data/seed_42/`. When the solver prints `service_rate`, values above `0.70` mean at least 70 % of passenger demand is served.
+This runs a single evaluation on the Bloomington network, generates 16 candidate routes (the default), and writes animation gif to `training_data/`.
 
 ### 3. Train a new RL policy
 
@@ -47,11 +46,7 @@ This runs a single evaluation on the Bloomington network, generates 16 candidate
 python main.py --gpu --anneal_lr
 ```
 
-Key numbers:
-
-- Defaults run on `bloomington` with `--mode=train` and `--num_episodes=2000` (~1 000 000 simulator steps). Adjust `--num_episodes` if you want a shorter run (e.g., `--num_episodes=50` ≈ 25 000 steps).
-- `--update_frequency=128` collects 128 transitions before every PPO update (set `--update_frequency=256` for a longer rollout buffer).
-- `--eval_every=10` triggers deterministic evaluations after every 10 updates (set `--eval_every=5` for more frequent checkpoints).
+Training defaults run on `bloomington` with `--mode=train` and `--num_episodes=2000` (~1 000 000 simulator steps). Adjust `--num_episodes` if you want a shorter run (e.g., `--num_episodes=50` ≈ 25 000 steps).
 
 Training artifacts land in `training_data/<timestamp>/` with policy checkpoints under `policies/` and summary CSVs in `results/`.
 
@@ -61,8 +56,7 @@ Training artifacts land in `training_data/<timestamp>/` with policy checkpoints 
 python main.py --mode=eval --network=bloomington --saved_policy_path=training_data/policies/policy_up_10_ep_50.pth --num_eval_runs=5 --save_dir=eval_runs
 ```
 
-- Five deterministic rollouts are executed with seeds `42, 44, 46, 48, 50`.
-- Aggregated metrics (mean wait time, transfer rate, coverage) are saved to `eval_runs/summary.json`.
+Aggregated metrics (such as mean wait time, transfer rate, coverage) are saved to `eval_runs/summary.json`.
 
 ### 5. Optional: Log to Weights & Biases
 
