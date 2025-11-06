@@ -613,14 +613,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Simulation setup: 
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
-    parser.add_argument("--seed", type=int, default=100, help="Random seed")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpu", action="store_true", help="Use CUDA if available. Pass --gpu to enable.")
     parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
     parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples") 
+    parser.add_argument("--update_frequency", type=int, default=64, help="Update PPO when memory has N samples") 
     parser.add_argument("--num_episodes", type=int, default=2000, help="Total training episodes")
     parser.add_argument("--eval_every", type=int, default=10, help="Evaluate every N updates to the policy")
     parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
@@ -646,15 +646,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # PPO params: 
     parser.add_argument("--K_epochs", type=int, default=8, help="Number of PPO epochs")
-    parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
-    parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO clipping ratio for policy loss")
+    parser.add_argument("--batch_size", type=int, default=8, help="Mini-batch size")
+    parser.add_argument("--clip_frac", type=float, default=0.1, help="PPO clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--entropy_coef", type=float, default=0.02, help="Entropy coefficient")
+    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
-    parser.add_argument("--lr", type=float, default=0.0005, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=0.00005, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate over training episodes")
     
     # parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?

@@ -32,9 +32,8 @@ dependencies = [
     "dill>=0.3.8",
     "networkx>=3.2.1",
     # RL core dependencies are required for this project
-    # Use >= pins so env-resolved GPU wheels remain valid
-    "torch>=2.7.0",
-    "torch-geometric>=2.6.0",
+    "torch>=2.2,<2.5",
+    "torch-geometric[full]>=2.5,<2.6",
     "gymnasium>=0.29.0",
     # ML experiment tracking
     "wandb>=0.16.0"

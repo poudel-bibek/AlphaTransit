@@ -538,7 +538,7 @@ class TransitEnv(gym.Env):
 
         node_features[:, 14] = completed_count_per_node / len(self.all_routes) if len(self.all_routes) > 0 else 0.0 # Guard against division by zero when no completed routes
 
-        # 11: is_valid_next flag
+        # 15: is_valid_next flag
         if len(valid_neighbor_indices) > 0:
             node_features[valid_neighbor_indices, 15] = 1.0 
 
