@@ -9,7 +9,7 @@ from typing import Dict, List, Any, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
-# Set up plotting style for stunning visuals
+# Set up plotting style for visuals
 plt.style.use('default')  # Start with clean slate
 # Enhanced figure styling (using fs variable for consistency)
 plt.rcParams.update({
@@ -78,7 +78,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
         'bus_utilization'
     ]
 
-    # Create a stunning 2-row, 4-col grid layout
+    # Create a 2-row, 4-col grid layout
     fig = plt.figure(figsize=(18, 8.5), dpi=300)  # Larger, more impactful size
 
     # Create main grid with better spacing for visual appeal
@@ -242,7 +242,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
                     alpha_10_values.append(avg_value)
                     alpha_10_names.append(method_name)
 
-        # Plot alpha 0.3 data as stunning points (position 0.4)
+        # Plot alpha 0.3 data as points (position 0.4)
         if alpha_03_values:
             for method_name, value in zip(alpha_03_names, alpha_03_values):
                 style = method_styles.get(method_name)
@@ -269,7 +269,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
                            color=style['color'], linewidth=1.2, alpha=1.0, zorder=20,
                            solid_capstyle='round', solid_joinstyle='round')
 
-        # Plot alpha 1.0 data as stunning points (position 0.6)
+        # Plot alpha 1.0 data as points (position 0.6)
         if alpha_10_values:
             for method_name, value in zip(alpha_10_names, alpha_10_values):
                 style = method_styles.get(method_name)
@@ -329,7 +329,7 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
     stem = output_path.stem
     output_file = str(output_path.with_name(f"{stem}_{mode}.png"))
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"Stunning plot saved to: {output_file}")
+    print(f"Plot saved to: {output_file}")
 
 def load_results(folder):
     with open(os.path.join(folder, 'eval_results_summary.json'), 'r') as f:
@@ -339,14 +339,14 @@ def load_results(folder):
 
 def main():
     # Folders for alpha = 0.3
-    alpha_03_dir_center = 'training_data/transit_center/alpha_0.3/'
+    alpha_03_dir_center = '../training_data/transit_center/alpha_0.3/'
     alpha_03_folders = [
         str(os.path.join(alpha_03_dir_center, name))
         for name in os.listdir(alpha_03_dir_center)
         if os.path.isdir(os.path.join(alpha_03_dir_center, name))
     ]
 
-    alpha_03_dir_random = 'training_data/random_initialization/alpha_0.3/'
+    alpha_03_dir_random = '../training_data/random_initialization/alpha_0.3/'
     alpha_03_folders_random = [
         str(os.path.join(alpha_03_dir_random, name))
         for name in os.listdir(alpha_03_dir_random)
@@ -354,14 +354,14 @@ def main():
     ]
 
     # Folders with alpha = 1.0
-    alpha_10_dir_center = 'training_data/transit_center/alpha_1.0/'
+    alpha_10_dir_center = '../training_data/transit_center/alpha_1.0/'
     alpha_10_folders = [
         str(os.path.join(alpha_10_dir_center, name))
         for name in os.listdir(alpha_10_dir_center)
         if os.path.isdir(os.path.join(alpha_10_dir_center, name))
     ]
 
-    alpha_10_dir_random = 'training_data/random_initialization/alpha_1.0/'
+    alpha_10_dir_random = '../training_data/random_initialization/alpha_1.0/'
     alpha_10_folders_random = [
         str(os.path.join(alpha_10_dir_random, name))
         for name in os.listdir(alpha_10_dir_random)

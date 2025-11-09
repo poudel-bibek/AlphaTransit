@@ -85,7 +85,9 @@ Disable logging anytime with `--wandb_off`.
 │   ├── ppo.py             # PPO implementation and rollout memory
 │   ├── env_utils.py       # Plotting, result aggregation, seed helpers
 │   └── baselines.py       # Heuristic route design baselines
-├── plot_results.py        # Utilities for comparing training/eval outputs
+├── plots/
+│   ├── plot_results.py    # Utilities for comparing training/eval outputs
+│   └── plot_networks.py   # Network plots
 └── uxsim/                 # Core UXsim simulator (upstream code)
 ```
 

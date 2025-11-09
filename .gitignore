@@ -107,10 +107,13 @@ tmp/*
 ./results_comparison.png
 results_comparison.png
 
-./results_comparison_transit_center.png
-./results_comparison_random_initialization.png
-results_comparison_transit_center.png
-results_comparison_random_initialization.png
+plots/results_comparison_transit_center.png
+plots/results_comparison_random_initialization.png
+plots/designed_routes_compare.png
+plots/designed_routes_real.png
+plots/designed_routes_rl.png
+plots/networks_to_plot/
+./plots/networks_to_plot/
 
 .cursor/
 .cursor/*
