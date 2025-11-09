@@ -111,14 +111,14 @@ def main_results_plot(alpha_03_results, alpha_10_results, output_file="results_c
             # Demand cover, shortest path, and reward max dont make sense for designing routes from a single starting node.
             # 'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
             'real_world': {'color': '#F18F01', 'marker': 'D', 'display_name': 'Real World'},       # Orange, diamond
-            'rl': {'color': '#4A90A4', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Teal, star marker
+            'rl': {'color': '#C73E1D', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Red, star marker
         }
     elif mode == 'random_initialization':
         method_styles = {
             # Real world does not make sense for random initialization.
             'random_walk': {'color': '#A23B72', 'marker': 's', 'display_name': 'Random Walk'},      # Purple-pink, square
-            'reward_max': {'color': '#C73E1D', 'marker': 'X', 'display_name': 'Rew. Max'},           # Red, X marker
-            'rl': {'color': '#4A90A4', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Teal, star marker
+            # 'reward_max': {'color': '#C73E1D', 'marker': 'X', 'display_name': 'Rew. Max'},           # Red, X marker
+            'rl': {'color': '#C73E1D', 'marker': '*', 'display_name': 'RL (Ours)'},                 # Red, star marker
             'demand_cover': {'color': '#2E86AB', 'marker': 'o', 'display_name': 'Demand Cover'},     # Blue, circle
             'shortest_path': {'color': '#32CD32', 'marker': '^', 'display_name': 'Shortest Path'},    # Green, triangle (as requested)
         }
