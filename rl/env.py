@@ -1286,7 +1286,8 @@ class TransitEnv(gym.Env):
             - In code: taken from sim_result['demand_coverage_potential'] which is precomputed without a full sim.
         
         - Component 2: Route overlap ratio
-            - Number of overlapped edges / total number of edges in the shorter route
+            - Computed by `_calculate_route_overlap_ratio()`.
+            - The metric averages the normalized overlap depth of each undirected segment across all non-empty routes.
             - In code: sim_result['route_overlap_ratio'] in [0 to 1].
 
         - Forced end penalty during construction
@@ -1303,8 +1304,8 @@ class TransitEnv(gym.Env):
             1. Higher demand coverage potential.
                 - This encourages the agent to include O-D pairs that have high demand.
                 - In code: sim_result['demand_coverage_potential'] in [0 to 1].
-            2. Higher service rate = demand coverage actual / demand coverage potential.
-                - This is related to frequency of service as well.
+            2. Higher service rate.
+                - Calculated as total_onboarded_count / wanting_to_onboard 
                 - In code: sim_result['service_rate'] in [0 to 1].
 
         Penalize:
@@ -1314,7 +1315,7 @@ class TransitEnv(gym.Env):
                     served = completed_passengers + ongoing_passengers
                     avg_travel_seconds = total_travel / served, then normalized by 3600 and capped at 1.0.
             2. Overlap between routes: some minimal overlaps are necessary for transfers and full demand coverage,
-               but high overlaps mean duplication of service and waste of resources.
+               but high overlaps mean duplication of service and waste of resources. Uses the same `route_overlap_ratio` definition as above.
             3. Forced end:
                 - The penalty is applied when a route is forcibly terminated during construction, as described in the partial routes section.
                   There is no additional forced end penalty at route end in the current implementation.

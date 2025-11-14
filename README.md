@@ -3,14 +3,18 @@
 
 This repository builds on top of [UXsim](https://github.com/toruseo/UXsim) to study network-level transit design with deep reinforcement learning. We retain the complete UXsim simulator while adding graph-based policies, evaluation tooling, and standardized transit demand data.
 
+<img src="assets/real_world_anim_all_vehicles.gif" alt="Transit visualization" width="640">
+
 ## Data
 
 The pre-processed Bloomington network dataset (network, demand, transit routes) are under `networks/bloomington/`:
 
-- <img src="assets/real_world_anim_all_vehicles.gif" alt="Transit visualization" width="640">
-- `bloomington_nodes_standard.csv`
-- `bloomington_links_standard.csv`
-- `bloomington_demand_standard.csv`
+- network
+  - `bloomington_nodes_standard.csv`
+  - `bloomington_links_standard.csv`
+- demand: `bloomington_demand_standard.csv`
+- existing routes: `bloomington_existing_routes.json`
+
 
 ## Highlights
 
