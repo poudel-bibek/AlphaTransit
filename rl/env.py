@@ -1638,3 +1638,10 @@ class TransitEnv(gym.Env):
         # output_loc = os.path.join(os.path.join(save_dir, "images"), render_name)
         output_loc = os.path.join(save_dir, render_name)
         plot_network_demand_and_path(self.world, all_routes_to_display, output_loc)
+
+
+# --------------------------------------------------------------------------------
+# Placeholder for MCTS-specific environment helpers.
+# Implement tree search adapters (state hashing, rollout shortcuts, caching) here
+# when extending the environment for the MCTS controller.
+# --------------------------------------------------------------------------------

@@ -7,7 +7,11 @@ from torch.utils.data import DataLoader
 from rl.ppo_utils import DatasetClass, Memory, WelfordNormalizer, collate_fn
 
 
-class PPO:
+class PPOAgent:
+    """
+    Proximal Policy Optimization
+    """
+
     def __init__(self, model: nn.Module, **kwargs) -> None:
         """
         """

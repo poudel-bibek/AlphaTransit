@@ -5,12 +5,13 @@ import random
 import argparse
 import numpy as np
 import pandas as pd
-from rl.ppo import PPO
 from typing import Any, Dict
 from datetime import datetime
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
 from torch_geometric.data import Data, Batch
+from rl.ppo_agent import PPOAgent
+from rl.mcts_agent import MCTSAgent
 from rl.env_utils import (
     plot_network_and_demand,
     aggregate_results,
@@ -53,7 +54,7 @@ class CachedPyGConverter:
         data.route_progress = route_progress
         return data
 
-def perform_ppo_update(ppo: PPO, episode: int, steps_elapsed: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
+def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """
     mean_buffer_reward: average per-step rewards stored in the current memory buffer.
     Is not a true measure of the policy's performance.
@@ -174,7 +175,7 @@ def train(config: Dict[str, Any]) -> None:
     )
     model.count_params()
 
-    ppo = PPO(model, **config)
+    ppo = PPOAgent(model, **config)
     policy_dir = os.path.join(training_save_dir, "policies")
     os.makedirs(policy_dir, exist_ok=True)
 
@@ -610,6 +611,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     Define common RL, system, and sweepable hyperparameters.
     """
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
+    parser.add_argument("--algorithm", choices=["ppo", "mcts"], default="ppo", help="Select learning algorithm")
     # Simulation setup: 
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
     parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
@@ -677,31 +679,11 @@ def main() -> None:
     """
     config = get_config()
 
-    # Baselines have their own seed setting mechanism.
-    if config["mode"] == "train" or config["mode"] == "eval":
-        # Set seeds as the very first thing after parsing CLI
-        set_global_seeds(config["seed"])
-    
-    # Set compute device based on --gpu flag
-    device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
-    config["device"] = device
+    algorithm = config.get("algorithm", "ppo")
+    mode = config["mode"]
 
-    if config["mode"] == "train":
-        if not config.get("wandb_off"):
-            wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
-        train(config)
-        if not config.get("wandb_off"):
-            wandb.finish()
-
-    elif config["mode"] == "eval":
-        # If performing eval only
-        os.makedirs(config["save_dir"], exist_ok=True)
-        config["wandb_off"] = True
-        policy_path = config["saved_policy_path"]
-        eval(config, policy_path, "final", config["save_dir"])
-        print(f"Evaluation completed. Results saved to: {config['save_dir']}")
-
-    else: 
+    # Baselines can be executed regardless of algorithm selection.
+    if mode == "baseline":
         config["wandb_off"] = True
         # means mode is baseline
         env = TransitEnv(config)
@@ -714,12 +696,48 @@ def main() -> None:
             "real_world": RealWorld,
         }
         
-        if config["baseline_type"] not in baseline_classes:
-            raise ValueError(f"Invalid baseline type: {config['baseline_type']}. Available: {list(baseline_classes.keys())}")
-        
         BaselineClass = baseline_classes[config["baseline_type"]]
         baseline = BaselineClass(env, config, num_runs=config["num_eval_runs"], base_seed=config["seed"])
         baseline.run()
+        return
+
+    if mode in {"train", "eval"}:
+        set_global_seeds(config["seed"])
+
+    device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
+    config["device"] = device
+
+    if algorithm == "ppo":
+        if mode == "train":
+            if not config.get("wandb_off"):
+                wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
+            train(config)
+            if not config.get("wandb_off"):
+                wandb.finish()
+            return
+
+        if mode == "eval":
+            os.makedirs(config["save_dir"], exist_ok=True)
+            config["wandb_off"] = True
+            policy_path = config["saved_policy_path"]
+            eval(config, policy_path, "final", config["save_dir"])
+            print(f"Evaluation completed. Results saved to: {config['save_dir']}")
+            return
+
+
+    if algorithm == "mcts":
+        env = TransitEnv(config)
+        mcts_agent = MCTSAgent(env, config)
+
+        if mode == "train":
+            # TODO: Implement MCTS training pipeline in rl/mcts_agent.py
+            return
+
+        if mode == "eval":
+            # TODO: Implement MCTS evaluation pipeline in rl/mcts_agent.py
+            return
+
+
 
 if __name__ == "__main__":
     main()

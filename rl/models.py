@@ -533,3 +533,10 @@ if __name__ == "__main__":
     model.act(batch.x, batch.edge_index, batch.edge_attr, batch.batch, valid_indices_empty_all, stochastic=True)
 
 """
+
+
+# --------------------------------------------------------------------------------
+# Placeholder for MCTS-specific neural modules.
+# Add tree policy/value networks or rollout evaluators here when extending the
+# MCTS pipeline.
+# --------------------------------------------------------------------------------
