@@ -149,9 +149,6 @@ def simulate_baseline_routes(env, config, routes, img_dir, baseline_save_dir):
         'sim_result': sim_result
     }
 
-def write_summary_json(baseline, aggregated):
-    write_results_summary(aggregated, baseline.num_runs, baseline.eval_root_dir, 'eval_results_summary.json')
-
 def print_results(results_list, aggregated):
     eval_metrics = {
         # Waiting metrics (seconds)
@@ -315,7 +312,7 @@ class RandomWalk:
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
-        write_summary_json(self, aggregated)
+        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
         return results, aggregated
 
     def construct_path(self, state):
@@ -374,7 +371,7 @@ class DemandCoverage:
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
-        write_summary_json(self, aggregated)
+        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
         return results, aggregated
 
     def construct_path(self, state):
@@ -452,7 +449,7 @@ class ShortestPath:
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
-        write_summary_json(self, aggregated)
+        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
         return results, aggregated
 
     def construct_path(self, state):
@@ -523,7 +520,7 @@ class RewardMaximization:
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
-        write_summary_json(self, aggregated)
+        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
         return results, aggregated
 
     def construct_path(self, state):
@@ -670,7 +667,7 @@ class RealWorld:
     
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
-        write_summary_json(self, aggregated)
+        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
         return results, aggregated
 
     def construct_path(self, state):

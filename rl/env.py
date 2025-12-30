@@ -12,7 +12,6 @@ from rl.env_utils import plot_network_demand_and_path, initialize_route
 from typing import Any, Dict, Optional, Tuple, List 
 
 class TransitEnv(gym.Env):
-    metadata = {"render_modes": []}
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         """
         The order of operations performed in the constructor matters. 
@@ -439,7 +438,6 @@ class TransitEnv(gym.Env):
         # Not used right now for the sake of data standardization.
         # elif method == "flow":
         #     for _, row in demand_df.iterrows():
-
         print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
         return world
 
@@ -545,9 +543,6 @@ class TransitEnv(gym.Env):
         # Edge index and edge features dont dynamically change. Already set in __init__.
         # Route progress for self.NUM_ROUTES (including completed and current route)
         route_progress = np.zeros(self.NUM_ROUTES, dtype=np.float32)
-        for i, route in enumerate(self.all_routes):
-            route_progress[i] = len(route) / self.MAX_ROUTE_LENGTH
-        print(f"\nCurrent route: {self.current_route}, length: {len(self.current_route)}")
         print(f"All routes: {self.all_routes}, length: {len(self.all_routes)}\n")
         if self.current_route_index < self.NUM_ROUTES:  # Only if there's a current route being built
             route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
@@ -564,9 +559,19 @@ class TransitEnv(gym.Env):
         
         return state
     
-    def reset( self, ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
+        Reset environment state.
         """
+        # The call to super().reset(seed=seed) invokes the reset method of the parent class of this environment,
+        # ensuring that any reset logic defined by the parent class (such as seeding the action space/state space, etc.)
+        # is executed before this subclass's own reset logic.
+        super().reset(seed=seed)
+        if seed is not None:
+            self.config["seed"] = int(seed)
+            random.seed(seed)
+            np.random.seed(seed)
+            
         self.all_routes = []           # Reset completed routes
         self.current_route_index = 0   # Start with first route
         self.current_route = initialize_route(self)
@@ -770,10 +775,9 @@ class TransitEnv(gym.Env):
                 mode="bus"
             )
 
-            # Pass all routes for normalization
+            # Compute service frequency for this route
             service_frequency_route = self._get_service_frequency(route, routes_to_simulate)
             print(f"Service frequency for route {route_idx}: {service_frequency_route}")
-            # print(f"DEBUG: service_frequency_route type: {type(service_frequency_route)}, value: {service_frequency_route}")
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
             buses = bus.set_bus_route(
@@ -1075,8 +1079,7 @@ class TransitEnv(gym.Env):
         # Numerical safety clamp
         return float(max(0.0, min(1.0, ratio)))
 
-    
-    def _step_until(self, until_t: int, print_metrics: bool = True) -> Dict[str, int]:
+    def _step_until(self, until_t: int, print_metrics: bool = False) -> Dict[str, int]:
         """
         Run the simulation until the given time and collect metrics related to performance of the route.
 
@@ -1360,10 +1363,9 @@ class TransitEnv(gym.Env):
                 - TODO: For invalid action: Not done for now (the probability is very low)
 
         ---------
-        TODO: On Applying the Welford Normalization to the returns (not the reward).
-        - Current setup: Normalize rewards at per step level. 
-        - Partial routes and complete routes have different reward magnitudes (and ranges), this can make normalizer stats biased.
-        - Solution: Normalize returns (cumulative rewards).
+        Note: Reward normalization is NOT used as it violates PPO's stationary reward assumption.
+        Only per-batch advantage normalization is applied during PPO updates.
+        See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
         ---------
         Potential pitfalls:
         1. If the rewards are too small like 0.0001, then gradients are too small to be effective.

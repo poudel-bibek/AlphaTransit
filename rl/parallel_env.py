@@ -6,17 +6,26 @@ Uses Python multiprocessing with PyTorch shared memory for efficient weight shar
 - Workers read directly from shared memory (no weight queues!)
 - Main process updates weights in-place, workers automatically see changes
 """
-
+import time
+import random
 import torch
-import torch.multiprocessing as mp
 import numpy as np
+
+import torch.multiprocessing as mp
+mp_ctx = mp.get_context('spawn')
+
+from rl.env import TransitEnv
+from rl.models import GATV2ActorCritic
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from torch_geometric.data import Data, Batch
 
 
-# Use spawn context for clean process isolation (required for CUDA compatibility)
-mp_ctx = mp.get_context('spawn')
+# ============================================================================
+# WORKER-LOCAL CACHE: Reuse env/model across episodes in the same process
+# This avoids recreating TransitEnv (CSV reads) and model for every episode
+# ============================================================================
+_worker_cache = {}
 
 
 @dataclass
@@ -64,7 +73,31 @@ class EvalResult:
     routes: List[Any] = field(default_factory=list)
 
 
-def run_single_episode(worker_id: int, config: Dict[str, Any], policy_kwargs: Dict[str, Any], shared_model_state: Dict[str, torch.Tensor]) -> EpisodeResult:
+class PyGConverter:
+    """
+    Converts environment state dicts to PyG Data objects.
+    Caches static components (edge_index, edge_attr) for efficiency within an episode.
+    """
+    def __init__(self, device: torch.device):
+        self.device = device
+        self.cached_edge_index: Optional[torch.Tensor] = None
+        self.cached_edge_attr: Optional[torch.Tensor] = None
+    
+    def convert(self, state: Dict[str, Any]) -> Data:
+        """Convert state dict to PyG Data object, caching static components."""
+        if self.cached_edge_index is None:
+            self.cached_edge_index = torch.from_numpy(state["edge_index"]).long().to(self.device)
+            self.cached_edge_attr = torch.from_numpy(state["edge_features"]).float().to(self.device)
+        
+        x = torch.from_numpy(state["node_features"]).float().to(self.device)
+        route_progress = torch.from_numpy(state["route_progress"]).float().to(self.device)
+        
+        data = Data(x=x, edge_index=self.cached_edge_index, edge_attr=self.cached_edge_attr)
+        data.route_progress = route_progress
+        return data
+
+
+def run_single_episode(worker_id: int, rollout_id: int, config: Dict[str, Any], policy_kwargs: Dict[str, Any], shared_model_state: Dict[str, torch.Tensor]) -> EpisodeResult:
     """
     Run a single episode in a worker process.
     
@@ -80,57 +113,48 @@ def run_single_episode(worker_id: int, config: Dict[str, Any], policy_kwargs: Di
     - Main process can update shared_model_state in-place after PPO update
     - Workers read latest weights on next episode
     """
-    from rl.env import TransitEnv
-    from rl.models import GATV2ActorCritic
-    
-    # Set different seed for each worker/call
-    worker_seed = config["seed"] + worker_id * 1000 + np.random.randint(0, 10000)
-    torch.manual_seed(worker_seed)
-    np.random.seed(worker_seed)
-    
+    global _worker_cache
     device = torch.device("cpu")  # Workers use CPU for inference
     
-    # Create environment
-    worker_config = dict(config)
-    worker_config["seed"] = worker_seed
-    env = TransitEnv(worker_config)
+    # Deterministic per-rollout seeding: unique, repeatable given base seed + rollout_id
+    worker_seed = int(config["seed"]) + int(rollout_id) * 9973 + int(worker_id)
+    torch.manual_seed(worker_seed)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
     
-    # Create local model using policy_kwargs from main process
-    model = GATV2ActorCritic(**policy_kwargs).to(device)
+    # PERFORMANCE FIX: Reuse env/model from cache if available
+    # The Pool reuses processes, so this avoids recreating TransitEnv (CSV reads)
+    # and model initialization for every episode - massive speedup!
+    cache_key = config.get("network", "default")
+    if cache_key not in _worker_cache:
+        worker_config = dict(config)
+        worker_config["seed"] = worker_seed
+        env = TransitEnv(worker_config)
+        model = GATV2ActorCritic(**policy_kwargs).to(device)
+        _worker_cache[cache_key] = {"env": env, "model": model}
     
-    # Load weights from shared memory
+    env = _worker_cache[cache_key]["env"]
+    model = _worker_cache[cache_key]["model"]
+    
+    # Always reload weights from shared memory (they may have been updated)
     model.load_state_dict(shared_model_state)
-    # Keep model in train mode during rollouts - dropout should remain active
-    # (model.eval() would disable dropout which is not desired for training)
-    # We still use torch.no_grad() for efficiency
+    # Use eval mode during rollouts for consistent π_old
+    # This disables dropout so the policy is deterministic (given weights)
+    # Dropout regularization happens during PPO updates, not rollout collection
+    model.eval()
     
-    # Cache for static PyG components
-    cached_edge_index = None
-    cached_edge_attr = None
-    
-    def convert_state_to_pyg(state: Dict[str, Any]) -> Data:
-        nonlocal cached_edge_index, cached_edge_attr
-        
-        if cached_edge_index is None:
-            cached_edge_index = torch.from_numpy(state["edge_index"]).long().to(device)
-            cached_edge_attr = torch.from_numpy(state["edge_features"]).float().to(device)
-        
-        x = torch.from_numpy(state["node_features"]).float().to(device)
-        route_progress = torch.from_numpy(state["route_progress"]).float().to(device)
-        
-        data = Data(x=x, edge_index=cached_edge_index, edge_attr=cached_edge_attr)
-        data.route_progress = route_progress
-        return data
+    # PyG converter with caching
+    converter = PyGConverter(device)
     
     # Run episode
-    state, _ = env.reset()
+    state, _ = env.reset(seed=worker_seed)
     terminated = False
     episode_reward = 0.0
     transitions = []
     sim_result = None
     
     while not terminated:
-        data = convert_state_to_pyg(state)
+        data = converter.convert(state)
         batch = Batch.from_data_list([data]).to(device)
         
         # Build valid mask
@@ -139,8 +163,7 @@ def run_single_episode(worker_id: int, config: Dict[str, Any], policy_kwargs: Di
         valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=device)
         
         if len(valid_list) > 0:
-            for local_idx in valid_list:
-                valid_mask[0, local_idx] = True
+            valid_mask[0, valid_list] = True
             
             with torch.no_grad():
                 action_tensor, log_prob_tensor, value_tensor = model.act(
@@ -181,7 +204,7 @@ def run_single_episode(worker_id: int, config: Dict[str, Any], policy_kwargs: Di
     if terminated:
         bootstrap_value = 0.0
     else:
-        data = convert_state_to_pyg(state)
+        data = converter.convert(state)
         batch = Batch.from_data_list([data]).to(device)
         with torch.no_grad():
             bootstrap_value = model.get_bootstrap_value(
@@ -208,52 +231,43 @@ def run_single_eval(run_id: int, seed: int, config: Dict[str, Any], policy_kwarg
     - Uses exact seed provided (not randomized)
     - Returns metrics and routes (no transitions)
     """
-    from rl.env import TransitEnv
-    from rl.models import GATV2ActorCritic
-    import random
+    global _worker_cache
+    device = torch.device("cpu")
     
     # Set the exact seed for reproducibility
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     
-    device = torch.device("cpu")
+    # PERFORMANCE FIX: Reuse env/model from cache if available
+    cache_key = config.get("network", "default")
+    if cache_key not in _worker_cache:
+        eval_config = dict(config)
+        eval_config["seed"] = seed
+        env = TransitEnv(eval_config)
+        model = GATV2ActorCritic(**policy_kwargs).to(device)
+        _worker_cache[cache_key] = {"env": env, "model": model}
     
-    # Create environment with the specific seed
-    eval_config = dict(config)
-    eval_config["seed"] = seed
-    env = TransitEnv(eval_config)
+    env = _worker_cache[cache_key]["env"]
+    model = _worker_cache[cache_key]["model"]
     
-    # Create local model
-    model = GATV2ActorCritic(**policy_kwargs).to(device)
+    # Always reload weights from shared memory
     model.load_state_dict(shared_model_state)
     # Use eval mode for evaluation - disable dropout for deterministic behavior
     model.eval()
-    
-    # Cache for static PyG components
-    cached_edge_index = None
-    cached_edge_attr = None
-    
-    def convert_state_to_pyg(state: Dict[str, Any]) -> Data:
-        nonlocal cached_edge_index, cached_edge_attr
-        if cached_edge_index is None:
-            cached_edge_index = torch.from_numpy(state["edge_index"]).long().to(device)
-            cached_edge_attr = torch.from_numpy(state["edge_features"]).float().to(device)
-        x = torch.from_numpy(state["node_features"]).float().to(device)
-        route_progress = torch.from_numpy(state["route_progress"]).float().to(device)
-        data = Data(x=x, edge_index=cached_edge_index, edge_attr=cached_edge_attr)
-        data.route_progress = route_progress
-        return data
+
+    # PyG converter with caching
+    converter = PyGConverter(device)
     
     # Run evaluation episode
-    state, _ = env.reset()
+    state, _ = env.reset(seed=seed)
     terminated = False
     episode_reward = 0.0
     episode_steps = 0
     sim_result = None
     
     while not terminated:
-        data = convert_state_to_pyg(state)
+        data = converter.convert(state)
         batch = Batch.from_data_list([data]).to(device)
         
         valid_list = env._get_valid_indices()
@@ -261,8 +275,7 @@ def run_single_eval(run_id: int, seed: int, config: Dict[str, Any], policy_kwarg
         valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=device)
         
         if len(valid_list) > 0:
-            for local_idx in valid_list:
-                valid_mask[0, local_idx] = True
+            valid_mask[0, valid_list] = True
             
             with torch.no_grad():
                 # DETERMINISTIC action for evaluation
@@ -335,6 +348,7 @@ class ParallelEnvManager:
     def __init__(self, config: Dict[str, Any], num_workers: int) -> None:
         self.config = config
         self.num_workers = num_workers
+        self.rollout_counter = 0  # deterministic seeding across collect_episodes calls
         
         # Policy kwargs (set in start())
         self.policy_kwargs: Optional[Dict[str, Any]] = None
@@ -391,6 +405,9 @@ class ParallelEnvManager:
         
         Each worker runs one episode using the current shared weights.
         Returns list of complete EpisodeResult objects.
+
+        The blocking timeout call (300.0) waits for upto 300 seconds for that specific task to complete.
+        We need all episodes to complete before updating, so this is fine. 
         """
         if self.pool is None:
             raise RuntimeError("Manager not started. Call start() first.")
@@ -399,11 +416,13 @@ class ParallelEnvManager:
         tasks = []
         for i in range(num_episodes):
             worker_id = i % self.num_workers
+            rollout_id = self.rollout_counter + i
             task = self.pool.apply_async(
                 run_single_episode,
-                args=(worker_id, self.config, self.policy_kwargs, self.shared_model_state),
+                args=(worker_id, rollout_id, self.config, self.policy_kwargs, self.shared_model_state),
             )
             tasks.append(task)
+        self.rollout_counter += num_episodes
         
         # Collect results
         results = []

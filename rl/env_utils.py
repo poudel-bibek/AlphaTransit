@@ -11,11 +11,7 @@ from collections import defaultdict
 from typing import Any, Dict, Optional, List, Tuple
 
 
-def ensure_eval_results_dir(
-    base_dir: str,
-    folder_name: str = "eval_results",
-    episode: Optional[int] = None,
-) -> str:
+def ensure_eval_results_dir(base_dir: str, folder_name: str = "eval_results", episode: Optional[int] = None) -> str:
     """
     Prepare evaluation directories for the current context.
     Preserve shared roots and optional per-episode subfolders.

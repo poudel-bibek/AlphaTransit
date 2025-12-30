@@ -59,11 +59,12 @@ class Memory:
     def __init__(self) -> None:
         """
         Initialize empty rollout buffers.
+        Note: We only store raw_rewards. Reward normalization is NOT used
+        as it violates PPO's stationary reward assumption.
         """
         self.obs: List[Any] = []
         self.actions: List[Any] = []
         self.log_probs: List[float] = []
-        self.norm_rewards: List[float] = []
         self.raw_rewards: List[float] = []
         self.values: List[float] = []
         self.dones: List[bool] = []  # True for terminated episodes only
@@ -84,7 +85,6 @@ class Memory:
         """
         self.obs.append(transition['obs'])
         self.actions.append(transition['action'])
-        self.norm_rewards.append(transition['norm_reward'])
         self.raw_rewards.append(transition['raw_reward'])
         self.values.append(transition['value'])
         self.log_probs.append(transition['log_prob'])
@@ -104,7 +104,6 @@ class Memory:
         """
         self.obs.clear()
         self.actions.clear()
-        self.norm_rewards.clear()
         self.raw_rewards.clear()
         self.values.clear()
         self.log_probs.clear()
@@ -112,7 +111,7 @@ class Memory:
         self.valid_mask.clear()
         self.bootstrap_values.clear()
         self.episode_boundaries.clear()
-        self.advantages = None # Will be added during GAE
+        self.advantages = None  # Will be added during GAE
         self.returns = None
 
 class DatasetClass(Dataset):
@@ -137,96 +136,3 @@ class DatasetClass(Dataset):
             'values': self.memory.values[idx],
             'valid_mask': self.memory.valid_mask[idx]
         }
-
-
-class WelfordNormalizer:
-    """
-    Online normalizer using Welford's algorithm.
-    Efficiently tracks running mean/variance.
-    """
-
-    def __init__(self, shape: tuple = ()) -> None:
-        """
-        Initialize normalizer for given shape.
-        
-        Args:
-            shape: Shape of data to normalize (excluding batch)
-        """
-        self.shape = shape
-        self.mean = np.zeros(shape, dtype=np.float64)
-        self.var = np.ones(shape, dtype=np.float64)
-        self.count = 0
-
-    def update(self, x: np.ndarray) -> None:
-        """
-        Update statistics with new batch of data.
-        
-        Args:
-            x: Data batch, first dim is batch size
-        """
-        batch_size = x.shape[0]
-        if batch_size == 0:
-            return
-        
-        # Flatten batch for easier computation
-        x = x.reshape(batch_size, -1)
-        
-        batch_mean = np.mean(x, axis=0)
-        batch_var = np.var(x, axis=0)
-        batch_count = batch_size
-        
-        # Welford's online algorithm
-        delta = batch_mean - self.mean.flatten()
-        total_count = self.count + batch_count
-        
-        self.mean = self.mean.flatten() + delta * batch_count / total_count
-        
-        m_a = self.var.flatten() * self.count
-        m_b = batch_var * batch_count
-        M2 = m_a + m_b + delta**2 * self.count * batch_count / total_count
-        
-        self.var = M2 / total_count
-        self.count = total_count
-        
-        # Reshape back
-        self.mean = self.mean.reshape(self.shape)
-        self.var = self.var.reshape(self.shape)
-
-    def normalize(self, x: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
-        """
-        Normalize data using running statistics.
-        
-        Args:
-            x: Data to normalize
-            epsilon: Small value for numerical stability
-        
-        Returns:
-            Normalized data
-        """
-        return (x - self.mean) / np.sqrt(self.var + epsilon)
-
-    def denormalize(self, x: np.ndarray) -> np.ndarray:
-        """
-        Inverse normalization.
-        
-        Args:
-            x: Normalized data
-        
-        Returns:
-            Original scale data
-        """
-        return x * np.sqrt(self.var) + self.mean
-
-    def state_dict(self) -> Dict[str, Any]:
-        """Export statistics for checkpointing."""
-        return {
-            'mean': self.mean,
-            'var': self.var,
-            'count': self.count
-        }
-
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        """Load statistics from checkpoint."""
-        self.mean = state['mean']
-        self.var = state['var']
-        self.count = state['count']

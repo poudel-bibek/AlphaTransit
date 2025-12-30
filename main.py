@@ -63,7 +63,7 @@ def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, anneal_l
     # print("\n==================\n")
     # print("Memory contents:")
     # print(f"\tNumber of transitions: {len(ppo.memory)}")
-    # print(f"\tNormalized rewards: {ppo.memory.norm_rewards}")
+    # print(f"\tRaw rewards: {ppo.memory.raw_rewards}")
     # print(f"\tActions: {ppo.memory.actions}")
     # print(f"\tLog probs: {ppo.memory.log_probs}")
     # print(f"\tValues: {ppo.memory.values}")
@@ -229,11 +229,6 @@ def train(config: Dict[str, Any]) -> None:
                 episode += 1
                 
                 for trans in ep_result.transitions:
-                    # Normalize rewards using Welford's online algorithm
-                    reward_arr = np.array([[trans.raw_reward]], dtype=np.float64)
-                    ppo.reward_normalizer.update(reward_arr)
-                    normalized_reward = float(ppo.reward_normalizer.normalize(reward_arr)[0, 0])
-                    
                     # Reconstruct PyG Data object from numpy arrays
                     obs_data = Data(
                         x=torch.from_numpy(trans.obs_x).float(),
@@ -242,10 +237,9 @@ def train(config: Dict[str, Any]) -> None:
                     )
                     obs_data.route_progress = torch.from_numpy(trans.obs_route_progress).float()
                     
-                    # Store in PPO memory buffer
+                    # Store in PPO memory buffer (using raw rewards - no normalization)
                     ppo.memory.obs.append(obs_data)
                     ppo.memory.actions.append(trans.action)
-                    ppo.memory.norm_rewards.append(normalized_reward)
                     ppo.memory.raw_rewards.append(trans.raw_reward)
                     ppo.memory.values.append(trans.value)
                     ppo.memory.log_probs.append(trans.log_prob)
@@ -272,8 +266,6 @@ def train(config: Dict[str, Any]) -> None:
                         "episode/episode_length": ep_result.episode_length,
                         "training/steps_elapsed": steps_elapsed,
                         "training/episodes": episode,
-                        "episode/reward_normalizer_mean": float(ppo.reward_normalizer.mean),
-                        "episode/reward_normalizer_std": float(np.sqrt(ppo.reward_normalizer.var)),
                         "episode/demand_coverage_potential": sim_result.get('demand_coverage_potential', 0),
                         "episode/demand_coverage_actual": sim_result.get('demand_coverage_actual', 0),
                         "episode/route_overlap_ratio": sim_result.get('route_overlap_ratio', 0),
@@ -283,6 +275,7 @@ def train(config: Dict[str, Any]) -> None:
                         "episode/avg_travel_time": combined_avg_travel_minutes,
                     }, step=steps_elapsed)
             
+
             # Perform PPO update when enough transitions collected
             if len(ppo.memory) >= config["update_frequency"]:
                 update_count += 1
@@ -292,6 +285,11 @@ def train(config: Dict[str, Any]) -> None:
                 
                 # Update shared memory weights for workers
                 env_manager.update_shared_weights(model)
+
+                print(f"\n--- Running evaluation at episode {episode} ---")
+                if config.get("eval_every") > 0 and update_count % config["eval_every"] == 0:
+                    eval(config, policy_path, episode, training_save_dir, env_manager)
+                
         
         # Final update if any transitions remain
         if len(ppo.memory) > 0:
@@ -548,16 +546,21 @@ def set_global_seeds(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
+    """
+    Dropout has been disabled. 
+    In the parallelized setup, it breaks some core PPO assumptions.
+    """
+    num_gat_blocks = config.get("num_gat_blocks", 4)
     return {
         "n_node_features": node_feature_dim,
         "proj_out": config.get("proj_out", 64),
-        "num_gat_blocks": config.get("num_gat_blocks", 4),
+        "num_gat_blocks": num_gat_blocks,
         "gat_channels": config.get("gat_channels", [128, 128, 64, 64]),
         "num_heads": config.get("num_heads", [8, 8, 4, 4]),
-        "attn_dropout": config.get("attn_dropout", [0.0, 0.05, 0.1, 0.1]), # Increase dropout in deeper layers
-        "feat_dropout": config.get("feat_dropout", [0.1, 0.1, 0.1, 0.1]),
-        "actor_head_dropout": config.get("actor_head_dropout", 0.05),
-        "critic_head_dropout": config.get("critic_head_dropout", 0.05),
+        "attn_dropout": [0.0] * num_gat_blocks,
+        "feat_dropout": [0.0] * num_gat_blocks,
+        "actor_head_dropout": 0.0,
+        "critic_head_dropout": 0.0,
         "concat": config.get("concat_heads", False),
         "activation": config.get("activation", "tanh"),
         "n_edge_features": edge_feature_dim,
@@ -623,8 +626,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     
     # parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
-    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
-    
     # WandB:
     parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")

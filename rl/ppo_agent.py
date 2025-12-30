@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
-from rl.ppo_utils import DatasetClass, Memory, WelfordNormalizer, collate_fn
+from rl.ppo_utils import DatasetClass, Memory, collate_fn
 
 
 class PPOAgent:
@@ -36,25 +36,17 @@ class PPOAgent:
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
         self.memory = Memory()
-        self.reward_normalizer = WelfordNormalizer(shape=())
 
     def store_transition(self, transition: Dict[str, Any]) -> None:
         """
-        Normalize rewards, update statistics, and store the transition in rollout memory.
-        Self inclusion (i.e., update normalizer first then update) is fine.
-        """
-        raw_reward = transition['raw_reward']
-        reward_arr = np.array([[raw_reward]], dtype=np.float64)
-        self.reward_normalizer.update(reward_arr) # update first
-        normalized_reward = float(self.reward_normalizer.normalize(reward_arr)[0, 0])  # then normalize with updated stats
+        Store the transition in rollout memory.
         
-        # If clipping (normalized) rewards.
-        # normalized_reward = float(np.clip(normalized_reward, -10.0, 10.0))
-
-        prepared = dict(transition)
-        prepared['norm_reward'] = normalized_reward
-
-        self.memory.store(prepared)
+        Note: We do NOT normalize rewards here. Reward normalization violates PPO's
+        assumption of a stationary reward function and can hurt performance.
+        Instead, we only normalize advantages (per mini-batch) during the update.
+        See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+        """
+        self.memory.store(transition)
 
     def update(self) -> Dict[str, float]:
         """
@@ -63,6 +55,12 @@ class PPOAgent:
         - Includes GAE
         - For the choice between KL Divergence vs. Clipping, we use clipping.
         """
+        # IMPORTANT: Keep model in eval mode during updates!
+        # Rollouts compute log_prob_old with dropout OFF (eval mode).
+        # If we enable dropout here (train mode), log_prob_new would differ
+        # even with identical weights, breaking the PPO ratio assumption.
+        # PPO regularization comes from: entropy bonus, clipping, and value clipping.
+        self.model.eval()
 
         self.compute_gae()
         
@@ -170,7 +168,9 @@ class PPOAgent:
 
         with torch.no_grad():
             # Get potentially multi-episode data.
-            all_rewards = torch.tensor(self.memory.norm_rewards, dtype=torch.float32) # Use normalized rewards
+            # Use RAW rewards - reward normalization violates PPO assumptions
+            # Advantages are normalized per mini-batch instead (line 112)
+            all_rewards = torch.tensor(self.memory.raw_rewards, dtype=torch.float32)
             all_values = torch.tensor(self.memory.values, dtype=torch.float32)
             all_dones = torch.tensor(self.memory.dones, dtype=torch.float32)
             all_advantages = torch.zeros_like(all_rewards)
@@ -243,14 +243,14 @@ class PPOAgent:
             self.memory.advantages = all_advantages.numpy()
             self.memory.returns = all_returns.numpy()
 
-    def update_learning_rate(self, current_episode: int, total_episodes: int) -> None:
+    def update_learning_rate(self, current_step: int, total_steps: int) -> None:
         """
-        Update learning rate according to a linear schedule based on episodes.
+        Update learning rate according to a linear schedule based on training steps.
         """
-        if total_episodes <= 0:
+        if total_steps <= 0:
             return
 
-        progress = current_episode / total_episodes
+        progress = current_step / total_steps
         new_lr = self.lr * (1 - progress)
 
         for param_group in self.optimizer.param_groups:
