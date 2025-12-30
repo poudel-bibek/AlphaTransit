@@ -1,65 +1,51 @@
-[build-system]
-requires = ["setuptools>=63.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "uxsim"
-description = "UXsim: traffic flow simulator"
+name = "transit-design"
+version = "0.1.0"
+description = "Learning to Design City-scale Transit Routes using Reinforcement Learning"
 readme = "README.md"
-authors = [{name = "Toru Seo", email = "seo.t.aa@m.titech.ac.jp"}]
 license = "MIT"
+requires-python = ">=3.14"
 classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering",
 ]
-requires-python = ">=3.9"
 dependencies = [
-    "numpy>=1.21.5",
-    "matplotlib>=3.5.2",
+    # Core simulation dependencies
+    "numpy>=2.0",
+    "matplotlib>=3.9",
     "seaborn>=0.13.0",
-    "pillow>=9.2.0",
-    "tqdm>=4.64.1",
-    "scipy>=1.9.1",
-    "pandas>=1.4.4",
-    "PyQt5>=5.15.7",
+    "pillow>=10.0",
+    "tqdm>=4.66",
+    "scipy>=1.14",
+    "pandas>=2.2",
     "dill>=0.3.8",
-    "networkx>=3.2.1",
-    # RL core dependencies are required for this project
-    "torch>=2.2,<2.5",
-    "torch-geometric[full]>=2.5,<2.6",
-    "gymnasium>=0.29.0",
+    "networkx>=3.3",
+    # RL core dependencies
+    "torch>=2.7",
+    "torch-geometric>=2.6",
+    "gymnasium>=1.0",
     # ML experiment tracking
-    "wandb>=0.16.0"
+    "wandb>=0.19",
+    "imageio>=2.37.2",
 ]
-dynamic = ["version"] # Version is read from uxsim/__init__.py
 
 [project.optional-dependencies]
 advanced = [
-    "neatnet>=0.1.1", # for python >=3.11 only,
+    "neatnet>=0.1.1",
     "osmnx>=2.0.0",
     "geopandas>=1.0.0",
     "shapely>=2.1.0"
 ]
 
-# Optional dependencies for hyperparameter sweeps
-sweeps = [
-    # wandb is now a required dependency
-]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[project.urls]
-Homepage = "https://github.com/toruseo/UXsim"
-Documentation = "https://toruseo.jp/UXsim/docs"
-Issues = "https://github.com/toruseo/UXsim/issues"
+[tool.hatch.build.targets.wheel]
+packages = ["uxsim", "rl"]
 
-[tool.setuptools]
-packages = {find = {include = ["uxsim", "uxsim.*"]}}
-
-[tool.setuptools.dynamic]
-version = {attr = "uxsim.__version__"}
+[tool.uv]
+# For free-threading experiments, add: python-preference = "cpython-freethreaded"

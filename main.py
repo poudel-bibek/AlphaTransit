@@ -86,16 +86,17 @@ def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, anneal_l
     print(f"Approx KL: {stats['approx_kl']:.4f}")
     print(f"Mean Clip Ratio: {stats['mean_clip_ratio']:.4f}")
     print("==================\n")
-    wandb.log({
-        "ppo/policy_loss": stats['pg_loss'],
-        "ppo/value_loss": stats['value_loss'],
-        "ppo/entropy_loss": stats['entropy_loss'],
-        "ppo/clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
-        "ppo/approx_kl": stats['approx_kl'],
-        "ppo/mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
-        "ppo/learning_rate": ppo.optimizer.param_groups[0]['lr'], # Current learning rate after annealing
-        "ppo/steps_elapsed": steps_elapsed, # Total steps across all episodes
-    }, step=episode)
+    if not config.get("wandb_off"):
+        wandb.log({
+            "ppo/policy_loss": stats['pg_loss'],
+            "ppo/value_loss": stats['value_loss'],
+            "ppo/entropy_loss": stats['entropy_loss'],
+            "ppo/clipping_frequency": stats['clipping_frequency'], # How often the ratio was clipped.
+            "ppo/approx_kl": stats['approx_kl'],
+            "ppo/mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
+            "ppo/learning_rate": ppo.optimizer.param_groups[0]['lr'], # Current learning rate after annealing
+            "ppo/steps_elapsed": steps_elapsed, # Total steps across all episodes
+        }, step=episode)
 
 def train(config: Dict[str, Any]) -> None:
     """
@@ -318,32 +319,33 @@ def train(config: Dict[str, Any]) -> None:
         combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
         combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
 
-        wandb.log({
-            "episode/episode_total_reward": episode_total_reward,
-            "episode/episode_length": episode_steps, # Length of routes
-            "episode/steps_elapsed": steps_elapsed, # Total steps across all episodes
-            "episode/reward_normalizer_mean": float(ppo.reward_normalizer.mean),
-            "episode/reward_normalizer_std": float(np.sqrt(ppo.reward_normalizer.var)),
+        if not config.get("wandb_off"):
+            wandb.log({
+                "episode/episode_total_reward": episode_total_reward,
+                "episode/episode_length": episode_steps, # Length of routes
+                "episode/steps_elapsed": steps_elapsed, # Total steps across all episodes
+                "episode/reward_normalizer_mean": float(ppo.reward_normalizer.mean),
+                "episode/reward_normalizer_std": float(np.sqrt(ppo.reward_normalizer.var)),
 
-            # reward related and others
-            "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
-            "episode/demand_coverage_actual": sim_result['demand_coverage_actual'],
-            "episode/route_overlap_ratio": sim_result['route_overlap_ratio'],
-            "episode/node_coverage": sim_result['node_coverage'], # Percentage of nodes covered by routes
-            "episode/completed_passengers": sim_result['completed_passengers'],
-            "episode/ongoing_passengers": sim_result['ongoing_passengers'],
-            "episode/total_onboarded_count": sim_result['total_onboarded_count'],
-            "episode/wanting_to_onboard": sim_result['wanting_to_onboard'],
+                # reward related and others
+                "episode/demand_coverage_potential": sim_result['demand_coverage_potential'],
+                "episode/demand_coverage_actual": sim_result['demand_coverage_actual'],
+                "episode/route_overlap_ratio": sim_result['route_overlap_ratio'],
+                "episode/node_coverage": sim_result['node_coverage'], # Percentage of nodes covered by routes
+                "episode/completed_passengers": sim_result['completed_passengers'],
+                "episode/ongoing_passengers": sim_result['ongoing_passengers'],
+                "episode/total_onboarded_count": sim_result['total_onboarded_count'],
+                "episode/wanting_to_onboard": sim_result['wanting_to_onboard'],
 
-            # performance related
-            "episode/service_rate": sim_result['service_rate'],
-            "episode/avg_wait_time": combined_avg_wait_minutes,   # Wait time
-            "episode/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
-            "episode/avg_travel_time": combined_avg_travel_minutes,  # Travel time
-            "episode/route_efficiency": sim_result['route_efficiency'],
-            "episode/fleet_size": sim_result['fleet_size'],
-            "episode/bus_utilization": sim_result['bus_utilization'],
-            }, step=episode)
+                # performance related
+                "episode/service_rate": sim_result['service_rate'],
+                "episode/avg_wait_time": combined_avg_wait_minutes,   # Wait time
+                "episode/transfer_rate": sim_result['transfer_rate'], # Percentage of trips requiring transfers
+                "episode/avg_travel_time": combined_avg_travel_minutes,  # Travel time
+                "episode/route_efficiency": sim_result['route_efficiency'],
+                "episode/fleet_size": sim_result['fleet_size'],
+                "episode/bus_utilization": sim_result['bus_utilization'],
+                }, step=episode)
         
         # Check for evaluation at the end of every episode (and not immediately after an update). It is unlikely that multiple updates happen in a single episode.
         if update_count % config["eval_every"] == 0 and policy_path is not None:
