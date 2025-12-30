@@ -79,8 +79,14 @@ This runs a single evaluation on the Bloomington network, generates 16 candidate
 ### 2. Train a new RL policy
 
 ```bash
+# Sequential training (default, single process)
 python main.py --gpu --anneal_lr
+
+# Parallel training with 4 workers
+python main.py --gpu --anneal_lr --num_workers=4
 ```
+
+When `--num_workers` is greater than 1, training runs in parallel using Python 3.14's multiprocessing. Each worker runs its own `TransitEnv` and collects transitions independently, while a central learner aggregates experiences and performs PPO updates.
 
 Training defaults run on `bloomington` with `--mode=train` and `--num_episodes=2000` (~1 000 000 simulator steps). Adjust `--num_episodes` if you want a shorter run (e.g., `--num_episodes=50` ≈ 25 000 steps).
 
@@ -110,6 +116,8 @@ Disable logging anytime with `--wandb_off`.
 │   ├── env.py             # TransitEnv: wraps UXsim worlds and bus operations
 │   ├── models.py          # GATv2 actor-critic definitions
 │   ├── ppo_agent.py       # PPO implementation and rollout memory
+│   ├── ppo_utils.py       # Memory buffer, Welford normalizer, collate functions
+│   ├── parallel_env.py    # Multi-process environment workers for parallel training
 │   ├── env_utils.py       # Plotting, result aggregation, seed helpers
 │   └── baselines.py       # Heuristic route design baselines
 ├── plots/
