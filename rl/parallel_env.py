@@ -1,10 +1,12 @@
 """
 Parallel environment manager for distributed PPO training.
 
-Uses Python multiprocessing with PyTorch shared memory for efficient weight sharing.
-- Model tensors are placed in shared memory via tensor.share_memory_()
-- Workers read directly from shared memory (no weight queues!)
-- Main process updates weights in-place, workers automatically see changes
+Uses Python multiprocessing with shared memory to distribute weights efficiently.
+- The learner stores a copy of model tensors in shared memory via tensor.share_memory_()
+- At the start of each episode, workers load weights from this shared state into a local model (no queues)
+- After PPO updates, the learner copies new weights into the shared tensors
+- Workers pick up the updated weights on their next episode
+- Parameters are NOT live-shared during an episode (no mid-episode weight changes), preserving PPO's fixed-policy assumption
 """
 import time
 import random
@@ -107,11 +109,11 @@ def run_single_episode(worker_id: int, rollout_id: int, config: Dict[str, Any], 
         policy_kwargs: Model architecture kwargs (passed from main process)
         shared_model_state: Model weights in shared memory
     
-    Weight Sharing (no queues!):
-    - shared_model_state contains tensors in shared memory
-    - Worker creates local model and loads weights from shared state
-    - Main process can update shared_model_state in-place after PPO update
-    - Workers read latest weights on next episode
+    Weight distribution (no queues):
+    - shared_model_state holds tensors stored in shared memory by the learner
+    - At episode start, the worker loads these tensors into its local model
+    - The learner updates shared tensors after PPO updates
+    - Workers will observe updated weights on the NEXT episode (no mid-episode changes)
     """
     global _worker_cache
     device = torch.device("cpu")  # Workers use CPU for inference
@@ -333,16 +335,16 @@ class ParallelEnvManager:
     """
     Manages parallel episode collection using multiprocessing with shared memory.
     
-    Weight Sharing Architecture (no queues!):
-    - Main process creates shared memory tensors for model weights
-    - Workers load weights from shared memory at start of each episode
-    - After PPO update, main writes new weights to shared memory
-    - Workers automatically get new weights on next episode
+    Weight distribution model (no queues):
+    - The learner creates shared memory tensors for model weights (single source of truth)
+    - Workers load weights from shared memory at the start of each episode
+    - After PPO updates, the learner copies new weights into the shared tensors
+    - Workers pick up these updates on the next episode (no mid-episode changes)
     
     This is cleaner than queue-based weight passing because:
     - No weight serialization/deserialization for updates
     - Single source of truth for model weights
-    - Workers just read from shared memory
+    - Workers read from shared memory once per episode start
     """
     
     def __init__(self, config: Dict[str, Any], num_workers: int) -> None:

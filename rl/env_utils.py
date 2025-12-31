@@ -11,22 +11,16 @@ from collections import defaultdict
 from typing import Any, Dict, Optional, List, Tuple
 
 
-def ensure_eval_results_dir(base_dir: str, folder_name: str = "eval_results", episode: Optional[int] = None) -> str:
+def ensure_eval_step_update_dir(base_dir: str, update: int | str, steps: int, folder_name: str = "eval_results") -> str:
     """
-    Prepare evaluation directories for the current context.
-    Preserve shared roots and optional per-episode subfolders.
-    Return the deepest directory path for downstream saves.
+    Create evaluation directory strictly keyed by update and steps.
+    Example: <base>/<folder_name>/eval_up_10_step_2048
     """
-    target_dir = os.path.join(base_dir, folder_name) if folder_name else base_dir
-    os.makedirs(target_dir, exist_ok=True)
-
-    if episode is None:
-        return target_dir
-
-    episode_dir = os.path.join(target_dir, f"eval_ep_{episode}")
-    os.makedirs(episode_dir, exist_ok=True)
-    return episode_dir
-
+    root = os.path.join(base_dir, folder_name) if folder_name else base_dir
+    os.makedirs(root, exist_ok=True)
+    ctx = os.path.join(root, f"eval_up_{update}_step_{steps}")
+    os.makedirs(ctx, exist_ok=True)
+    return ctx
 
 def make_seed_output_dir(eval_root: str, seed: int) -> Tuple[str, str]:
     """
@@ -38,7 +32,6 @@ def make_seed_output_dir(eval_root: str, seed: int) -> Tuple[str, str]:
     img_dir = seed_dir
     os.makedirs(img_dir, exist_ok=True)
     return seed_dir, img_dir
-
 
 def save_routes_json(target_dir: str, routes: List[List[str]]) -> None:
     """

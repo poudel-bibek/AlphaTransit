@@ -1,7 +1,8 @@
-from typing import Any, Dict
+import gc
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from typing import Any, Dict
 import numpy as np
 from torch.utils.data import DataLoader
 from rl.ppo_utils import DatasetClass, Memory, collate_fn
@@ -63,6 +64,13 @@ class PPOAgent:
         self.model.eval()
 
         self.compute_gae()
+
+        # Normalize advantages ONCE per rollout (before mini-batching), which is standard practice.
+        # This reduces variance compared to per-mini-batch normalization.
+        if self.memory.advantages is not None and len(self.memory.advantages) > 0:
+            adv = torch.tensor(self.memory.advantages, dtype=torch.float32)
+            adv = (adv - adv.mean()) / (adv.std(correction=0) + 1e-8)
+            self.memory.advantages = adv.numpy()
         
         dataset = DatasetClass(self.memory)
         dataloader = DataLoader(dataset, batch_size=self.batch_size,shuffle=True, collate_fn=collate_fn )
@@ -100,11 +108,7 @@ class PPOAgent:
                                                             obs.batch,
                                                             valid_mask,          # Valid mask [batch_size, max_nodes]
                                                             actions)             # Actions [batch_size]
-                
-                # Normalize advantages (per batch; similar to cleanRL)
-                # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Small constant to prevent division by zero
-                # Due to variable length of episodes, sometimes batch size is 1, so using correction=0 to use N in std calculation instead of N-1.
-                advantages = (advantages - advantages.mean()) / (advantages.std(correction=0) + 1e-8) # Comment this out to use raw advantages
+
 
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
@@ -142,7 +146,13 @@ class PPOAgent:
         
         # Clear memory after update
         self.memory.clear()
-        
+
+        # Some explicit memory management
+        gc.collect() # Force garbage collection to reclaim memory
+        # After the K_epochs loop ends
+        del dataloader
+        del dataset
+
         # These are average losses over the batch.
         return {
             'pg_loss': np.mean(pg_losses),
@@ -164,6 +174,12 @@ class PPOAgent:
         Hence we make use of: 
         - episode_boundaries: indices where episodes end
         - bootstrap_values: values of the last state of each episode
+
+        Note (parallel rollouts):
+        - Multiple worker episodes are appended contiguously to a single Memory.
+        - We record an episode boundary after each EpisodeResult.
+        - GAE iterates per boundary, so advantages never bleed across episodes.
+        - With no truncation, dones mark only true terminals and bootstrap_value=0.0.
         """
 
         with torch.no_grad():

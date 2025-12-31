@@ -12,15 +12,7 @@ from rl.models import GATV2ActorCritic
 from torch_geometric.data import Data, Batch
 from rl.ppo_agent import PPOAgent
 from rl.mcts_agent import MCTSAgent
-from rl.env_utils import (
-    plot_network_and_demand,
-    aggregate_results,
-    write_results_summary,
-    ensure_eval_results_dir,
-    make_seed_output_dir,
-    save_routes_json,
-    pretty_print_state,
-)
+from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json, pretty_print_state
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 from rl.parallel_env import ParallelEnvManager, EpisodeResult, Transition, EvalResult
 
@@ -55,7 +47,7 @@ class CachedPyGConverter:
         data.route_progress = route_progress
         return data
 
-def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
+def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, update_count: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """
     mean_buffer_reward: average per-step rewards stored in the current memory buffer.
     Is not a true measure of the policy's performance.
@@ -97,8 +89,8 @@ def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, anneal_l
             "ppo/approx_kl": stats['approx_kl'],
             "ppo/mean_clip_ratio": stats['mean_clip_ratio'], # Actual ratio of clipped updates.
             "ppo/learning_rate": ppo.optimizer.param_groups[0]['lr'], # Current learning rate after annealing
-            "ppo/steps_elapsed": steps_elapsed, # Total steps across all episodes
-        }, step=episode)
+            "ppo/update_count": update_count,
+        }, step=steps_elapsed)
 
 def train(config: Dict[str, Any]) -> None:
     """
@@ -199,12 +191,7 @@ def train(config: Dict[str, Any]) -> None:
     # -------------------------------------------------------------------------
     
     max_steps = config["max_steps"]
-    
-    env_manager = ParallelEnvManager(
-        config=config,
-        num_workers=num_workers,
-    )
-    
+    env_manager = ParallelEnvManager(config=config,num_workers=num_workers, )
     episode, steps_elapsed, update_count, policy_path = 0, 0, 0, None
     
     try:
@@ -227,7 +214,8 @@ def train(config: Dict[str, Any]) -> None:
             # Process each episode's transitions
             for ep_result in episode_results:
                 episode += 1
-                
+                steps_in_episode = len(ep_result.transitions)
+
                 for trans in ep_result.transitions:
                     # Reconstruct PyG Data object from numpy arrays
                     obs_data = Data(
@@ -245,11 +233,13 @@ def train(config: Dict[str, Any]) -> None:
                     ppo.memory.log_probs.append(trans.log_prob)
                     ppo.memory.dones.append(trans.terminated)
                     ppo.memory.valid_mask.append(torch.from_numpy(trans.valid_mask).bool())
-                    steps_elapsed += 1
                 
                 # Mark episode boundary for GAE computation
                 ppo.memory.mark_episode_end(ep_result.bootstrap_value)
                 
+                # Update steps_elapsed once per episode (clamped to max_steps)
+                steps_elapsed = min(steps_elapsed + steps_in_episode, max_steps)
+
                 # Log episode results
                 print(f"Episode {episode} | Steps: {steps_elapsed}/{max_steps} | Reward: {ep_result.episode_reward:.2f}")
                 
@@ -264,13 +254,12 @@ def train(config: Dict[str, Any]) -> None:
                     wandb.log({
                         "episode/episode_total_reward": ep_result.episode_reward,
                         "episode/episode_length": ep_result.episode_length,
-                        "training/steps_elapsed": steps_elapsed,
-                        "training/episodes": episode,
-                        "episode/demand_coverage_potential": sim_result.get('demand_coverage_potential', 0),
-                        "episode/demand_coverage_actual": sim_result.get('demand_coverage_actual', 0),
-                        "episode/route_overlap_ratio": sim_result.get('route_overlap_ratio', 0),
-                        "episode/node_coverage": sim_result.get('node_coverage', 0),
-                        "episode/service_rate": sim_result.get('service_rate', 0),
+                        "episode/episodes": episode,
+                        "episode/demand_coverage_potential": sim_result.get('demand_coverage_potential'),
+                        "episode/demand_coverage_actual": sim_result.get('demand_coverage_actual'),
+                        "episode/route_overlap_ratio": sim_result.get('route_overlap_ratio'),
+                        "episode/node_coverage": sim_result.get('node_coverage'),
+                        "episode/service_rate": sim_result.get('service_rate'),
                         "episode/avg_wait_time": combined_avg_wait_minutes,
                         "episode/avg_travel_time": combined_avg_travel_minutes,
                     }, step=steps_elapsed)
@@ -279,22 +268,22 @@ def train(config: Dict[str, Any]) -> None:
             # Perform PPO update when enough transitions collected
             if len(ppo.memory) >= config["update_frequency"]:
                 update_count += 1
-                perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config)
+                perform_ppo_update(ppo, episode, steps_elapsed, update_count, config["anneal_lr"], config)
                 policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
                 torch.save(model.state_dict(), policy_path)
                 
                 # Update shared memory weights for workers
                 env_manager.update_shared_weights(model)
 
-                print(f"\n--- Running evaluation at episode {episode} ---")
                 if config.get("eval_every") > 0 and update_count % config["eval_every"] == 0:
-                    eval(config, policy_path, episode, training_save_dir, env_manager)
+                    print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
+                    eval(config, policy_path, update_count, steps_elapsed, training_save_dir, env_manager)
                 
         
         # Final update if any transitions remain
         if len(ppo.memory) > 0:
             update_count += 1
-            perform_ppo_update(ppo, episode, steps_elapsed, config["anneal_lr"], config)
+            perform_ppo_update(ppo, episode, steps_elapsed, update_count, config["anneal_lr"], config)
             policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
             torch.save(model.state_dict(), policy_path)
         
@@ -461,7 +450,7 @@ def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run
         'routes': env.all_routes,
     }
 
-def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str, env_manager: ParallelEnvManager) -> Dict[str, float]:
+def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager) -> Dict[str, float]:
     """
     Evaluate a trained policy using parallel workers.
     Evaluate a trained policy
@@ -476,15 +465,16 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str, 
     Args:
         config: Configuration dict
         policy_path: Path to saved policy
-        episode: Current episode number (for logging)
+        update_count: Policy update number (or 'final' when evaluating a fixed checkpoint)
+        steps_elapsed: Global steps elapsed at the time of evaluation
         save_dir: Directory to save results
         env_manager: ParallelEnvManager (required for parallel eval)
     """
     print("Evaluating policy: ", policy_path)
 
     num_runs = config["num_eval_runs"]
-    eval_root_dir = ensure_eval_results_dir(save_dir)
-    episode_dir = ensure_eval_results_dir(eval_root_dir, folder_name="", episode=episode)
+    # New, strictly step/update-keyed directory
+    episode_dir = ensure_eval_step_update_dir(save_dir, update=update_count, steps=steps_elapsed, folder_name="eval_results")
     starting_seed = config["seed"] 
 
     # Run parallel evaluations
@@ -501,7 +491,6 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str, 
             # Total reward accumulated across the episode
             "eval/episode_total_reward": aggregated['episode_total_reward'],
             "eval/episode_length": aggregated['episode_length'],
-            "eval/steps_elapsed": aggregated['episode_length'],
 
             # reward related and others
             "eval/demand_coverage_potential": aggregated['demand_coverage_potential'],
@@ -521,7 +510,7 @@ def eval(config: Dict[str, Any], policy_path: str, episode: int, save_dir: str, 
             "eval/route_efficiency": aggregated['route_efficiency'],
             "eval/fleet_size": aggregated['fleet_size'],
             "eval/bus_utilization": aggregated['bus_utilization'],
-        }, step=episode)
+        }, step=steps_elapsed)
 
     return aggregated
 
@@ -701,10 +690,9 @@ def main() -> None:
             env_manager = ParallelEnvManager(config=config, num_workers=num_workers)
             env_manager.start(model, device, policy_kwargs)
             
-            try:
-                eval(config, policy_path, "final", config["save_dir"], env_manager)
-            finally:
-                env_manager.stop()
+            # Use new step/update-keyed saving. For standalone eval, mark update='final' and steps=0.
+            eval(config, policy_path, update_count="final", steps_elapsed=0, save_dir=config["save_dir"], env_manager=env_manager)
+            env_manager.stop()
             
             print(f"Evaluation completed. Results saved to: {config['save_dir']}")
             return
@@ -745,6 +733,6 @@ python main.py --mode=baseline --baseline_type=demand_cover --save_animations --
 python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=1.0
 python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
 
-python main.py --gpu --anneal_lr --gpu
+python main.py --gpu --anneal_lr
 
 """

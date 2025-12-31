@@ -45,7 +45,7 @@ from rl.env_utils import (
     initialize_route,
     aggregate_results,
     write_results_summary,
-    ensure_eval_results_dir,
+    ensure_eval_step_update_dir,
     make_seed_output_dir,
     save_routes_json,
 )
@@ -71,7 +71,8 @@ def create_main_save_dir(config):
         f"{config.get('baseline_type')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
     os.makedirs(main_save_dir, exist_ok=True)
-    eval_root = ensure_eval_results_dir(main_save_dir, folder_name="")
+    # Baselines have no updates; standardize on (update='baseline', steps=0)
+    eval_root = ensure_eval_step_update_dir(main_save_dir, update="baseline", steps=0, folder_name="eval_results")
     print(f"Baseline results will be saved to: {eval_root}")
     return main_save_dir, eval_root
 
