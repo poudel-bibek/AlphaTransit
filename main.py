@@ -9,64 +9,21 @@ from typing import Any, Dict
 from datetime import datetime
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data
 from rl.ppo_agent import PPOAgent
 from rl.mcts_agent import MCTSAgent
-from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json, pretty_print_state
+from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
-from rl.parallel_env import ParallelEnvManager, EpisodeResult, Transition, EvalResult
-
-
-class CachedPyGConverter:
-    """
-    Cache static PyG components to avoid recreating tensors every step.
-    """
-    def __init__(self, device: torch.device):
-        """
-        The edge index and edge attributes are do not change over the course of an episode.
-        To make the sim faster, we cache these tensors.
-        """
-        self.device = device
-        self._cached_edge_index = None
-        self._cached_edge_attr = None
-        
-    def convert(self, state: Dict[str, Any]) -> Data:
-        """
-        Convert state to PyG format, caching static components.
-        """
-        # Cache static components on first call
-        if self._cached_edge_index is None:
-            self._cached_edge_index = torch.from_numpy(state["edge_index"]).long().to(self.device)
-            self._cached_edge_attr = torch.from_numpy(state["edge_features"]).float().to(self.device)
-        
-        # Only create tensors for dynamic components  
-        x = torch.from_numpy(state["node_features"]).float().to(self.device)
-        route_progress = torch.from_numpy(state["route_progress"]).float().to(self.device)
-        
-        data = Data(x=x, edge_index=self._cached_edge_index, edge_attr=self._cached_edge_attr)
-        data.route_progress = route_progress
-        return data
+from rl.parallel_env import ParallelEnvManager, _cap_worker_threads
 
 def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, update_count: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """
     mean_buffer_reward: average per-step rewards stored in the current memory buffer.
     Is not a true measure of the policy's performance.
     """
-    # print("\n==================\n")
-    # print("Memory contents:")
-    # print(f"\tNumber of transitions: {len(ppo.memory)}")
-    # print(f"\tRaw rewards: {ppo.memory.raw_rewards}")
-    # print(f"\tActions: {ppo.memory.actions}")
-    # print(f"\tLog probs: {ppo.memory.log_probs}")
-    # print(f"\tValues: {ppo.memory.values}")
-    # print(f"\tDones: {ppo.memory.dones}")
-    # print(f"\tEpisode boundaries: {ppo.memory.episode_boundaries}")
-    # print(f"\tBootstrap values: {ppo.memory.bootstrap_values}")
 
     if anneal_lr:
-        # Anneal LR based on steps progress (not episodes)
         ppo.update_learning_rate(steps_elapsed, config["max_steps"])
-
     mem_len = len(ppo.memory)
     stats = ppo.update() # Also clears the memory.
 
@@ -94,6 +51,20 @@ def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, update_c
 
 def train(config: Dict[str, Any]) -> None:
     """
+    Parallel Training Architecture (Multiprocessing with Shared Memory):
+    Main Process (Learner):
+    - Owns the model and optimizer
+    - Creates shared memory tensors for model weights 
+    - Collects episode rollouts from workers 
+    - Processes transitions into PPO memory
+    - Performs PPO update when update_frequency transitions collected
+    - Copies updated weights to shared memory
+
+    Worker Processes (Actors):
+    - Each has its own TransitEnv instance
+    - Load weights from shared memory at episode start
+    - Run episodes and return RolloutChunk objects
+    - Automatically see updated weights on next episode
 
     Note: 
     ------------------------------------------------------------------------------------------------
@@ -113,7 +84,7 @@ def train(config: Dict[str, Any]) -> None:
         - Truncation conditions: 
             - Gets stuck in a dead-end i.e., had only 1 neighbor, (which is already in the path)   
     """
-    num_workers = config.get("num_workers", 1)
+    num_workers = config.get("num_workers")
     max_steps = config["max_steps"]
     print(f"Training started on network: {config['network']} with {num_workers} workers for {max_steps:,} steps")
     
@@ -172,118 +143,91 @@ def train(config: Dict[str, Any]) -> None:
     policy_dir = os.path.join(training_save_dir, "policies")
     os.makedirs(policy_dir, exist_ok=True)
 
-    # -------------------------------------------------------------------------
-    # Parallel Training Architecture (Multiprocessing with Shared Memory):
-    # -------------------------------------------------------------------------
-    # Main Process (Learner):
-    #   - Owns the model and optimizer
-    #   - Creates shared memory tensors for model weights (share_memory_())
-    #   - Collects episodes from workers (each worker runs one episode per call)
-    #   - Processes transitions into PPO memory
-    #   - Performs PPO update when update_frequency transitions collected
-    #   - Copies updated weights to shared memory
-    #
-    # Worker Processes (Actors):
-    #   - Each has its own TransitEnv instance
-    #   - Load weights from shared memory at episode start (no queues!)
-    #   - Run episodes and return complete EpisodeResult objects
-    #   - Automatically see updated weights on next episode
-    # -------------------------------------------------------------------------
-    
     max_steps = config["max_steps"]
-    env_manager = ParallelEnvManager(config=config,num_workers=num_workers, )
-    episode, steps_elapsed, update_count, policy_path = 0, 0, 0, None
+    update_frequency = config["update_frequency"]
+    env_manager = ParallelEnvManager(config=config, num_workers=num_workers)
+    episode_count, steps_elapsed, update_count, policy_path = 0, 0, 0, None
     
     try:
-        env_manager.start(model, device, policy_kwargs)
+        env_manager.start(model, policy_kwargs)
         
-        # -------------------------------------------------------------------------
+        # Start all workers collecting episodes
+        env_manager.start_collection()
+        
         # Main Training Loop:
-        # - Each iteration: collect num_workers episodes (one per worker)
-        # - Process transitions into PPO memory
-        # - Update policy when update_frequency transitions collected
-        # - Stop when steps_elapsed >= max_steps
-        # -------------------------------------------------------------------------
         while steps_elapsed < max_steps:
-            # Collect num_workers episodes in parallel (one episode per worker)
-            episode_results = env_manager.collect_episodes(num_workers)
-            
-            if not episode_results:
+            # 1. Collect exactly update_frequency transitions (streaming from all workers)
+            chunks = env_manager.collect_rollouts(update_frequency)
+            if not chunks:
                 break
             
-            # Process each episode's transitions
-            for ep_result in episode_results:
-                episode += 1
-                steps_in_episode = len(ep_result.transitions)
-
-                for trans in ep_result.transitions:
-                    # Reconstruct PyG Data object from numpy arrays
+            # 2. Process chunks and add to memory
+            batch_steps = 0
+            for chunk in chunks:
+                for transition in chunk.transitions:
                     obs_data = Data(
-                        x=torch.from_numpy(trans.obs_x).float(),
-                        edge_index=torch.from_numpy(trans.obs_edge_index).long(),
-                        edge_attr=torch.from_numpy(trans.obs_edge_attr).float(),
+                        x=torch.from_numpy(transition.obs_x).float(),
+                        edge_index=torch.from_numpy(transition.obs_edge_index).long(),
+                        edge_attr=torch.from_numpy(transition.obs_edge_attr).float(),
                     )
-                    obs_data.route_progress = torch.from_numpy(trans.obs_route_progress).float()
+                    obs_data.route_progress = torch.from_numpy(transition.obs_route_progress).float()
                     
-                    # Store in PPO memory buffer (using raw rewards - no normalization)
                     ppo.memory.obs.append(obs_data)
-                    ppo.memory.actions.append(trans.action)
-                    ppo.memory.raw_rewards.append(trans.raw_reward)
-                    ppo.memory.values.append(trans.value)
-                    ppo.memory.log_probs.append(trans.log_prob)
-                    ppo.memory.dones.append(trans.terminated)
-                    ppo.memory.valid_mask.append(torch.from_numpy(trans.valid_mask).bool())
+                    ppo.memory.actions.append(transition.action)
+                    ppo.memory.raw_rewards.append(transition.raw_reward)
+                    ppo.memory.values.append(transition.value)
+                    ppo.memory.log_probs.append(transition.log_prob)
+                    ppo.memory.dones.append(transition.terminated)
+                    ppo.memory.valid_mask.append(torch.from_numpy(transition.valid_mask).bool())
                 
-                # Mark episode boundary for GAE computation
-                ppo.memory.mark_episode_end(ep_result.bootstrap_value)
+                batch_steps += len(chunk.transitions)
                 
-                # Update steps_elapsed once per episode (clamped to max_steps)
-                steps_elapsed = min(steps_elapsed + steps_in_episode, max_steps)
-
-                # Log episode results
-                print(f"Episode {episode} | Steps: {steps_elapsed}/{max_steps} | Reward: {ep_result.episode_reward:.2f}")
-                
-                sim_result = ep_result.final_sim_result
-                if not config.get("wandb_off") and sim_result:
-                    served = sim_result.get('completed_passengers', 0) + sim_result.get('ongoing_passengers', 0)
-                    wait_seconds = sim_result.get('total_wait_completed', 0) + sim_result.get('total_wait_ongoing', 0)
-                    travel_seconds = sim_result.get('total_travel_completed', 0) + sim_result.get('total_travel_ongoing', 0)
-                    combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
-                    combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
+                if chunk.is_terminal:
+                    ppo.memory.mark_episode_end(0.0)  # Only mark episode boundary for terminal chunks
+                    episode_count += 1
+                    print(f"Episode {episode_count} | Steps: {steps_elapsed + batch_steps}/{max_steps} | Reward: {chunk.episode_reward:.2f}")
                     
-                    wandb.log({
-                        "episode/episode_total_reward": ep_result.episode_reward,
-                        "episode/episode_length": ep_result.episode_length,
-                        "episode/episodes": episode,
-                        "episode/demand_coverage_potential": sim_result.get('demand_coverage_potential'),
-                        "episode/demand_coverage_actual": sim_result.get('demand_coverage_actual'),
-                        "episode/route_overlap_ratio": sim_result.get('route_overlap_ratio'),
-                        "episode/node_coverage": sim_result.get('node_coverage'),
-                        "episode/service_rate": sim_result.get('service_rate'),
-                        "episode/avg_wait_time": combined_avg_wait_minutes,
-                        "episode/avg_travel_time": combined_avg_travel_minutes,
-                    }, step=steps_elapsed)
+                    sim_result = chunk.final_sim_result
+                    if not config.get("wandb_off") and sim_result:
+                        served = sim_result.get('completed_passengers', 0) + sim_result.get('ongoing_passengers', 0)
+                        wait_seconds = sim_result.get('total_wait_completed', 0) + sim_result.get('total_wait_ongoing', 0)
+                        travel_seconds = sim_result.get('total_travel_completed', 0) + sim_result.get('total_travel_ongoing', 0)
+                        combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
+                        combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
+                        
+                        wandb.log({
+                            "episode/episode_total_reward": chunk.episode_reward,
+                            "episode/episode_length": chunk.episode_length,
+                            "episode/episode_count": episode_count,
+                            "episode/demand_coverage_potential": sim_result.get('demand_coverage_potential'),
+                            "episode/demand_coverage_actual": sim_result.get('demand_coverage_actual'),
+                            "episode/route_overlap_ratio": sim_result.get('route_overlap_ratio'),
+                            "episode/node_coverage": sim_result.get('node_coverage'),
+                            "episode/service_rate": sim_result.get('service_rate'),
+                            "episode/avg_wait_time": combined_avg_wait_minutes,
+                            "episode/avg_travel_time": combined_avg_travel_minutes,
+                        }, step=steps_elapsed + batch_steps)
+
+            steps_elapsed = min(steps_elapsed + batch_steps, max_steps)
             
+            # 3. Perform PPO update (we collected exactly update_frequency transitions)
+            update_count += 1
+            perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
+            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
+            torch.save(model.state_dict(), policy_path)
+            
+            env_manager.update_shared_weights(model)
 
-            # Perform PPO update when enough transitions collected
-            if len(ppo.memory) >= config["update_frequency"]:
-                update_count += 1
-                perform_ppo_update(ppo, episode, steps_elapsed, update_count, config["anneal_lr"], config)
-                policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
-                torch.save(model.state_dict(), policy_path)
-                
-                # Update shared memory weights for workers
-                env_manager.update_shared_weights(model)
-
-                if config.get("eval_every") > 0 and update_count % config["eval_every"] == 0:
-                    print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
-                    eval(config, policy_path, update_count, steps_elapsed, training_save_dir, env_manager)
+            # Evaluate the policy after a certain number of updates
+            if config.get("eval_every") > 0 and update_count % config["eval_every"] == 0:
+                print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
+                eval(config, policy_path, update_count, steps_elapsed, training_save_dir, env_manager)
                 
         
         # Final update if any transitions remain
         if len(ppo.memory) > 0:
             update_count += 1
-            perform_ppo_update(ppo, episode, steps_elapsed, update_count, config["anneal_lr"], config)
+            perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
             policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
             torch.save(model.state_dict(), policy_path)
         
@@ -292,200 +236,45 @@ def train(config: Dict[str, Any]) -> None:
         env_manager.stop()
     
     print(f"\n{'='*60}")
-    print(f"Training Complete! Steps: {steps_elapsed}, Episodes: {episode}, Updates: {update_count}")
+    print(f"Training Complete! Steps: {steps_elapsed}, Episodes: {episode_count}, Updates: {update_count}")
     print(f"{'='*60}\n")
         
     
-def execute_eval_runs(config: Dict[str, Any], policy_path: str, num_runs: int, base_seed: int, save_dir: str, env_manager: ParallelEnvManager) -> tuple[list, dict]:
-    """
-    Evaluate a trained policy for multiple runs in parallel.
-    Evaluate a trained policy for multiple runs.
-    - Load a saved policy
-    - Run the policy on the network (take deterministic actions) and get the path
-    - Get relevant metrics and log
-    - Plot path and call world.analyzer.network_fancy
-
-    Notes: 
-    - During eval episode, agent constructs a route path step by step
-    - The results are only meaningful at the end of the episode.
-    Uses the same process pool as training for parallel evaluation.
-    All workers share the same policy weights and run with different seeds.
-    
-    Args:
-        config: Configuration dict
-        policy_path: Path to the saved policy
-        num_runs: Number of evaluation runs
-        base_seed: Starting seed for reproducibility
-        save_dir: Directory to save results
-        env_manager: ParallelEnvManager (required - no sequential fallback)
-    """
-    print(f"Evaluating policy: {policy_path} for {num_runs} runs starting at seed: {base_seed}")
-    print(f"Using parallel evaluation with {env_manager.num_workers} workers...")
-    
-    # Load policy weights into shared memory for eval
-    state_dict = torch.load(policy_path, map_location="cpu")
-    for name, param in state_dict.items():
-        env_manager.shared_model_state[name].copy_(param)
-    
-    # Run parallel evaluations
-    eval_results = env_manager.run_parallel_eval(
-        num_runs=num_runs,
-        base_seed=base_seed,
-        seed_offset=config["eval_seed_offset"],
-    )
-    
-    # Convert EvalResult to dict format and save routes
-    results = []
-    for eval_result in eval_results:
-        seed = eval_result.seed
-        seed_dir, _ = make_seed_output_dir(save_dir, seed)
-        
-        # Save routes
-        save_routes_json(seed_dir, eval_result.routes)
-        
-        # Convert to dict format expected by aggregate_results
-        result = eval_result.metrics.copy()
-        result['routes'] = eval_result.routes
-        results.append(result)
-
-    aggregated = aggregate_results(results)
-    return results, aggregated
-
-def single_eval_run(config: Dict[str, Any], policy_path: str, save_dir: str, run_number: int) -> dict:
-    """
-    Execute a single evaluation run.
-    """
-    env = TransitEnv(config)
-    node_feature_dim = env.N_NODE_FEATURES
-    edge_feature_dim = env.N_EDGE_FEATURES
-    config["n_nodes"] = env.n_nodes
-    policy_kwargs = get_policy_kwargs(config, node_feature_dim, edge_feature_dim)
-
-    model = GATV2ActorCritic(**policy_kwargs)
-    state_dict = torch.load(policy_path, map_location=config["device"])
-    model.load_state_dict(state_dict)
-    model.to(config["device"])
-    model.eval() # eval mode
-    
-    pyg_converter = CachedPyGConverter(config["device"])
-
-    state, _ = env.reset()
-    terminated = False
-    eval_episode_steps = 0
-    episode_total_reward = 0.0
-    while not terminated:
-        data = pyg_converter.convert(state)
-        batch = Batch.from_data_list([data]).to(config["device"])  # Data already on device
-        valid_list = env._get_valid_indices()
-        
-        num_nodes = batch.num_nodes
-        valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=config["device"])
-
-        if len(valid_list) > 0:
-            for local_idx in valid_list:
-                valid_mask[0, local_idx] = True
-            # print(f"\tValid mask: shape: {valid_mask.shape}, value: {valid_mask}")
-
-            with torch.no_grad():
-                action_tensor, _, _ = model.act(batch.x,
-                batch.edge_index,
-                batch.edge_attr,
-                batch.batch,
-                valid_mask=valid_mask,
-                stochastic=False) # Deterministic action at test time.
-            
-        else:
-            # When valid indices are empty
-            action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=config["device"])
-
-        action = action_tensor.cpu().item()
-        next_state, reward, terminated, _, sim_result = env.step(action) # Truncation is not used.
-        state = next_state
-        eval_episode_steps += 1
-        episode_total_reward += reward
-
-    # Calculate combined metrics
-    served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
-    wait_seconds = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
-    travel_seconds = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
-
-    combined_avg_wait_minutes = (wait_seconds / served) / 60 if served > 0 else 0.0
-    combined_avg_travel_minutes = (travel_seconds / served) / 60 if served > 0 else 0.0
-
-    # Generate visualizations for this run
-    env.render(save_dir, f"eval_run_{run_number}.png")
-
-    if config["save_animations"]: # Takes almost 40 seconds per run.
-        env.world.analyzer.network_fancy(
-            animation_speed_inverse=10,
-            figsize=11,
-            sample_ratio=1.0,
-            interval=5,
-            trace_length=5,
-            network_font_size=11,
-            antialiasing=False,
-            file_name=os.path.join(save_dir, f"eval_anim_run_{run_number}.gif"),
-            save_as_mp4=False,
-            bus_only = True # 
-        )
-
-    return {
-        'episode_total_reward': float(episode_total_reward),
-        'episode_length': eval_episode_steps,
-        'demand_coverage_potential': sim_result['demand_coverage_potential'],
-        'demand_coverage_actual': sim_result['demand_coverage_actual'],
-        'route_overlap_ratio': sim_result['route_overlap_ratio'],
-        'node_coverage': sim_result['node_coverage'],
-        'completed_passengers': sim_result['completed_passengers'],
-        'ongoing_passengers': sim_result['ongoing_passengers'],
-        'total_onboarded_count': sim_result['total_onboarded_count'],
-        'wanting_to_onboard': sim_result['wanting_to_onboard'],
-        'service_rate': sim_result['service_rate'],
-        'combined_avg_wait_minutes': combined_avg_wait_minutes,
-        'transfer_rate': sim_result['transfer_rate'],
-        'combined_avg_travel_minutes': combined_avg_travel_minutes,
-        'route_efficiency': sim_result['route_efficiency'],
-        'fleet_size': sim_result['fleet_size'],
-        'bus_utilization': sim_result['bus_utilization'],
-        'routes': env.all_routes,
-    }
-
 def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager) -> Dict[str, float]:
     """
     Evaluate a trained policy using parallel workers.
-    Evaluate a trained policy
-    - Load a saved policy
-    - Run the policy on the network (take deterministic actions) and get the path
-    - Get relevant metrics and log
-    - Plot path and call world.analyzer.network_fancy
-
-    Notes:
-    - During eval episode, agent constructs a route path step by step
-    - The results are only meaningful at the end of the episode.
+    
     Args:
         config: Configuration dict
         policy_path: Path to saved policy
-        update_count: Policy update number (or 'final' when evaluating a fixed checkpoint)
+        update_count: Policy update number (or 'final' for standalone eval)
         steps_elapsed: Global steps elapsed at the time of evaluation
         save_dir: Directory to save results
-        env_manager: ParallelEnvManager (required for parallel eval)
+        env_manager: ParallelEnvManager for parallel eval
     """
-    print("Evaluating policy: ", policy_path)
-
     num_runs = config["num_eval_runs"]
-    # New, strictly step/update-keyed directory
     episode_dir = ensure_eval_step_update_dir(save_dir, update=update_count, steps=steps_elapsed, folder_name="eval_results")
-    starting_seed = config["seed"] 
 
-    # Run parallel evaluations
-    results, aggregated = execute_eval_runs(
-        config, policy_path, num_runs, starting_seed, episode_dir, env_manager
+    # Run parallel evaluations (weight loading handled by run_parallel_eval)
+    eval_results = env_manager.run_parallel_eval(
+        num_runs=num_runs,
+        base_seed=config["seed"],
+        seed_offset=config["eval_seed_offset"],
+        policy_path=policy_path,
     )
+    
+    # Process results: save routes and convert to dict format
+    results = []
+    for eval_result in eval_results:
+        seed_dir, _ = make_seed_output_dir(episode_dir, eval_result.seed)
+        save_routes_json(seed_dir, eval_result.routes)
+        eval_result.metrics['routes'] = eval_result.routes
+        results.append(eval_result.metrics)
 
-    # Save summary JSON with statistical information (works for any number of runs)
+    aggregated = aggregate_results(results)
     write_results_summary(aggregated, num_runs, episode_dir, 'eval_results_summary.json')
 
-    # Log averaged results to wandb (for single run, this is just the single result)
+    # Log to wandb
     if not config.get("wandb_off"):
         wandb.log({
             # Total reward accumulated across the episode
@@ -536,8 +325,8 @@ def set_global_seeds(seed: int) -> None:
 
 def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
     """
-    Dropout has been disabled. 
-    In the parallelized setup, it breaks some core PPO assumptions.
+    Dropout has been disabled.
+    In the parallelized setup, it breaks some core PPO assumptions and causes policy mismatch.
     """
     num_gat_blocks = config.get("num_gat_blocks", 4)
     return {
@@ -583,7 +372,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
     parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
     
-    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers (1=single worker, >1=parallel)")
+    parser.add_argument("--num_workers", type=int, default=10, help="Number of workers (1=single worker, >1=parallel)")
+    parser.add_argument("--steps_per_worker", type=int, default=16, help="Steps per worker before sending data back (buffer size)")
     # Learning environment specific: 
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
     parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
@@ -626,12 +416,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    """
-    """
+def main():
+
     config = get_config()
     algorithm = config.get("algorithm")
     mode = config["mode"]
+
+    # Cap CPU threads globally to prevent oversubscription with multiprocessing
+    _cap_worker_threads()
 
     # Baselines can be executed regardless of algorithm selection.
     if mode == "baseline":
@@ -668,6 +460,7 @@ def main() -> None:
             return
 
         if mode == "eval":
+            # Stand-alone evaluation without training.
             os.makedirs(config["save_dir"], exist_ok=True)
             config["wandb_off"] = True
             policy_path = config["saved_policy_path"]
@@ -686,9 +479,9 @@ def main() -> None:
             model.load_state_dict(state_dict)
             
             # Create and start env_manager
-            num_workers = config.get("num_workers", 4)
+            num_workers = config.get("num_workers")
             env_manager = ParallelEnvManager(config=config, num_workers=num_workers)
-            env_manager.start(model, device, policy_kwargs)
+            env_manager.start(model, policy_kwargs)
             
             # Use new step/update-keyed saving. For standalone eval, mark update='final' and steps=0.
             eval(config, policy_path, update_count="final", steps_elapsed=0, save_dir=config["save_dir"], env_manager=env_manager)
@@ -696,7 +489,6 @@ def main() -> None:
             
             print(f"Evaluation completed. Results saved to: {config['save_dir']}")
             return
-
 
     if algorithm == "mcts":
         env = TransitEnv(config)
@@ -709,8 +501,6 @@ def main() -> None:
         if mode == "eval":
             # TODO: Implement MCTS evaluation pipeline in rl/mcts_agent.py
             return
-
-
 
 if __name__ == "__main__":
     main()
@@ -734,5 +524,4 @@ python main.py --mode=baseline --baseline_type=shortest_path --save_animations -
 python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
 
 python main.py --gpu --anneal_lr
-
 """

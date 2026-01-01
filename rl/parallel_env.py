@@ -1,39 +1,46 @@
+
 """
 Parallel environment manager for distributed PPO training.
-
-Uses Python multiprocessing with shared memory to distribute weights efficiently.
-- The learner stores a copy of model tensors in shared memory via tensor.share_memory_()
-- At the start of each episode, workers load weights from this shared state into a local model (no queues)
-- After PPO updates, the learner copies new weights into the shared tensors
-- Workers pick up the updated weights on their next episode
-- Parameters are NOT live-shared during an episode (no mid-episode weight changes), preserving PPO's fixed-policy assumption
+Uses Python multiprocessing with shared memory to distribute policy weights efficiently.
 """
-import time
+
+import os
 import random
 import torch
 import numpy as np
+from rl.env import TransitEnv
+from rl.models import GATV2ActorCritic
+from dataclasses import dataclass, field
+from torch_geometric.data import Data, Batch
+from queue import Empty as QueueEmpty
 
 import torch.multiprocessing as mp
 mp_ctx = mp.get_context('spawn')
 
-from rl.env import TransitEnv
-from rl.models import GATV2ActorCritic
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
-from torch_geometric.data import Data, Batch
+def _cap_worker_threads():
+    """
+    Limit BLAS/OpenMP and PyTorch intra/inter-op threads to 1 per process.
+    Helps prevent massive CPU thread over-subscription when using many workers.
+    """
+    # Common BLAS/OpenMP env vars
+    for var in [
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ]:
+        os.environ[var] = os.environ.get(var, "1") or "1"
 
-
-# ============================================================================
-# WORKER-LOCAL CACHE: Reuse env/model across episodes in the same process
-# This avoids recreating TransitEnv (CSV reads) and model for every episode
-# ============================================================================
-_worker_cache = {}
-
+    # PyTorch thread limits
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
 
 @dataclass
 class Transition:
     """
-    A single environment transition for PPO training.
+    A single environment transition for PPO.
     Stored as numpy/python types for efficient pickling across processes.
     """
     obs_x: np.ndarray               # Node features [N, D]
@@ -47,19 +54,18 @@ class Transition:
     terminated: bool
     valid_mask: np.ndarray          # [1, num_nodes] boolean
 
-
 @dataclass
-class EpisodeResult:
+class RolloutChunk:
     """
-    Complete episode data including all transitions and final metrics.
+    A chunk of transitions from a worker.
+    episode_reward/episode_length are 0 for partial chunks, only populated on terminal.
     """
     worker_id: int
-    transitions: List[Transition] = field(default_factory=list)
-    bootstrap_value: float = 0.0
+    transitions: list = field(default_factory=list)
+    is_terminal: bool = False
     episode_reward: float = 0.0
     episode_length: int = 0
-    final_sim_result: Dict[str, Any] = field(default_factory=dict)
-
+    final_sim_result: dict = field(default_factory=dict)
 
 @dataclass
 class EvalResult:
@@ -71,22 +77,20 @@ class EvalResult:
     seed: int
     episode_reward: float = 0.0
     episode_length: int = 0
-    metrics: Dict[str, Any] = field(default_factory=dict)
-    routes: List[Any] = field(default_factory=list)
-
+    metrics: dict = field(default_factory=dict)
+    routes: list = field(default_factory=list)
 
 class PyGConverter:
     """
     Converts environment state dicts to PyG Data objects.
     Caches static components (edge_index, edge_attr) for efficiency within an episode.
     """
-    def __init__(self, device: torch.device):
+    def __init__(self, device):
         self.device = device
-        self.cached_edge_index: Optional[torch.Tensor] = None
-        self.cached_edge_attr: Optional[torch.Tensor] = None
+        self.cached_edge_index = None
+        self.cached_edge_attr = None
     
-    def convert(self, state: Dict[str, Any]) -> Data:
-        """Convert state dict to PyG Data object, caching static components."""
+    def convert(self, state):
         if self.cached_edge_index is None:
             self.cached_edge_index = torch.from_numpy(state["edge_index"]).long().to(self.device)
             self.cached_edge_attr = torch.from_numpy(state["edge_features"]).float().to(self.device)
@@ -98,170 +102,20 @@ class PyGConverter:
         data.route_progress = route_progress
         return data
 
-
-def run_single_episode(worker_id: int, rollout_id: int, config: Dict[str, Any], policy_kwargs: Dict[str, Any], shared_model_state: Dict[str, torch.Tensor]) -> EpisodeResult:
+def run_single_eval(env, model, seed, device):
     """
-    Run a single episode in a worker process.
-    
-    Args:
-        worker_id: ID of this worker
-        config: Environment and training config
-        policy_kwargs: Model architecture kwargs (passed from main process)
-        shared_model_state: Model weights in shared memory
-    
-    Weight distribution (no queues):
-    - shared_model_state holds tensors stored in shared memory by the learner
-    - At episode start, the worker loads these tensors into its local model
-    - The learner updates shared tensors after PPO updates
-    - Workers will observe updated weights on the NEXT episode (no mid-episode changes)
+    Internal helper to run evaluation on a given env/model instance.
+    Used by rollout_worker_loop to reuse resources.
     """
-    global _worker_cache
-    device = torch.device("cpu")  # Workers use CPU for inference
-    
-    # Deterministic per-rollout seeding: unique, repeatable given base seed + rollout_id
-    worker_seed = int(config["seed"]) + int(rollout_id) * 9973 + int(worker_id)
-    torch.manual_seed(worker_seed)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-    
-    # PERFORMANCE FIX: Reuse env/model from cache if available
-    # The Pool reuses processes, so this avoids recreating TransitEnv (CSV reads)
-    # and model initialization for every episode - massive speedup!
-    cache_key = config.get("network", "default")
-    if cache_key not in _worker_cache:
-        worker_config = dict(config)
-        worker_config["seed"] = worker_seed
-        env = TransitEnv(worker_config)
-        model = GATV2ActorCritic(**policy_kwargs).to(device)
-        _worker_cache[cache_key] = {"env": env, "model": model}
-    
-    env = _worker_cache[cache_key]["env"]
-    model = _worker_cache[cache_key]["model"]
-    
-    # Always reload weights from shared memory (they may have been updated)
-    model.load_state_dict(shared_model_state)
-    # Use eval mode during rollouts for consistent π_old
-    # This disables dropout so the policy is deterministic (given weights)
-    # Dropout regularization happens during PPO updates, not rollout collection
-    model.eval()
-    
-    # PyG converter with caching
-    converter = PyGConverter(device)
-    
-    # Run episode
-    state, _ = env.reset(seed=worker_seed)
-    terminated = False
-    episode_reward = 0.0
-    transitions = []
-    sim_result = None
-    
-    while not terminated:
-        data = converter.convert(state)
-        batch = Batch.from_data_list([data]).to(device)
-        
-        # Build valid mask
-        valid_list = env._get_valid_indices()
-        num_nodes = batch.num_nodes
-        valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=device)
-        
-        if len(valid_list) > 0:
-            valid_mask[0, valid_list] = True
-            
-            with torch.no_grad():
-                action_tensor, log_prob_tensor, value_tensor = model.act(
-                    batch.x, batch.edge_index, batch.edge_attr, batch.batch,
-                    valid_mask=valid_mask, stochastic=True
-                )
-        else:
-            # No valid actions
-            with torch.no_grad():
-                z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
-                g = model.critic_readout(z, batch.batch)
-                value_tensor = model.critic_head(g).squeeze(-1)
-            
-            action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=device)
-            log_prob_tensor = torch.tensor([0.0], dtype=torch.float32, device=device)
-        
-        action = action_tensor.cpu().item()
-        next_state, reward, terminated, _, sim_result = env.step(action)
-        episode_reward += reward
-        
-        # Store transition
-        transition = Transition(
-            obs_x=state["node_features"].copy(),
-            obs_edge_index=state["edge_index"].copy(),
-            obs_edge_attr=state["edge_features"].copy(),
-            obs_route_progress=state["route_progress"].copy(),
-            action=action,
-            raw_reward=reward,
-            value=value_tensor.cpu().item(),
-            log_prob=log_prob_tensor.cpu().item(),
-            terminated=terminated,
-            valid_mask=valid_mask.cpu().numpy(),
-        )
-        transitions.append(transition)
-        state = next_state
-    
-    # Compute bootstrap value
-    if terminated:
-        bootstrap_value = 0.0
-    else:
-        data = converter.convert(state)
-        batch = Batch.from_data_list([data]).to(device)
-        with torch.no_grad():
-            bootstrap_value = model.get_bootstrap_value(
-                batch.x, batch.edge_index, batch.edge_attr, batch.batch
-            )
-    
-    return EpisodeResult(
-        worker_id=worker_id,
-        transitions=transitions,
-        bootstrap_value=bootstrap_value,
-        episode_reward=episode_reward,
-        episode_length=len(transitions),
-        final_sim_result=sim_result if sim_result else {},
-    )
-
-
-def run_single_eval(run_id: int, seed: int, config: Dict[str, Any], policy_kwargs: Dict[str, Any], shared_model_state: Dict[str, torch.Tensor]) -> EvalResult:
-    """
-    Run a single evaluation episode in a worker process.
-    
-    Key differences from training rollouts:
-    - Uses model.eval() to disable dropout (deterministic behavior)
-    - Uses stochastic=False for deterministic action selection
-    - Uses exact seed provided (not randomized)
-    - Returns metrics and routes (no transitions)
-    """
-    global _worker_cache
-    device = torch.device("cpu")
-    
-    # Set the exact seed for reproducibility
+    # Set seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     
-    # PERFORMANCE FIX: Reuse env/model from cache if available
-    cache_key = config.get("network", "default")
-    if cache_key not in _worker_cache:
-        eval_config = dict(config)
-        eval_config["seed"] = seed
-        env = TransitEnv(eval_config)
-        model = GATV2ActorCritic(**policy_kwargs).to(device)
-        _worker_cache[cache_key] = {"env": env, "model": model}
-    
-    env = _worker_cache[cache_key]["env"]
-    model = _worker_cache[cache_key]["model"]
-    
-    # Always reload weights from shared memory
-    model.load_state_dict(shared_model_state)
-    # Use eval mode for evaluation - disable dropout for deterministic behavior
     model.eval()
-
-    # PyG converter with caching
     converter = PyGConverter(device)
     
-    # Run evaluation episode
+    # Run a single evaluation episode
     state, _ = env.reset(seed=seed)
     terminated = False
     episode_reward = 0.0
@@ -280,12 +134,14 @@ def run_single_eval(run_id: int, seed: int, config: Dict[str, Any], policy_kwarg
             valid_mask[0, valid_list] = True
             
             with torch.no_grad():
-                # DETERMINISTIC action for evaluation
-                action_tensor, _, _ = model.act(
-                    batch.x, batch.edge_index, batch.edge_attr, batch.batch,
-                    valid_mask=valid_mask, stochastic=False
-                )
+                action_tensor, _, _ = model.act( batch.x, 
+                                                 batch.edge_index, 
+                                                 batch.edge_attr, 
+                                                 batch.batch,
+                                                 valid_mask=valid_mask, 
+                                                 stochastic=False) # DETERMINISTIC action for evaluation
         else:
+            # No valid next node found.
             action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=device)
         
         action = action_tensor.cpu().item()
@@ -322,58 +178,181 @@ def run_single_eval(run_id: int, seed: int, config: Dict[str, Any], policy_kwarg
     }
     
     return EvalResult(
-        run_id=run_id,
-        seed=seed,
-        episode_reward=episode_reward,
-        episode_length=episode_steps,
-        metrics=metrics,
-        routes=env.all_routes,
+        run_id = 0, # We must return run_id as 0 here, caller will adjust
+        seed = seed,
+        episode_reward = episode_reward,
+        episode_length = episode_steps,
+        metrics = metrics,
+        routes = env.all_routes,
     )
 
+def worker(worker_id, config, policy_kwargs, shared_model_state, cmd_queue, shared_res_queue, eval_res_queue):
+    """
+    Asynchronous streaming worker that sends data in chunks during episode execution.
+    
+    Commands (via cmd_queue):
+        {"type": "stop"}      - Terminate worker
+        {"type": "eval"}      - Run one eval episode (deterministic)
+        {"type": "collect"}   - Run training, streaming chunks of steps_per_worker
+    
+    Notes:
+        - Runs on CPU to avoid CUDA + multiprocessing issues
+        - Streaming: sends chunks to shared_res_queue when buffer reaches steps_per_worker OR episode ends
+        - Eval results go to eval_res_queue (per-worker) for ordered collection
+    """
+    _cap_worker_threads()
+    device = torch.device("cpu")
+    buffer_size = config.get("steps_per_worker")
+
+    # Distinct seeding per worker. Without explicit seeding, workers may lead to correlated experiences.
+    base_seed = int(config["seed"]) + (worker_id + 1) * 100003
+    torch.manual_seed(base_seed)
+    np.random.seed(base_seed)
+    random.seed(base_seed)
+
+    # Single env for both training and eval
+    env = TransitEnv(dict(config))
+
+    # Although each worker gets their own policy model, the weights come from a shared memory.
+    model = GATV2ActorCritic(**policy_kwargs).to(device)
+    converter = PyGConverter(device)
+
+    while True:
+        cmd = cmd_queue.get()
+        cmd_type = cmd.get("type") if isinstance(cmd, dict) else None
+
+        if cmd_type == "stop":
+            break
+
+        elif cmd_type == "eval":
+            model.load_state_dict(shared_model_state)
+            model.eval()
+            result = run_single_eval(env, model, cmd["seed"], device)
+            result.run_id = cmd["run_id"]
+            eval_res_queue.put([result])
+
+        elif cmd_type == "collect":
+            model.load_state_dict(shared_model_state)
+            model.eval()
+            state, _ = env.reset()
+            terminated = False
+            transitions = []
+            episode_reward = 0.0
+            episode_steps = 0
+
+            while not terminated:
+                data = converter.convert(state)
+                batch = Batch.from_data_list([data]).to(device)
+                valid_list = env._get_valid_indices()
+                num_nodes = batch.num_nodes
+                valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=device)
+
+                if len(valid_list) > 0:
+                    valid_mask[0, valid_list] = True
+                    with torch.no_grad():
+                        action_tensor, log_prob_tensor, value_tensor = model.act(batch.x, 
+                                                                                batch.edge_index, 
+                                                                                batch.edge_attr, 
+                                                                                batch.batch, 
+                                                                                valid_mask=valid_mask, 
+                                                                                stochastic=True)
+                else:
+                    # No valid next node found.
+                    with torch.no_grad():
+                        z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+                        g = model.critic_readout(z, batch.batch)
+                        value_tensor = model.critic_head(g).squeeze(-1)
+
+                    action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=device)
+                    log_prob_tensor = torch.tensor([0.0], dtype=torch.float32, device=device)
+
+                action = action_tensor.cpu().item()
+                next_state, reward, terminated, _, sim_result = env.step(action)
+                episode_reward += reward
+
+                transition = Transition(
+                    obs_x = state["node_features"].copy(),
+                    obs_edge_index = state["edge_index"].copy(),
+                    obs_edge_attr = state["edge_features"].copy(),
+                    obs_route_progress = state["route_progress"].copy(),
+                    action = action,
+                    raw_reward = reward,
+                    value = value_tensor.cpu().item(),
+                    log_prob = log_prob_tensor.cpu().item(),
+                    terminated = terminated,
+                    valid_mask = valid_mask.cpu().numpy(),
+                )
+                transitions.append(transition)
+                state = next_state
+                episode_steps += 1
+
+                # Stream chunk when buffer is full (mid-episode)
+                if len(transitions) >= buffer_size and not terminated:
+                    chunk = RolloutChunk(
+                        worker_id = worker_id,
+                        transitions = list(transitions),
+                        is_terminal = False,
+                        episode_reward = 0.0,   # Partial chunk - not meaningful
+                        episode_length = 0,     # Partial chunk - not meaningful
+                        final_sim_result = {},
+                    )
+                    shared_res_queue.put(chunk)
+                    transitions.clear()
+
+            # Episode done - send remaining transitions with episode totals
+            if transitions:
+                chunk = RolloutChunk(
+                    worker_id = worker_id,
+                    transitions = list(transitions),
+                    is_terminal = True,
+                    episode_reward = episode_reward,
+                    episode_length = episode_steps,
+                    final_sim_result = sim_result if sim_result else {},
+                )
+                shared_res_queue.put(chunk)
+
+        else:
+            # Unknown command type
+            print(f"Unknown command type: {cmd_type}")
 
 class ParallelEnvManager:
     """
-    Manages parallel episode collection using multiprocessing with shared memory.
-    
-    Weight distribution model (no queues):
-    - The learner creates shared memory tensors for model weights (single source of truth)
+    Manages parallel workers.
+    Weight distribution model:
+    - The learner creates shared memory tensors for model weights
     - Workers load weights from shared memory at the start of each episode
-    - After PPO updates, the learner copies new weights into the shared tensors
-    - Workers pick up these updates on the next episode (no mid-episode changes)
-    
-    This is cleaner than queue-based weight passing because:
-    - No weight serialization/deserialization for updates
-    - Single source of truth for model weights
-    - Workers read from shared memory once per episode start
+    - Workers stream RolloutChunks continuously to a shared queue
+    - After PPO updates, the learner copies new weights to shared memory
+    - Workers naturally pick up new weights on their next episode start
     """
     
-    def __init__(self, config: Dict[str, Any], num_workers: int) -> None:
+    def __init__(self, config, num_workers):
         self.config = config
         self.num_workers = num_workers
-        self.rollout_counter = 0  # deterministic seeding across collect_episodes calls
+
+        # These are set in start()       
+        self.shared_model_state = None
+
+        # Queues
+        self._actor_cmd_queues = []
+        self._actor_eval_res_queues = []  # Per-worker for ordered eval results
+        self._shared_res_queue = None      # Shared for training rollouts
+        self._actor_procs = []
         
-        # Policy kwargs (set in start())
-        self.policy_kwargs: Optional[Dict[str, Any]] = None
+        # Track active workers (those that have been sent "collect" but not yet finished episode)
+        self._active_workers = set()
         
-        # Shared model state (populated in start())
-        self.shared_model_state: Optional[Dict[str, torch.Tensor]] = None
-        
-        # Process pool
-        self.pool: Optional[mp_ctx.Pool] = None
+        # Buffer for excess transitions from previous collection
+        self._pending_chunk = None
     
-    def start(self, model, device: torch.device, policy_kwargs: Dict[str, Any]) -> None:
+    def start(self, model, policy_kwargs):
         """
-        Initialize shared memory for model weights and start process pool.
-        
-        Args:
-            model: The trained model (weights will be copied to shared memory)
-            device: Device the model is on (unused, workers use CPU)
-            policy_kwargs: Model architecture kwargs (passed to workers)
+        Initialize shared memory for model weights and start persistent rollout workers.
+        - model: The trained model (weights will be copied to shared memory)
+        - policy_kwargs: Model architecture kwargs (passed to workers)
         """
+
         print(f"Setting up shared memory for model weights...")
-        
-        # Store policy_kwargs to pass to workers
-        self.policy_kwargs = policy_kwargs
         
         # Create shared memory copy of model state
         self.shared_model_state = {}
@@ -381,18 +360,34 @@ class ParallelEnvManager:
             shared_tensor = param.cpu().clone()
             shared_tensor.share_memory_()
             self.shared_model_state[name] = shared_tensor
-        
-        print(f"Creating process pool with {self.num_workers} workers...")
-        self.pool = mp_ctx.Pool(processes=self.num_workers)
-        
-        print(f"ParallelEnvManager ready (using shared memory for weights)")
+
+        # Create shared result queue for training rollouts
+        self._shared_res_queue = mp_ctx.Queue()
+
+        # Start rollout workers 
+        for wid in range(self.num_workers):
+            cmd_q = mp_ctx.Queue()
+            eval_res_q = mp_ctx.Queue()  # Per-worker queue for eval results only
+            proc = mp_ctx.Process(
+                target=worker,
+                args=( wid, 
+                       self.config, 
+                       policy_kwargs, 
+                       self.shared_model_state, 
+                       cmd_q, 
+                       self._shared_res_queue,  # Shared for training
+                       eval_res_q,              # Per-worker for eval
+                ),
+            )
+            proc.start()
+            self._actor_cmd_queues.append(cmd_q)
+            self._actor_eval_res_queues.append(eval_res_q)
+            self._actor_procs.append(proc)
     
-    def update_shared_weights(self, model) -> None:
+    def update_shared_weights(self, model):
         """
         Update shared memory weights from the trained model.
-        
         Called after PPO update to push new weights to shared memory.
-        Workers will automatically use these weights on their next episode.
         """
         if self.shared_model_state is None:
             raise RuntimeError("Manager not started. Call start() first.")
@@ -401,44 +396,7 @@ class ParallelEnvManager:
             for name, param in model.state_dict().items():
                 self.shared_model_state[name].copy_(param.cpu())
     
-    def collect_episodes(self, num_episodes: int) -> List[EpisodeResult]:
-        """
-        Collect a batch of episodes in parallel.
-        
-        Each worker runs one episode using the current shared weights.
-        Returns list of complete EpisodeResult objects.
-
-        The blocking timeout call (300.0) waits for upto 300 seconds for that specific task to complete.
-        We need all episodes to complete before updating, so this is fine. 
-        """
-        if self.pool is None:
-            raise RuntimeError("Manager not started. Call start() first.")
-        
-        # Submit episode tasks to process pool
-        tasks = []
-        for i in range(num_episodes):
-            worker_id = i % self.num_workers
-            rollout_id = self.rollout_counter + i
-            task = self.pool.apply_async(
-                run_single_episode,
-                args=(worker_id, rollout_id, self.config, self.policy_kwargs, self.shared_model_state),
-            )
-            tasks.append(task)
-        self.rollout_counter += num_episodes
-        
-        # Collect results
-        results = []
-        for i, task in enumerate(tasks):
-            try:
-                result = task.get(timeout=300.0)
-                results.append(result)
-                print(f"Episode {i+1}/{num_episodes} done: worker={result.worker_id}, reward={result.episode_reward:.2f}, length={result.episode_length}")
-            except Exception as e:
-                print(f"Episode {i+1} failed with error: {e}")
-        
-        return results
-    
-    def run_parallel_eval(self, num_runs: int, base_seed: int, seed_offset: int) -> List[EvalResult]:
+    def run_parallel_eval(self, num_runs, base_seed, seed_offset, policy_path):
         """
         Run multiple evaluation episodes in parallel.
         
@@ -449,50 +407,159 @@ class ParallelEnvManager:
             num_runs: Number of evaluation runs
             base_seed: Starting seed
             seed_offset: Offset between consecutive seeds
+            policy_path: Optional path to policy weights to load before eval
             
         Returns:
             List of EvalResult objects (one per run)
         """
-        if self.pool is None:
-            raise RuntimeError("Manager not started. Call start() first.")
+
+        # load weights from path
+        state_dict = torch.load(policy_path, map_location="cpu")
+        for name, param in state_dict.items():
+            self.shared_model_state[name].copy_(param)
         
-        print(f"Running {num_runs} parallel evaluation runs...")
+        print(f"Running {num_runs} eval runs with {self.num_workers} workers...")
         
-        # Submit eval tasks to process pool
-        tasks = []
-        for run_id in range(num_runs):
-            seed = base_seed + (run_id * seed_offset)
-            task = self.pool.apply_async(
-                run_single_eval,
-                args=(run_id, seed, self.config, self.policy_kwargs, self.shared_model_state),
-            )
-            tasks.append((run_id, seed, task))
-        
-        # Collect results
         results = []
-        for run_id, seed, task in tasks:
-            try:
-                result = task.get(timeout=300.0)
-                results.append(result)
-                print(f"Eval run {run_id+1}/{num_runs} (seed={seed}) done: reward={result.episode_reward:.2f}")
-            except Exception as e:
-                print(f"Eval run {run_id+1} (seed={seed}) failed with error: {e}")
+        next_run_id = 0
         
+        while next_run_id < num_runs:
+            # Dispatch to available workers
+            active_workers = 0
+            for i in range(min(self.num_workers, num_runs - next_run_id)):
+                seed = base_seed + (next_run_id * seed_offset)
+                self._actor_cmd_queues[i].put({
+                    "type": "eval", 
+                    "run_id": next_run_id, 
+                    "seed": seed
+                })
+                active_workers += 1
+                next_run_id += 1
+            
+            # Collect results from per-worker eval queues
+            for i in range(active_workers):
+                worker_res_list = self._actor_eval_res_queues[i].get(timeout=None)
+                result = worker_res_list[0]
+                results.append(result)
+                print(f"Eval {result.run_id+1}/{num_runs} (seed={result.seed}): reward={result.episode_reward:.2f}")
+                    
         return results
     
-    def stop(self) -> None:
-        """Shut down the process pool."""
-        print("Stopping process pool...")
-        
-        if self.pool is not None:
-            self.pool.close()
-            self.pool.join()
-            self.pool = None
-        
-        self.shared_model_state = None
-        self.policy_kwargs = None
-        print("Process pool stopped")
+    def start_collection(self):
+        """
+        Send collect command to all workers to start/continue episode collection.
+        Workers will run one episode each and stream chunks to the shared queue.
+        """
+        for wid in range(self.num_workers):
+            self._actor_cmd_queues[wid].put({"type": "collect"})
+            self._active_workers.add(wid)
     
-    def __del__(self):
-        """Cleanup on deletion."""
-        self.stop()
+    def collect_rollouts(self, target_transitions):
+        """
+        Collect exactly target_transitions from the shared queue.
+        
+        Workers stream chunks continuously. This method drains the queue until we have
+        exactly the requested number of transitions. Excess transitions from the last
+        chunk are buffered for the next call.
+        
+        Args:
+            target_transitions: Exact number of transitions to collect
+            
+        Returns:
+            List of RolloutChunk objects with exactly target_transitions total
+        """
+        chunks = []
+        total_steps = 0
+        
+        # First, use any buffered chunk from previous call
+        if self._pending_chunk is not None:
+            chunk = self._pending_chunk
+            self._pending_chunk = None
+            
+            steps = len(chunk.transitions)
+            if total_steps + steps <= target_transitions:
+                # Use entire chunk
+                total_steps += steps
+                chunks.append(chunk)
+            else:
+                # Split chunk: take what we need, buffer the rest
+                needed = target_transitions - total_steps
+                taken_chunk = RolloutChunk(
+                    worker_id=chunk.worker_id,
+                    transitions=chunk.transitions[:needed],
+                    is_terminal=False,  # Split chunks are never terminal
+                    episode_reward=0.0,
+                    episode_length=0,
+                    final_sim_result={},
+                )
+                leftover_chunk = RolloutChunk(
+                    worker_id=chunk.worker_id,
+                    transitions=chunk.transitions[needed:],
+                    is_terminal=chunk.is_terminal,
+                    episode_reward=chunk.episode_reward,
+                    episode_length=chunk.episode_length,
+                    final_sim_result=chunk.final_sim_result,
+                )
+                chunks.append(taken_chunk)
+                self._pending_chunk = leftover_chunk
+                total_steps = target_transitions
+        
+        # Collect from queue until we have enough
+        while total_steps < target_transitions:
+            chunk = self._shared_res_queue.get(timeout=None)
+            
+            # If this worker finished its episode, restart it
+            if chunk.is_terminal:
+                self._actor_cmd_queues[chunk.worker_id].put({"type": "collect"})
+            
+            steps = len(chunk.transitions)
+            if total_steps + steps <= target_transitions:
+                # Use entire chunk
+                total_steps += steps
+                chunks.append(chunk)
+            else:
+                # Split chunk: take what we need, buffer the rest
+                needed = target_transitions - total_steps
+                taken_chunk = RolloutChunk(
+                    worker_id=chunk.worker_id,
+                    transitions=chunk.transitions[:needed],
+                    is_terminal=False,  # Split chunks are never terminal
+                    episode_reward=0.0,
+                    episode_length=0,
+                    final_sim_result={},
+                )
+                leftover_chunk = RolloutChunk(
+                    worker_id=chunk.worker_id,
+                    transitions=chunk.transitions[needed:],
+                    is_terminal=chunk.is_terminal,
+                    episode_reward=chunk.episode_reward,
+                    episode_length=chunk.episode_length,
+                    final_sim_result=chunk.final_sim_result,
+                )
+                chunks.append(taken_chunk)
+                self._pending_chunk = leftover_chunk
+                total_steps = target_transitions
+        
+        print(f"Collected: {total_steps} steps from {len(chunks)} chunks")
+        return chunks
+    
+    def stop(self):
+        """
+        Shut down workers and clean up resources.
+        """
+        print("Stopping workers...")
+        for q in self._actor_cmd_queues:
+            q.put({"type": "stop"})
+        for p in self._actor_procs:
+            p.join(timeout=5.0)
+        
+        self._actor_cmd_queues.clear()
+        self._actor_eval_res_queues.clear()
+        self._actor_procs.clear()
+        self._active_workers.clear()
+        self._shared_res_queue = None
+        self._pending_chunk = None
+        self.shared_model_state = None
+        print("Workers stopped.")
+
+

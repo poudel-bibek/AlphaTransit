@@ -1515,7 +1515,6 @@ class TransitEnv(gym.Env):
             print(f"Added completed route {self.current_route_index} to completed routes")
             
             # 2. Build world needs to happen every step.
-            # i.e., add the network and the classified demand (bus vs car).
             self.world = self.build_world(self.config.get("network"))
             
             # 3. spawn necessary buses, set routes, and handle route completion
