@@ -211,6 +211,7 @@ def train(config: Dict[str, Any]) -> None:
             steps_elapsed = min(steps_elapsed + batch_steps, max_steps)
             
             # 3. Perform PPO update (we collected exactly update_frequency transitions)
+            # There may be an overshoot of up to (steps_per_worker - 1) transitions.
             update_count += 1
             perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
             policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")

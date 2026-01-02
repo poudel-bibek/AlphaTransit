@@ -341,9 +341,6 @@ class ParallelEnvManager:
         
         # Track active workers (those that have been sent "collect" but not yet finished episode)
         self._active_workers = set()
-        
-        # Buffer for excess transitions from previous collection
-        self._pending_chunk = None
     
     def start(self, model, policy_kwargs):
         """
@@ -456,89 +453,32 @@ class ParallelEnvManager:
     
     def collect_rollouts(self, target_transitions):
         """
-        Collect exactly target_transitions from the shared queue.
+        Collect rollout chunks from the shared queue until target_transitions reached.
         
         Workers stream chunks continuously. This method drains the queue until we have
-        exactly the requested number of transitions. Excess transitions from the last
-        chunk are buffered for the next call.
+        enough transitions for a PPO update. Workers that finish their episodes are
+        automatically restarted.
         
         Args:
-            target_transitions: Exact number of transitions to collect
+            target_transitions: Number of transitions to collect before returning
             
         Returns:
-            List of RolloutChunk objects with exactly target_transitions total
+            List of RolloutChunk objects, total transitions >= target_transitions
         """
         chunks = []
         total_steps = 0
         
-        # First, use any buffered chunk from previous call
-        if self._pending_chunk is not None:
-            chunk = self._pending_chunk
-            self._pending_chunk = None
+        while total_steps < target_transitions:
+            # Block until we get a chunk
+            chunk = self._shared_res_queue.get(timeout=None)
             
             steps = len(chunk.transitions)
-            if total_steps + steps <= target_transitions:
-                # Use entire chunk
-                total_steps += steps
-                chunks.append(chunk)
-            else:
-                # Split chunk: take what we need, buffer the rest
-                needed = target_transitions - total_steps
-                taken_chunk = RolloutChunk(
-                    worker_id=chunk.worker_id,
-                    transitions=chunk.transitions[:needed],
-                    is_terminal=False,  # Split chunks are never terminal
-                    episode_reward=0.0,
-                    episode_length=0,
-                    final_sim_result={},
-                )
-                leftover_chunk = RolloutChunk(
-                    worker_id=chunk.worker_id,
-                    transitions=chunk.transitions[needed:],
-                    is_terminal=chunk.is_terminal,
-                    episode_reward=chunk.episode_reward,
-                    episode_length=chunk.episode_length,
-                    final_sim_result=chunk.final_sim_result,
-                )
-                chunks.append(taken_chunk)
-                self._pending_chunk = leftover_chunk
-                total_steps = target_transitions
-        
-        # Collect from queue until we have enough
-        while total_steps < target_transitions:
-            chunk = self._shared_res_queue.get(timeout=None)
+            total_steps += steps
+            chunks.append(chunk)
             
             # If this worker finished its episode, restart it
             if chunk.is_terminal:
                 self._actor_cmd_queues[chunk.worker_id].put({"type": "collect"})
-            
-            steps = len(chunk.transitions)
-            if total_steps + steps <= target_transitions:
-                # Use entire chunk
-                total_steps += steps
-                chunks.append(chunk)
-            else:
-                # Split chunk: take what we need, buffer the rest
-                needed = target_transitions - total_steps
-                taken_chunk = RolloutChunk(
-                    worker_id=chunk.worker_id,
-                    transitions=chunk.transitions[:needed],
-                    is_terminal=False,  # Split chunks are never terminal
-                    episode_reward=0.0,
-                    episode_length=0,
-                    final_sim_result={},
-                )
-                leftover_chunk = RolloutChunk(
-                    worker_id=chunk.worker_id,
-                    transitions=chunk.transitions[needed:],
-                    is_terminal=chunk.is_terminal,
-                    episode_reward=chunk.episode_reward,
-                    episode_length=chunk.episode_length,
-                    final_sim_result=chunk.final_sim_result,
-                )
-                chunks.append(taken_chunk)
-                self._pending_chunk = leftover_chunk
-                total_steps = target_transitions
         
         print(f"Collected: {total_steps} steps from {len(chunks)} chunks")
         return chunks
@@ -558,7 +498,6 @@ class ParallelEnvManager:
         self._actor_procs.clear()
         self._active_workers.clear()
         self._shared_res_queue = None
-        self._pending_chunk = None
         self.shared_model_state = None
         print("Workers stopped.")
 
