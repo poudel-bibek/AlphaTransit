@@ -371,7 +371,7 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
                     current_update = shared_update_counter.value
                     if current_update - last_reload_update >= weight_refresh_interval:
                         reward_scale = max(shared_reward_scale.value, 1e-4)  # Clamp to prevent blow-up
-                        # print(f"[DEBUG] Worker {worker_id}: Mid-episode weight refresh (update {last_reload_update} -> {current_update}), reward_scale={reward_scale:.4f}")
+                        print(f"  Worker {worker_id}: weight refresh @ update {current_update}")
                         model.load_state_dict(shared_model_state)
                         model.eval()
                         last_reload_update = current_update
