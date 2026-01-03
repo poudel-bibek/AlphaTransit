@@ -5,6 +5,50 @@ from torch_geometric.data import Batch
 from torch.utils.data import Dataset
 
 
+class RunningMeanStd:
+    """
+    Welford's online algorithm for computing running mean and variance.
+    Reference: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
+    """
+    def __init__(self, epsilon: float = 1e-4):
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = epsilon
+
+    def update(self, x: np.ndarray) -> None:
+        """Update running statistics with a batch of values."""
+        x = np.asarray(x, dtype=np.float64)
+        batch_mean = np.mean(x)
+        batch_var = np.var(x)
+        batch_count = x.size
+        self._update_from_moments(batch_mean, batch_var, batch_count)
+
+    def _update_from_moments(self, batch_mean: float, batch_var: float, batch_count: int) -> None:
+        """Update running stats using batch moments (parallel-friendly Welford)."""
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+        
+        new_mean = self.mean + delta * batch_count / tot_count
+        
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + delta**2 * self.count * batch_count / tot_count
+        new_var = M2 / tot_count
+        
+        self.mean = new_mean
+        self.var = new_var
+        self.count = tot_count
+
+    @property
+    def std(self) -> float:
+        """Return running standard deviation."""
+        return np.sqrt(self.var + 1e-8)
+    
+    def normalize(self, x: np.ndarray) -> np.ndarray:
+        """Normalize by dividing by running std (preserves sign, only scales magnitude)."""
+        return x / self.std
+
+
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Collate samples into mini-batch for PPO
@@ -44,6 +88,8 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     # print(f"\nValues: shape: {values.shape}, value: {values}, type: {type(values)}")
     # print(f"\nValid mask: shape: {batched_valid_mask.shape}, value: {batched_valid_mask}, type: {type(batched_valid_mask)}")
 
+    print(f"[DEBUG] collate_fn: batched_obs.x={tuple(batched_obs.x.shape)}, actions={tuple(actions.shape)}, log_probs={tuple(log_probs.shape)}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}]")
+
     return {
         'obs': batched_obs,
         'actions': actions,
@@ -59,22 +105,19 @@ class Memory:
     def __init__(self) -> None:
         """
         Initialize empty rollout buffers.
-        Note: We only store raw_rewards. Reward normalization is NOT used
-        as it violates PPO's stationary reward assumption.
-        """
-        self.obs: List[Any] = []
-        self.actions: List[Any] = []
-        self.log_probs: List[float] = []
-        self.raw_rewards: List[float] = []
-        self.values: List[float] = []
-        self.dones: List[bool] = []  # True for terminated episodes only
-        self.valid_mask: List[torch.BoolTensor] = []
         
-        # Bootstrap values for each episode (if truncated)
-        self.bootstrap_values: List[float] = []  # One per episode
-        self.episode_boundaries: List[int] = []  # Indices where episodes end
-        self.advantages = None # Will be added during GAE
-        self.returns = None
+        Advantages/returns are precomputed per-chunk in workers (worker-side GAE)
+        and normalized in the learner before being stored here.
+        """
+        self.obs = []
+        self.actions = []
+        self.log_probs = []
+        self.raw_rewards = []
+        self.values = []
+        self.dones = []  # True for terminated episodes only
+        self.valid_mask = []
+        self.advantages = [] # Precomputed by workers (worker-side GAE)
+        self.returns = []
 
     def __len__(self) -> int:
         return len(self.obs)
@@ -90,13 +133,6 @@ class Memory:
         self.log_probs.append(transition['log_prob'])
         self.dones.append(transition['terminated'])  # Only terminated!
         self.valid_mask.append(transition['valid_mask'])
-        
-    def mark_episode_end(self, bootstrap_value: float) -> None:
-        """
-        Mark the end of an episode and store bootstrap value if needed.
-        """
-        self.episode_boundaries.append(len(self.obs) - 1) # 0-indexed
-        self.bootstrap_values.append(bootstrap_value)
 
     def clear(self) -> None:
         """
@@ -109,15 +145,13 @@ class Memory:
         self.log_probs.clear()
         self.dones.clear()
         self.valid_mask.clear()
-        self.bootstrap_values.clear()
-        self.episode_boundaries.clear()
-        self.advantages = None  # Will be added during GAE
-        self.returns = None
+        self.advantages = []
+        self.returns = []
 
 class DatasetClass(Dataset):
     """
     Dataset wrapper for PPO experience replay.
-    Handles rollout data with computed advantages.
+    Handles rollout data with computed advantages/returns.
     """
     def __init__(self, memory: Memory) -> None:
         self.memory = memory

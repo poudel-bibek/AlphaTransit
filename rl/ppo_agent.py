@@ -20,41 +20,31 @@ class PPOAgent:
         self.device = kwargs.get('device')
 
         # PPO hyperparameters
+        # Note: gamma and gae_lambda are handled by workers (worker-side GAE)
         self.clip_frac = kwargs.get('clip_frac')
         self.K_epochs = kwargs.get('K_epochs')
         self.batch_size = kwargs.get('batch_size')
         self.value_loss_coef = kwargs.get('value_loss_coef')
         self.entropy_coef = kwargs.get('entropy_coef')
         self.max_grad_norm = kwargs.get('max_grad_norm')
-        self.gae_lambda = kwargs.get('gae_lambda')
-        self.gamma = kwargs.get('gamma')
         self.vf_clip_param = kwargs.get('vf_clip_param')
-        
-        # Learning rate settings
         self.lr = kwargs.get('lr')
         self.anneal_lr = kwargs.get('anneal_lr')
-
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
         self.memory = Memory()
 
     def store_transition(self, transition: Dict[str, Any]) -> None:
-        """
-        Store the transition in rollout memory.
-        
-        Note: We do NOT normalize rewards here. Reward normalization violates PPO's
-        assumption of a stationary reward function and can hurt performance.
-        Instead, we only normalize advantages (per mini-batch) during the update.
-        See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
-        """
+        """Store the transition in rollout memory."""
         self.memory.store(transition)
 
     def update(self) -> Dict[str, float]:
         """
         Perform PPO update using collected rollouts.
-        Returns a Dict of training stats
-        - Includes GAE
-        - For the choice between KL Divergence vs. Clipping, we use clipping.
+        Returns a Dict of training stats.
+        
+        Expects advantages/returns to be precomputed by workers (worker-side GAE).
+        For the choice between KL Divergence vs. Clipping, we use clipping.
         """
         # IMPORTANT: Keep model in eval mode during updates!
         # Rollouts compute log_prob_old with dropout OFF (eval mode).
@@ -62,14 +52,23 @@ class PPOAgent:
         # even with identical weights, breaking the PPO ratio assumption.
         # PPO regularization comes from: entropy bonus, clipping, and value clipping.
         self.model.eval()
+        print(f"[DEBUG] PPO Update: Starting with {len(self.memory)} transitions, K_epochs={self.K_epochs}, batch_size={self.batch_size}")
 
-        self.compute_gae()
+        # Validate that workers have precomputed advantages/returns
+        if len(self.memory.advantages) != len(self.memory) or len(self.memory.returns) != len(self.memory):
+            raise ValueError(
+                f"Advantages/returns must be precomputed by workers. "
+                f"Got {len(self.memory.advantages)} advantages and {len(self.memory.returns)} returns "
+                f"for {len(self.memory)} transitions."
+            )
 
         # Normalize advantages ONCE per rollout (before mini-batching), which is standard practice.
         # This reduces variance compared to per-mini-batch normalization.
-        if self.memory.advantages is not None and len(self.memory.advantages) > 0:
+        if len(self.memory.advantages) > 0:
             adv = torch.tensor(self.memory.advantages, dtype=torch.float32)
+            print(f"[DEBUG] Adv normalization: raw adv shape={adv.shape}, mean={adv.mean():.4f}, std={adv.std():.4f}, min={adv.min():.4f}, max={adv.max():.4f}")
             adv = (adv - adv.mean()) / (adv.std(correction=0) + 1e-8)
+            print(f"[DEBUG] Adv normalization: normalized mean={adv.mean():.6f}, std={adv.std():.4f}")
             self.memory.advantages = adv.numpy()
         
         dataset = DatasetClass(self.memory)
@@ -92,6 +91,8 @@ class PPOAgent:
                 returns = batch_data['returns'].to(self.device)
                 valid_mask = batch_data['valid_mask'].to(self.device)
                 
+                print(f"[DEBUG] Mini-batch shapes: obs.x={tuple(obs.x.shape)}, obs.edge_index={tuple(obs.edge_index.shape)}, actions={tuple(actions.shape)}, advantages={tuple(advantages.shape)}, returns={tuple(returns.shape)}")
+                
                 # print({
                 #     "x": tuple(obs.x.shape),
                 #     "edge_index": tuple(obs.edge_index.shape),
@@ -112,12 +113,14 @@ class PPOAgent:
 
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
+                print(f"[DEBUG] Ratio stats: shape={tuple(ratio.shape)}, mean={ratio.mean():.4f}, min={ratio.min():.4f}, max={ratio.max():.4f}, old_lp_mean={old_log_probs.mean():.4f}, new_lp_mean={log_probs.mean():.4f}")
                 surrogate_loss1 = -advantages * ratio
                 surrogate_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_frac, 1 + self.clip_frac)
                 surrogate_loss = torch.max(surrogate_loss1, surrogate_loss2).mean()
                 
                 # Value loss (clipped)
-                values_clipped = batch_data['values'].to(self.device) + torch.clamp(values - batch_data['values'].to(self.device), -self.vf_clip_param, self.vf_clip_param)
+                old_values = batch_data['values'].to(self.device)
+                values_clipped = old_values + torch.clamp(values - old_values, -self.vf_clip_param, self.vf_clip_param)
                 value_loss_unclipped = (values - returns) ** 2
                 value_loss_clipped = (values_clipped - returns) ** 2
 
@@ -150,10 +153,10 @@ class PPOAgent:
         # Some explicit memory management
         gc.collect() # Force garbage collection to reclaim memory
         # After the K_epochs loop ends
-        del dataloader
         del dataset
 
         # These are average losses over the batch.
+        print(f"[DEBUG] PPO Update: Completed. pg_loss={np.mean(pg_losses):.4f}, value_loss={np.mean(value_losses):.4f}, approx_kl={np.mean(approx_kls):.4f}")
         return {
             'pg_loss': np.mean(pg_losses),
             'value_loss': np.mean(value_losses),
@@ -166,26 +169,27 @@ class PPOAgent:
     def compute_gae(self) -> None:
         """
         Generalized Advantage Estimation
+        NOTE: THIS IS NOT USED RIGHT NOW. 
+            - GAE calculation has moved to worker side. 
+            - This would have been useful in learner side GAE.
+        
         The setup has:
-        - a single environment
-        - episode truncation based on certain conditions
         - a buffer that collects samples till update() is called after a threshold size.
-        However, advantage calculations cannot cross episode boundaries i.e., we must reset calculation at the start of each episode.
+        - rollout truncation at chunk boundaries if enabled.
+        However, advantage calculations cannot cross boundaries; we must reset at each episode/chunk end.
         Hence we make use of: 
-        - episode_boundaries: indices where episodes end
-        - bootstrap_values: values of the last state of each episode
+        - episode_boundaries: indices where episodes/chunks end
+        - bootstrap_values: values of the last state of each episode/chunk
 
         Note (parallel rollouts):
-        - Multiple worker episodes are appended contiguously to a single Memory.
-        - We record an episode boundary after each EpisodeResult.
-        - GAE iterates per boundary, so advantages never bleed across episodes.
-        - With no truncation, dones mark only true terminals and bootstrap_value=0.0.
+        - This is a fallback path when worker-side GAE is not used.
+        - episode_boundaries/bootstrap_values must be populated for each chunk/episode end.
         """
 
         with torch.no_grad():
             # Get potentially multi-episode data.
             # Use RAW rewards - reward normalization violates PPO assumptions
-            # Advantages are normalized per mini-batch instead (line 112)
+            # Advantages are normalized once per rollout instead (see update() method)
             all_rewards = torch.tensor(self.memory.raw_rewards, dtype=torch.float32)
             all_values = torch.tensor(self.memory.values, dtype=torch.float32)
             all_dones = torch.tensor(self.memory.dones, dtype=torch.float32)

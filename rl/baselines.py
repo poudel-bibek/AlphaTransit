@@ -73,7 +73,7 @@ def create_main_save_dir(config):
     os.makedirs(main_save_dir, exist_ok=True)
     # Baselines have no updates; standardize on (update='baseline', steps=0)
     eval_root = ensure_eval_step_update_dir(main_save_dir, update="baseline", steps=0, folder_name="eval_results")
-    print(f"Baseline results will be saved to: {eval_root}")
+    # print(f"Baseline results will be saved to: {eval_root}")
     return main_save_dir, eval_root
 
 def create_initial_network_plot(env, config, img_dir):
@@ -87,7 +87,7 @@ def create_initial_network_plot(env, config, img_dir):
     env.load_demand_for_plotting(temp_world)
     output_path = os.path.join(img_dir, f"00_{config.get('network')}_demand_network.png")
     plot_network_and_demand(temp_world, output_path)
-    print(f"Initial network plot saved to: {output_path}")
+    # print(f"Initial network plot saved to: {output_path}")
 
 def create_path_visualization(env, config, routes, img_dir):
     """

@@ -387,7 +387,7 @@ class TransitEnv(gym.Env):
         """
         # Use cached DataFrame instead of reading CSV every step
         demand_df = self.demand_df_cached
-        print(f"Loading {len(demand_df)} demand records...")  
+        # print(f"Loading {len(demand_df)} demand records...")  
         
         total_demand = 0 
         bus_demand = 0 
@@ -438,7 +438,7 @@ class TransitEnv(gym.Env):
         # Not used right now for the sake of data standardization.
         # elif method == "flow":
         #     for _, row in demand_df.iterrows():
-        print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
+        # print(f"Total demand: {total_demand}, Bus demand: {bus_demand}, Car demand: {car_demand}")
         return world
 
     def _is_od_served(self, orig: str, dest: str) -> bool:
@@ -543,7 +543,7 @@ class TransitEnv(gym.Env):
         # Edge index and edge features dont dynamically change. Already set in __init__.
         # Route progress for self.NUM_ROUTES (including completed and current route)
         route_progress = np.zeros(self.NUM_ROUTES, dtype=np.float32)
-        print(f"All routes: {self.all_routes}, length: {len(self.all_routes)}\n")
+        # print(f"All routes: {self.all_routes}, length: {len(self.all_routes)}\n")
         if self.current_route_index < self.NUM_ROUTES:  # Only if there's a current route being built
             route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
         
@@ -777,7 +777,7 @@ class TransitEnv(gym.Env):
 
             # Compute service frequency for this route
             service_frequency_route = self._get_service_frequency(route, routes_to_simulate)
-            print(f"Service frequency for route {route_idx}: {service_frequency_route}")
+            # print(f"Service frequency for route {route_idx}: {service_frequency_route}")
 
             # Set the bus route - this will create SERVICE_FREQUENCY number of buses:
             buses = bus.set_bus_route(
@@ -1195,57 +1195,57 @@ class TransitEnv(gym.Env):
             'node_coverage': node_coverage_pct,                                   # % of network nodes covered by any route
         }
 
-        if print_metrics:
-            print("\n" + "="*70)
-            print("SIMULATION METRICS")
-            print("="*70)
-            
-            # Route Information
-            print("\nROUTE INFORMATION:")
-            print(f"   All Routes:                {self.all_routes}")
-            print(f"   Current Route:               {' → '.join(current_route_str)}")
-            print(f"   Route Length:             {metrics['route_length']/1000:.2f} km ({len(self.current_route)} nodes)")
-            print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.2f} km/h)")
-            print(f"   Bus Utilization:          {metrics['bus_utilization']:.2f}%")
-            print(f"   Fleet Size:               {metrics['fleet_size']} buses")
-            
-            # Passenger Counts
-            print("\nPASSENGER COUNTS:")
-            print(f"   Wanting to Onboard:       {metrics['wanting_to_onboard']:,} passengers")
-            print(f"   Total Onboarded:          {metrics['total_onboarded_count']:,} passengers")
-            print(f"   Completed Trips:          {metrics['completed_passengers']:,} passengers")
-            print(f"   Onboard at End:           {metrics['ongoing_passengers']:,} passengers")
-            print(f"   Still Waiting at End:     {metrics['sim_end_waiting_passengers_count']:,} passengers")
-            
-            # Time Metrics - Aggregated
-            print("\nAGGREGATE TIME METRICS:")
-            print(f"   Simulation Duration:      {until_t:,} seconds")
-            print(f"   Total Wait Time (completed):   {total_wait_time_minutes:.2f} minutes")
-            print(f"   Total Wait Time (ongoing):     {ongoing_wait_time_minutes:.2f} minutes")
-            print(f"   │  └─ Still Waiting:           {wait_time_sim_end_minutes:.2f} minutes")
-            print(f"   Total Movement Time (completed): {movement_time_minutes:.2f} minutes")
-            print(f"   Total Movement Time (ongoing):   {ongoing_movement_time_minutes:.2f} minutes")
-            print(f"   Total Travel Time (completed):   {total_travel_time_minutes:.2f} minutes")
-            print(f"   Total Travel Time (ongoing):     {ongoing_travel_time_minutes:.2f} minutes")
-            
-            # Time Metrics - Per Passenger Averages
-            print("\nPER-PASSENGER AVERAGES:")
-            print(f"   Average Wait Time (completed):     {avg_wait_time_minutes:.2f} minutes")
-            print(f"   Average Wait Time (ongoing riders): {avg_wait_time_minutes_ongoing:.2f} minutes")
-            print(f"   Average Movement Time (completed): {avg_movement_time_minutes:.2f} minutes")
-            print(f"   Average Movement Time (ongoing riders): {avg_movement_time_minutes_ongoing:.2f} minutes")
-            print(f"   Average Travel Time (completed):   {avg_travel_time_minutes:.2f} minutes")
-            print(f"   Average Travel Time (ongoing riders): {avg_travel_time_minutes_ongoing:.2f} minutes")
-            
-            # Performance Summary
-            print("\nPERFORMANCE SUMMARY:")
-            print(f"   Passengers Served:        {service_rate_pct:.2f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
-            print(f"   Completion Success:       {completed_rate_pct:.2f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
-            print(f"   Transfer Rate:            {metrics['transfer_rate']:.2f}% ")
-            print(f"   Node Coverage:            {node_coverage_pct:.2f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
-            print(f"   Route Efficiency:         {route_efficiency_passengers_per_km:.2f} passengers/km")
-            
-            print("="*70)
+        # if print_metrics:
+        #     print("\n" + "="*70)
+        #     print("SIMULATION METRICS")
+        #     print("="*70)
+        #     
+        #     # Route Information
+        #     print("\nROUTE INFORMATION:")
+        #     print(f"   All Routes:                {self.all_routes}")
+        #     print(f"   Current Route:               {' → '.join(current_route_str)}")
+        #     print(f"   Route Length:             {metrics['route_length']/1000:.2f} km ({len(self.current_route)} nodes)")
+        #     print(f"   Average Bus Speed:        {metrics['average_bus_speed']:.2f} m/s ({metrics['average_bus_speed']*3.6:.2f} km/h)")
+        #     print(f"   Bus Utilization:          {metrics['bus_utilization']:.2f}%")
+        #     print(f"   Fleet Size:               {metrics['fleet_size']} buses")
+        #     
+        #     # Passenger Counts
+        #     print("\nPASSENGER COUNTS:")
+        #     print(f"   Wanting to Onboard:       {metrics['wanting_to_onboard']:,} passengers")
+        #     print(f"   Total Onboarded:          {metrics['total_onboarded_count']:,} passengers")
+        #     print(f"   Completed Trips:          {metrics['completed_passengers']:,} passengers")
+        #     print(f"   Onboard at End:           {metrics['ongoing_passengers']:,} passengers")
+        #     print(f"   Still Waiting at End:     {metrics['sim_end_waiting_passengers_count']:,} passengers")
+        #     
+        #     # Time Metrics - Aggregated
+        #     print("\nAGGREGATE TIME METRICS:")
+        #     print(f"   Simulation Duration:      {until_t:,} seconds")
+        #     print(f"   Total Wait Time (completed):   {total_wait_time_minutes:.2f} minutes")
+        #     print(f"   Total Wait Time (ongoing):     {ongoing_wait_time_minutes:.2f} minutes")
+        #     print(f"   │  └─ Still Waiting:           {wait_time_sim_end_minutes:.2f} minutes")
+        #     print(f"   Total Movement Time (completed): {movement_time_minutes:.2f} minutes")
+        #     print(f"   Total Movement Time (ongoing):   {ongoing_movement_time_minutes:.2f} minutes")
+        #     print(f"   Total Travel Time (completed):   {total_travel_time_minutes:.2f} minutes")
+        #     print(f"   Total Travel Time (ongoing):     {ongoing_travel_time_minutes:.2f} minutes")
+        #     
+        #     # Time Metrics - Per Passenger Averages
+        #     print("\nPER-PASSENGER AVERAGES:")
+        #     print(f"   Average Wait Time (completed):     {avg_wait_time_minutes:.2f} minutes")
+        #     print(f"   Average Wait Time (ongoing riders): {avg_wait_time_minutes_ongoing:.2f} minutes")
+        #     print(f"   Average Movement Time (completed): {avg_movement_time_minutes:.2f} minutes")
+        #     print(f"   Average Movement Time (ongoing riders): {avg_movement_time_minutes_ongoing:.2f} minutes")
+        #     print(f"   Average Travel Time (completed):   {avg_travel_time_minutes:.2f} minutes")
+        #     print(f"   Average Travel Time (ongoing riders): {avg_travel_time_minutes_ongoing:.2f} minutes")
+        #     
+        #     # Performance Summary
+        #     print("\nPERFORMANCE SUMMARY:")
+        #     print(f"   Passengers Served:        {service_rate_pct:.2f}% ({metrics['total_onboarded_count']} / {metrics['wanting_to_onboard']})")
+        #     print(f"   Completion Success:       {completed_rate_pct:.2f}% ({metrics['completed_passengers']} / {metrics['wanting_to_onboard']})")
+        #     print(f"   Transfer Rate:            {metrics['transfer_rate']:.2f}% ")
+        #     print(f"   Node Coverage:            {node_coverage_pct:.2f}% ({len(all_routes_nodes)} / {self.n_nodes} nodes)")
+        #     print(f"   Route Efficiency:         {route_efficiency_passengers_per_km:.2f} passengers/km")
+        #     
+        #     print("="*70)
 
         return metrics
     
@@ -1259,18 +1259,18 @@ class TransitEnv(gym.Env):
         """
 
         # Distribution Statistics moved from print_metrics:
-        print("\n DISTRIBUTION STATISTICS:")
-        if len(metrics['waiting_time_dstr']) > 0:
-            wait_times = np.array(metrics['waiting_time_dstr'])
-            print(f"   Wait Times (n={len(wait_times)}):  min={wait_times.min():.2f}s, max={wait_times.max():.2f}s, mean={wait_times.mean():.2f}s, std={wait_times.std():.2f}s")
-        
-        if len(metrics['movement_time_dstr']) > 0:
-            movement_times = np.array(metrics['movement_time_dstr'])
-            print(f"   Movement Times (n={len(movement_times)}): min={movement_times.min():.2f}s, max={movement_times.max():.2f}s, mean={movement_times.mean():.2f}s, std={movement_times.std():.2f}s")
-        
-        if len(metrics['travel_time_dstr']) > 0:
-            travel_times = np.array(metrics['travel_time_dstr'])
-            print(f"   Travel Times (n={len(travel_times)}):   min={travel_times.min():.2f}s, max={travel_times.max():.2f}s, mean={travel_times.mean():.2f}s, std={travel_times.std():.2f}s")
+        # print("\n DISTRIBUTION STATISTICS:")
+        # if len(metrics['waiting_time_dstr']) > 0:
+        #     wait_times = np.array(metrics['waiting_time_dstr'])
+        #     print(f"   Wait Times (n={len(wait_times)}):  min={wait_times.min():.2f}s, max={wait_times.max():.2f}s, mean={wait_times.mean():.2f}s, std={wait_times.std():.2f}s")
+        # 
+        # if len(metrics['movement_time_dstr']) > 0:
+        #     movement_times = np.array(metrics['movement_time_dstr'])
+        #     print(f"   Movement Times (n={len(movement_times)}): min={movement_times.min():.2f}s, max={movement_times.max():.2f}s, mean={movement_times.mean():.2f}s, std={movement_times.std():.2f}s")
+        # 
+        # if len(metrics['travel_time_dstr']) > 0:
+        #     travel_times = np.array(metrics['travel_time_dstr'])
+        #     print(f"   Travel Times (n={len(travel_times)}):   min={travel_times.min():.2f}s, max={travel_times.max():.2f}s, mean={travel_times.mean():.2f}s, std={travel_times.std():.2f}s")
         
         pass
 
@@ -1363,8 +1363,6 @@ class TransitEnv(gym.Env):
                 - TODO: For invalid action: Not done for now (the probability is very low)
 
         ---------
-        Note: Reward normalization is NOT used as it violates PPO's stationary reward assumption.
-        Only per-batch advantage normalization is applied during PPO updates.
         See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
         ---------
         Potential pitfalls:
@@ -1410,13 +1408,13 @@ class TransitEnv(gym.Env):
             overlap_ratio = sim_result['route_overlap_ratio']
             incremental_reward = (BETA_0 * pot_norm) + (BETA_1 * overlap_ratio)
 
-            print(f"Incremental reward: {incremental_reward}")
-            print(f"   Demand coverage potential: {BETA_0 * pot_norm:.2f}")
-            print(f"   Overlap: {BETA_1 * overlap_ratio:.2f}")
+            # print(f"Incremental reward: {incremental_reward}")
+            # print(f"   Demand coverage potential: {BETA_0 * pot_norm:.2f}")
+            # print(f"   Overlap: {BETA_1 * overlap_ratio:.2f}")
 
             if is_forced_end:
                 incremental_reward += BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH))
-                print(f"   Forced end: {BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)):.2f}")
+                # print(f"   Forced end: {BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)):.2f}")
 
         # For completed routes, use actual metrics from simulation
         else: 
@@ -1436,12 +1434,12 @@ class TransitEnv(gym.Env):
                 BETA_6 * overlap_ratio 
             )
             
-            print(f"Final reward: {final_reward:.2f}")
-            print("Components:")
-            print(f"   Demand coverage potential: {BETA_3 * pot_norm:.2f}")
-            print(f"   Service rate: {BETA_4 * service_norm:.2f}")
-            print(f"   Travel time: {BETA_5 * avg_travel_norm:.2f}")
-            print(f"   Overlap: {BETA_6 * overlap_ratio:.2f}")
+            # print(f"Final reward: {final_reward:.2f}")
+            # print("Components:")
+            # print(f"   Demand coverage potential: {BETA_3 * pot_norm:.2f}")
+            # print(f"   Service rate: {BETA_4 * service_norm:.2f}")
+            # print(f"   Travel time: {BETA_5 * avg_travel_norm:.2f}")
+            # print(f"   Overlap: {BETA_6 * overlap_ratio:.2f}")
             
         return incremental_reward + final_reward
 
@@ -1459,11 +1457,11 @@ class TransitEnv(gym.Env):
         """
         # Special case: When valid actions are empty, force the current route to end.
         if action == self.NO_VALID_ACTION:
-            print("No valid actions found. Forcing the current route to end.")
+            # print("No valid actions found. Forcing the current route to end.")
 
             # Add current route to all_routes (optionally make it follow the MIN_ROUTE_LENGTH requirement)
             self.all_routes.append(self.current_route)
-            print(f"Added forced-end route {self.current_route_index} to completed routes")
+            # print(f"Added forced-end route {self.current_route_index} to completed routes")
 
             # Skip the route extension and call the simulation directly.
             self.world = self.build_world(self.config.get("network"))
@@ -1484,9 +1482,9 @@ class TransitEnv(gym.Env):
             self.current_route_index += 1
             if self.current_route_index < self.NUM_ROUTES:
                 self.current_route = initialize_route(self)
-                print(f"Starting route {self.current_route_index}: {self.current_route}")
+                # print(f"Starting route {self.current_route_index}: {self.current_route}")
             else:
-                print("All routes processed!")
+                # print("All routes processed!")
                 terminated = True  # Episode is done when all routes are processed
 
             return self._get_state(), reward, terminated, None, sim_result # Truncation is not used.
@@ -1495,7 +1493,7 @@ class TransitEnv(gym.Env):
         # 1. Extend the current route
         action_node = self.idx_to_node[action]
         self.current_route = [str(node) for node in self.current_route] + [action_node]
-        print(f"Route {self.current_route_index} extended: {self.current_route}")
+        # print(f"Route {self.current_route_index} extended: {self.current_route}")
         is_route_end = len(self.current_route) >= self.MAX_ROUTE_LENGTH
         
         # initial metrics cannot be gotten before transit graph is built. But for transit graph to be built, world must exist.
@@ -1512,7 +1510,7 @@ class TransitEnv(gym.Env):
         if is_route_end: # Only simulate at route end.
 
             self.all_routes.append(self.current_route)
-            print(f"Added completed route {self.current_route_index} to completed routes")
+            # print(f"Added completed route {self.current_route_index} to completed routes")
             
             # 2. Build world needs to happen every step.
             self.world = self.build_world(self.config.get("network"))
@@ -1536,9 +1534,9 @@ class TransitEnv(gym.Env):
             self.current_route_index += 1
             if self.current_route_index < self.NUM_ROUTES:
                 self.current_route = initialize_route(self)
-                print(f"Starting route {self.current_route_index}: {self.current_route}")
+                # print(f"Starting route {self.current_route_index}: {self.current_route}")
             else:
-                print("All routes processed!")
+                # print("All routes processed!")
                 terminated = True  # Episode is done when all routes are processed
 
         return self._get_state(), reward, terminated, None, sim_result # Truncation is not used.

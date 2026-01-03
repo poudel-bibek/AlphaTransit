@@ -74,7 +74,7 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
 
     elif strategy == "random":
         choice = random.choice(choice_nodes)
-        print(f"Initializing route randomly at node: {choice}")
+        # print(f"Initializing route randomly at node: {choice}")
         return [choice]
 
     elif strategy == "highest_demand":
@@ -84,12 +84,12 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
         for _, row in demand_df_ranked.iterrows():
             candidate_node = row["orig"]
             if candidate_node in choice_nodes:
-                print(f"Initializing route at highest available demand node: {candidate_node}")
+                # print(f"Initializing route at highest available demand node: {candidate_node}")
                 return [candidate_node]
 
     elif strategy == "transit_center":
         center_node = env.transit_center_node
-        print(f"Initializing route at transit center node: {center_node}")
+        # print(f"Initializing route at transit center node: {center_node}")
         return [center_node]
 
 def normalize_coordinates(world):
@@ -133,17 +133,17 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
     steps_taken = max(current_route_length - 1, 0)
     active_route_progress = float(route_progress[self.current_route_index])
 
-    print(f"\n=== State Summary ===")
-    print(f"Current route (index {self.current_route_index}): {self.current_route}")
-    print(
-        "Steps taken / max: "
-        f"{steps_taken} / {self.MAX_ROUTE_LENGTH} "
-        f"(active route progress={active_route_progress:.3f})"
-    )
+    # print(f"\n=== State Summary ===")
+    # print(f"Current route (index {self.current_route_index}): {self.current_route}")
+    # print(
+    #     "Steps taken / max: "
+    #     f"{steps_taken} / {self.MAX_ROUTE_LENGTH} "
+    #     f"(active route progress={active_route_progress:.3f})"
+    # )
 
     rp_series = pd.Series(route_progress, name="normalized_length")
-    with pd.option_context('display.max_rows', None, 'display.width', 120):
-        print("\nRoute progress by route index:\n", rp_series.round(3))
+    # with pd.option_context('display.max_rows', None, 'display.width', 120):
+    #     print("\nRoute progress by route index:\n", rp_series.round(3))
 
     # Node features
     feature_names = [
@@ -163,16 +163,16 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
             )
 
     nf_df = pd.DataFrame(node_features, index=self.node_list, columns=feature_names)
-    with pd.option_context(
-        'display.max_rows', resolved_max_nodes,
-        'display.max_columns', len(feature_names),
-        'display.width', 120,
-    ):
-        print("\nNode features (sample):\n", nf_df.round(4))
+    # with pd.option_context(
+    #     'display.max_rows', resolved_max_nodes,
+    #     'display.max_columns', len(feature_names),
+    #     'display.width', 120,
+    # ):
+    #     print("\nNode features (sample):\n", nf_df.round(4))
 
     # Edges
     num_edges = edge_index.shape[1]
-    print(f"\nEdges: {num_edges}")
+    # print(f"\nEdges: {num_edges}")
     preview = min(resolved_max_edges, num_edges)
     edge_feature_dim = edge_features.shape[1]
     edge_feature_names = ["length_norm", "speed_norm"]
@@ -196,7 +196,7 @@ def pretty_print_state(self: Any, state: Dict[str, Any], max_nodes: Optional[int
         rows.append(row)
 
     ef_df = pd.DataFrame(rows)
-    print("Edge samples:\n", ef_df)
+    # print("Edge samples:\n", ef_df)
 
 def plot_network_and_demand(world, output_loc: str) -> None:
     """
@@ -575,4 +575,4 @@ def write_results_summary(aggregated: Dict[str, Any], num_runs: int, output_dir:
     output_path = os.path.join(output_dir, filename)
     with open(output_path, 'w') as f:
         json.dump(summary, f, indent=2)
-    print(f"Saved summary statistics to: {output_path}")
+    # print(f"Saved summary statistics to: {output_path}")
