@@ -88,7 +88,7 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     # print(f"\nValues: shape: {values.shape}, value: {values}, type: {type(values)}")
     # print(f"\nValid mask: shape: {batched_valid_mask.shape}, value: {batched_valid_mask}, type: {type(batched_valid_mask)}")
 
-    print(f"[DEBUG] collate_fn: batched_obs.x={tuple(batched_obs.x.shape)}, actions={tuple(actions.shape)}, log_probs={tuple(log_probs.shape)}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}]")
+    # print(f"[DEBUG] collate_fn: batched_obs.x={tuple(batched_obs.x.shape)}, actions={tuple(actions.shape)}, log_probs={tuple(log_probs.shape)}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}]")
 
     return {
         'obs': batched_obs,

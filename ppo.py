@@ -86,7 +86,7 @@ def train(config: Dict[str, Any]) -> None:
     """
     num_workers = config.get("num_workers")
     max_steps = config["max_steps"]
-    # print(f"Training started on network: {config['network']} with {num_workers} workers for {max_steps:,} steps")
+    print(f"Training started: network={config['network']}, workers={num_workers}, max_steps={max_steps:,}")
     
     # Reference environment for dimensions and visualization
     env = TransitEnv(config)
@@ -185,7 +185,7 @@ def train(config: Dict[str, Any]) -> None:
             # 2. Process chunks and add to memory
             # Advantages/returns are computed in workers using scaled rewards (worker-side normalization).
             batch_steps = 0
-            print(f"[DEBUG] Learner: Processing {len(chunks)} chunks into PPO memory...")
+            # print(f"[DEBUG] Learner: Processing {len(chunks)} chunks into PPO memory...")
             
             # Recover RAW returns from scaled returns to update running stats in raw units.
             # raw_return = scaled_return * reward_scale_used (since scaled_return = raw_return / scale)
@@ -198,7 +198,7 @@ def train(config: Dict[str, Any]) -> None:
             all_raw_returns_arr = np.array(all_raw_returns, dtype=np.float64)
             old_std = return_rms.std
             return_rms.update(all_raw_returns_arr)
-            print(f"[DEBUG] Return normalization: std {old_std:.4f} -> {return_rms.std:.4f}, raw_returns range=[{all_raw_returns_arr.min():.2f}, {all_raw_returns_arr.max():.2f}]")
+            # print(f"[DEBUG] Return normalization: std {old_std:.4f} -> {return_rms.std:.4f}, raw_returns range=[{all_raw_returns_arr.min():.2f}, {all_raw_returns_arr.max():.2f}]")
             
             # Update shared reward scale for workers (they'll use it on next episode/weight refresh)
             env_manager.update_reward_scale(return_rms.std)
@@ -236,7 +236,10 @@ def train(config: Dict[str, Any]) -> None:
                         recent_episode_metrics.append(sim_result)
 
             steps_elapsed = min(steps_elapsed + batch_steps, max_steps)
-            print(f"[DEBUG] Learner: Memory now has {len(ppo.memory)} transitions, triggering PPO update #{update_count + 1}")
+            
+            # Progress logging: show update number, steps, episodes at each PPO update
+            progress_pct = 100.0 * steps_elapsed / max_steps
+            print(f"Update {update_count + 1:4d} | Steps: {steps_elapsed:7,}/{max_steps:,} ({progress_pct:5.1f}%) | Episodes: {episode_count:4d} | return_std: {return_rms.std:.2f}")
             
             # 3. Perform PPO update (we collected exactly update_frequency transitions)
             # There may be an overshoot of up to (steps_per_worker - 1) transitions.
@@ -291,9 +294,7 @@ def train(config: Dict[str, Any]) -> None:
         # Always stop workers, even if an exception occurred
         env_manager.stop()
     
-    # print(f"\n{'='*60}")
-    # print(f"Training Complete! Steps: {steps_elapsed}, Episodes: {episode_count}, Updates: {update_count}")
-    # print(f"{'='*60}\n")
+    print(f"\nTraining Complete: steps={steps_elapsed:,}, episodes={episode_count}, updates={update_count}")
         
 
 def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager) -> Dict[str, float]:

@@ -274,7 +274,7 @@ class GATV2ActorCritic(nn.Module):
 
         actions = torch.stack(actions_list)
         log_probs = torch.stack(log_probs_list)
-        print(f"[DEBUG] model.act: actions={actions.tolist()}, log_probs={[f'{lp:.4f}' for lp in log_probs.tolist()]}, values={[f'{v:.4f}' for v in values.tolist()]}")
+        # print(f"[DEBUG] model.act: actions={actions.tolist()}, log_probs={[f'{lp:.4f}' for lp in log_probs.tolist()]}, values={[f'{v:.4f}' for v in values.tolist()]}")
         return actions, log_probs, values
     
     def critic_readout(self, z, batch):
@@ -359,7 +359,7 @@ class GATV2ActorCritic(nn.Module):
 
         log_probs = torch.stack(log_probs_list)
         entropies = torch.stack(entropies_list)
-        print(f"[DEBUG] model.evaluate: log_probs shape={tuple(log_probs.shape)}, mean={log_probs.mean():.4f}, entropy_mean={entropies.mean():.4f}, values shape={tuple(values.shape)}, values_mean={values.mean():.4f}")
+        # print(f"[DEBUG] model.evaluate: log_probs shape={tuple(log_probs.shape)}, mean={log_probs.mean():.4f}, entropy_mean={entropies.mean():.4f}, values shape={tuple(values.shape)}, values_mean={values.mean():.4f}")
         return log_probs, entropies, values
 
     def get_bootstrap_value(self, x, edge_index, edge_attr, batch):

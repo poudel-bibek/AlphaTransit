@@ -1,79 +1,138 @@
 import torch
 import wandb
-from main import get_config, train, set_global_seeds
+import argparse
 from typing import Any, Dict
+from ppo import get_config, set_global_seeds, train as ppo_train
+from mcts import mcts_train
 
-def build_sweep_config() -> Dict[str, Any]:
+def build_ppo_sweep_config() -> Dict[str, Any]:
     """
-    Define the sweep search space 
+    PPO hyperparameter sweep search space.
     """
-
     return {
-        "method": "grid",
-        
-                "metric": {"name": "eval/episode_total_reward", 
-                   "goal": "maximize"},
-
+        "method": "bayes",
+        "metric": {
+            "name": "eval/episode_total_reward", 
+            "goal": "maximize"
+        },
         "parameters": {
-            "lr": {"values": [0.00005, 0.0005, 0.0001]},
-            "update_frequency": {"values": [64, 128, 256]},
-            "entropy_coef": {"values": [0.01, 0.05]},
-            "clip_frac": {"values": [0.1, 0.3]},
-            "batch_size": {"values": [8, 16, 32]},
+            "clip_frac": {"values": [0.1, 0.2]},
+            "entropy_coef": {"values": [0.01, 0.02]},
+            "lr": {"values": [3e-5, 1e-4]},
+            "K_epochs": {"values": [2, 4]},
+            "batch_size": {"values": [16, 32]},
+            "update_frequency": {"values": [128, 256]},
 
-            # "clip_frac": {"values": [0.1, 0.2, 0.3]},
-            # "gae_lambda": {"values": [0.9, 0.95, 0.98]},
-            # "gamma": {"values": [0.9, 0.95, 0.99]},
-            # "K_epochs": {"values": [2, 4, 8]},
-            # "value_loss_coef": {"values": [0.25, 0.5, 1]},
-
-            # Reward coefficients (continuous distributions)
-            # Sweep betas in smaller sweep with RL coefficients kept constant.
-            # If betas are sweep parameters, sweep will naturally favor combinations that produce the highest numerical reward values
-            # So when sweeping for beta, maximize performance metrics instead of numerical reward 
-            # "beta0": {"distribution": "uniform", "min": 20, "max": 60},  # Service emphasis
-            # "beta1": {"distribution": "uniform", "min": 10, "max": 40},  # Wait penalty
-            # "beta2": {"distribution": "uniform", "min": 10, "max": 30},  # Efficiency
-            # "beta3": {"distribution": "uniform", "min": 10, "max": 40},  # Utilization
-
-            # Some other params to be set as fixed values
+            # Fixed values
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
-            "num_episodes": {"value": 300},
+            "max_steps": {"value": 150_000},
         },
     }
 
-def agent_train() -> None:
+def build_mcts_sweep_config() -> Dict[str, Any]:
     """
-    Function to be called by wandb.agent for each sweep run.
-    Initializes WandB run, merges configs, runs training, logs metrics.
+    MCTS hyperparameter sweep search space.
+    TODO: Finish
     """
-    with wandb.init() as run:
-        # Get sampled params from sweep
-        sampled_params = dict(wandb.config)
-        
-        # Get defaults and merge with sampled
-        base_config = get_config()
-        config = {**base_config, **sampled_params}
-        
-        set_global_seeds(config["seed"]) # Although sweep config changes, the seed is still set to the same value.
-        device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
-        config["device"] = device
-        
-        train(config)
+    return {
+        "method": "bayes",
+        "metric": {
+            "name": "eval/episode_total_reward", 
+            "goal": "maximize"
+        },
+        "parameters": {
+            # MCTS hyperparameters (placeholders - adjust when MCTS is implemented)
+            # "exploration_constant": {"values": [1.0, 1.414, 2.0]},
+            # "num_simulations": {"values": [50, 100, 200]},
+            # "max_depth": {"values": [10, 20, 50]},
+            
+            # Fixed values
+            "gpu": {"value": True},
+            "max_steps": {"value": 100_000},
+        },
+    }
+
+def get_sweep_config(algorithm: str) -> Dict[str, Any]:
+    """
+    Get sweep configuration for the specified algorithm.
+    """
+    if algorithm == "ppo":
+        return build_ppo_sweep_config()
+    elif algorithm == "mcts":
+        return build_mcts_sweep_config()
+    else:
+        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'mcts'")
+
+def get_train_fn(algorithm: str):
+    """
+    Get the training function for the specified algorithm.
+    """
+    if algorithm == "ppo":
+        return ppo_train
+    elif algorithm == "mcts":
+        return mcts_train
+    else:
+        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'mcts'")
+
+def create_agent_train(algorithm: str):
+    """
+    Create a training function for wandb.agent to call for each sweep run.
+    Returns a closure that captures the algorithm choice.
+    """
+    train_fn = get_train_fn(algorithm)
+    
+    def agent_train() -> None:
+        """
+        Function called by wandb.agent for each sweep run.
+        Initializes WandB run, merges configs, runs training.
+        """
+        with wandb.init() as run:
+            # Get sampled params from sweep
+            sampled_params = dict(wandb.config)
+            
+            # Get defaults and merge with sampled
+            base_config = get_config()
+            config = {**base_config, **sampled_params}
+            config["algorithm"] = algorithm
+            
+            # Set seeds and device
+            set_global_seeds(config["seed"])
+            device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
+            config["device"] = device
+            
+            # Run training
+            train_fn(config)
+    
+    return agent_train
 
 def main() -> None:
     """
+    Usage:
+        python sweep.py --algorithm ppo --count 32
+        python sweep.py --algorithm mcts --count 16
     """
-    sweep_config = build_sweep_config()
+    parser = argparse.ArgumentParser(description="Hyperparameter sweep for transit design RL")
+    parser.add_argument("--algorithm", choices=["ppo", "mcts"], default="ppo", 
+                        help="Algorithm to sweep (default: ppo)")
+    args = parser.parse_args()
+    
+    # Get configs
+    sweep_config = get_sweep_config(args.algorithm)
     base_config = get_config()
     
+    print(f"Starting {args.algorithm.upper()} Bayesian sweep (Ctrl+C to stop)...")
+    
+    # Create and run sweep
     sweep_id = wandb.sweep(
         sweep=sweep_config, 
         project=base_config["wandb_project"], 
         entity=base_config["wandb_entity"]
     )
-    wandb.agent(sweep_id, function=agent_train, count=32)  
+    
+    agent_train_fn = create_agent_train(args.algorithm)
+    wandb.agent(sweep_id, function=agent_train_fn)  # No count = runs indefinitely
+
 
 if __name__ == "__main__":
     main()

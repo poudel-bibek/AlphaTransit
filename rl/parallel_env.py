@@ -128,7 +128,7 @@ def _compute_gae_chunk(rewards, values, dones, gamma, gae_lambda, bootstrap_valu
         last_advantage = advantages[t]
 
     returns = advantages + values
-    print(f"[DEBUG] GAE chunk: len={len(rewards)}, bootstrap={bootstrap_value:.4f}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}], reward_sum={rewards.sum():.2f}")
+    # print(f"[DEBUG] GAE chunk: len={len(rewards)}, bootstrap={bootstrap_value:.4f}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}], reward_sum={rewards.sum():.2f}")
     return advantages.tolist(), returns.tolist()
 
 def _bootstrap_value(model, converter, state, device):
@@ -282,7 +282,7 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
             # by near-zero scales produces huge advantages that destabilize learning.
             reward_scale = max(shared_reward_scale.value, 1e-4)  
             
-            print(f"[DEBUG] Worker {worker_id}: Loaded weights at update_counter={last_reload_update}, reward_scale={reward_scale:.4f}, starting new episode")
+            # print(f"[DEBUG] Worker {worker_id}: Loaded weights at update_counter={last_reload_update}, reward_scale={reward_scale:.4f}, starting new episode")
             state, _ = env.reset()
             terminated = False
             transitions = []
@@ -360,7 +360,7 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
                                           returns = returns,
                                           reward_scale_used = reward_scale)
 
-                    print(f"[DEBUG] Worker {worker_id}: Sending MID-EPISODE chunk with {len(chunk.transitions)} transitions, bootstrap_value={bootstrap_value:.4f}, reward_scale={reward_scale:.4f}")
+                    # print(f"[DEBUG] Worker {worker_id}: Sending MID-EPISODE chunk with {len(chunk.transitions)} transitions, bootstrap_value={bootstrap_value:.4f}, reward_scale={reward_scale:.4f}")
                     shared_res_queue.put(chunk)
                     transitions.clear()
                     
@@ -371,7 +371,7 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
                     current_update = shared_update_counter.value
                     if current_update - last_reload_update >= weight_refresh_interval:
                         reward_scale = max(shared_reward_scale.value, 1e-4)  # Clamp to prevent blow-up
-                        print(f"[DEBUG] Worker {worker_id}: Mid-episode weight refresh (update {last_reload_update} -> {current_update}), reward_scale={reward_scale:.4f}")
+                        # print(f"[DEBUG] Worker {worker_id}: Mid-episode weight refresh (update {last_reload_update} -> {current_update}), reward_scale={reward_scale:.4f}")
                         model.load_state_dict(shared_model_state)
                         model.eval()
                         last_reload_update = current_update
@@ -398,7 +398,7 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
                                       returns = returns,
                                       reward_scale_used = reward_scale)
 
-                print(f"[DEBUG] Worker {worker_id}: Sending TERMINAL chunk with {len(chunk.transitions)} transitions, episode_reward={episode_reward:.2f}, episode_length={episode_steps}, reward_scale={reward_scale:.4f}")
+                # print(f"[DEBUG] Worker {worker_id}: Sending TERMINAL chunk with {len(chunk.transitions)} transitions, episode_reward={episode_reward:.2f}, episode_length={episode_steps}, reward_scale={reward_scale:.4f}")
                 shared_res_queue.put(chunk)
 
         else:
@@ -462,6 +462,8 @@ class ParallelEnvManager:
         # But another mechanism is used to control staleness - weight_refresh_interval - workers reload weights every N updates.
         self._shared_res_queue = mp_ctx.Queue()
 
+        print(f"Starting {self.num_workers} parallel workers...")
+        
         # Start rollout workers 
         for wid in range(self.num_workers):
             cmd_q = mp_ctx.Queue()
@@ -499,7 +501,7 @@ class ParallelEnvManager:
         # Increment update counter so workers know to refresh weights
         with self.shared_update_counter.get_lock():
             self.shared_update_counter.value += 1
-            print(f"[DEBUG] Learner: Pushed updated weights to shared memory, update_counter now = {self.shared_update_counter.value}")
+            # print(f"[DEBUG] Learner: Pushed updated weights to shared memory, update_counter now = {self.shared_update_counter.value}")
     
     def update_reward_scale(self, new_scale: float):
         """
@@ -512,7 +514,7 @@ class ParallelEnvManager:
         with self.shared_reward_scale.get_lock():
             old_scale = self.shared_reward_scale.value
             self.shared_reward_scale.value = new_scale
-            print(f"[DEBUG] Learner: Updated shared reward_scale {old_scale:.4f} -> {new_scale:.4f}")
+            # print(f"[DEBUG] Learner: Updated shared reward_scale {old_scale:.4f} -> {new_scale:.4f}")
     
     def run_parallel_eval(self, num_runs, base_seed, seed_offset, policy_path):
         """
@@ -601,7 +603,7 @@ class ParallelEnvManager:
             if chunk.is_terminal:
                 self._actor_cmd_queues[chunk.worker_id].put({"type": "collect"})
         
-        print(f"[DEBUG] Learner: Collected {total_steps} transitions from {len(chunks)} chunks (target was {target_transitions})")
+        # print(f"[DEBUG] Learner: Collected {total_steps} transitions from {len(chunks)} chunks (target was {target_transitions})")
         return chunks
     
     def stop(self):

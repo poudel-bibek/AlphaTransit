@@ -52,7 +52,7 @@ class PPOAgent:
         # even with identical weights, breaking the PPO ratio assumption.
         # PPO regularization comes from: entropy bonus, clipping, and value clipping.
         self.model.eval()
-        print(f"[DEBUG] PPO Update: Starting with {len(self.memory)} transitions, K_epochs={self.K_epochs}, batch_size={self.batch_size}")
+        # print(f"[DEBUG] PPO Update: Starting with {len(self.memory)} transitions, K_epochs={self.K_epochs}, batch_size={self.batch_size}")
 
         # Validate that workers have precomputed advantages/returns
         if len(self.memory.advantages) != len(self.memory) or len(self.memory.returns) != len(self.memory):
@@ -66,9 +66,9 @@ class PPOAgent:
         # This reduces variance compared to per-mini-batch normalization.
         if len(self.memory.advantages) > 0:
             adv = torch.tensor(self.memory.advantages, dtype=torch.float32)
-            print(f"[DEBUG] Adv normalization: raw adv shape={adv.shape}, mean={adv.mean():.4f}, std={adv.std():.4f}, min={adv.min():.4f}, max={adv.max():.4f}")
+            # print(f"[DEBUG] Adv normalization: raw adv shape={adv.shape}, mean={adv.mean():.4f}, std={adv.std():.4f}, min={adv.min():.4f}, max={adv.max():.4f}")
             adv = (adv - adv.mean()) / (adv.std(correction=0) + 1e-8)
-            print(f"[DEBUG] Adv normalization: normalized mean={adv.mean():.6f}, std={adv.std():.4f}")
+            # print(f"[DEBUG] Adv normalization: normalized mean={adv.mean():.6f}, std={adv.std():.4f}")
             self.memory.advantages = adv.numpy()
         
         dataset = DatasetClass(self.memory)
@@ -91,7 +91,7 @@ class PPOAgent:
                 returns = batch_data['returns'].to(self.device)
                 valid_mask = batch_data['valid_mask'].to(self.device)
                 
-                print(f"[DEBUG] Mini-batch shapes: obs.x={tuple(obs.x.shape)}, obs.edge_index={tuple(obs.edge_index.shape)}, actions={tuple(actions.shape)}, advantages={tuple(advantages.shape)}, returns={tuple(returns.shape)}")
+                # print(f"[DEBUG] Mini-batch shapes: obs.x={tuple(obs.x.shape)}, obs.edge_index={tuple(obs.edge_index.shape)}, actions={tuple(actions.shape)}, advantages={tuple(advantages.shape)}, returns={tuple(returns.shape)}")
                 
                 # print({
                 #     "x": tuple(obs.x.shape),
@@ -113,7 +113,7 @@ class PPOAgent:
 
                 # Policy loss with clipping
                 ratio = torch.exp(log_probs - old_log_probs)
-                print(f"[DEBUG] Ratio stats: shape={tuple(ratio.shape)}, mean={ratio.mean():.4f}, min={ratio.min():.4f}, max={ratio.max():.4f}, old_lp_mean={old_log_probs.mean():.4f}, new_lp_mean={log_probs.mean():.4f}")
+                # print(f"[DEBUG] Ratio stats: shape={tuple(ratio.shape)}, mean={ratio.mean():.4f}, min={ratio.min():.4f}, max={ratio.max():.4f}, old_lp_mean={old_log_probs.mean():.4f}, new_lp_mean={log_probs.mean():.4f}")
                 surrogate_loss1 = -advantages * ratio
                 surrogate_loss2 = -advantages * torch.clamp(ratio, 1 - self.clip_frac, 1 + self.clip_frac)
                 surrogate_loss = torch.max(surrogate_loss1, surrogate_loss2).mean()
@@ -156,7 +156,7 @@ class PPOAgent:
         del dataset
 
         # These are average losses over the batch.
-        print(f"[DEBUG] PPO Update: Completed. pg_loss={np.mean(pg_losses):.4f}, value_loss={np.mean(value_losses):.4f}, approx_kl={np.mean(approx_kls):.4f}")
+        # print(f"[DEBUG] PPO Update: Completed. pg_loss={np.mean(pg_losses):.4f}, value_loss={np.mean(value_losses):.4f}, approx_kl={np.mean(approx_kls):.4f}")
         return {
             'pg_loss': np.mean(pg_losses),
             'value_loss': np.mean(value_losses),
