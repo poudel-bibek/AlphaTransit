@@ -1,8 +1,9 @@
+import gc
 import torch
 import wandb
 import argparse
 from typing import Any, Dict
-from ppo import get_config, set_global_seeds, train as ppo_train
+from ppo import get_config, set_global_seeds, train as ppo_train_internal
 from mcts import mcts_train
 
 def build_ppo_sweep_config() -> Dict[str, Any]:
@@ -18,7 +19,7 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
         "parameters": {
             "clip_frac": {"values": [0.1, 0.2]},
             "entropy_coef": {"values": [0.01, 0.02]},
-            "lr": {"values": [3e-5, 1e-4]},
+            "lr": {"values": [1e-5, 1e-4]},
             "K_epochs": {"values": [2, 4]},
             "batch_size": {"values": [16, 32]},
             "update_frequency": {"values": [128, 256]},
@@ -26,7 +27,7 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             # Fixed values
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
-            "max_steps": {"value": 150_000},
+            "max_steps": {"value": 120_000},
         },
     }
 
@@ -69,7 +70,7 @@ def get_train_fn(algorithm: str):
     Get the training function for the specified algorithm.
     """
     if algorithm == "ppo":
-        return ppo_train
+        return ppo_train_internal
     elif algorithm == "mcts":
         return mcts_train
     else:
@@ -101,8 +102,15 @@ def create_agent_train(algorithm: str):
             device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
             config["device"] = device
             
+            # WandB is already initialized by the sweep agent context
+            # Set wandb_off=False so train() logs to the active run
+            config["wandb_off"] = False
+            
             # Run training
             train_fn(config)
+        
+        # Cleanup between sweep runs
+        gc.collect()
     
     return agent_train
 

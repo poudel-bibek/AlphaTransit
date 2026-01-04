@@ -610,11 +610,14 @@ class ParallelEnvManager:
         """
         Shut down workers and clean up resources.
         """
-        # print("Stopping workers...")
+
         for q in self._actor_cmd_queues:
             q.put({"type": "stop"})
+        
         for p in self._actor_procs:
-            p.join(timeout=5.0)
+            p.join(timeout = 10.0)
+            if p.is_alive():
+                p.terminate()
         
         self._actor_cmd_queues.clear()
         self._actor_eval_res_queues.clear()
@@ -622,4 +625,7 @@ class ParallelEnvManager:
         self._active_workers.clear()
         self._shared_res_queue = None
         self.shared_model_state = None
-        # print("Workers stopped.")
+        self.shared_update_counter = None
+        self.shared_reward_scale = None
+
+
