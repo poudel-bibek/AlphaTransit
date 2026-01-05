@@ -1274,176 +1274,7 @@ class TransitEnv(gym.Env):
         
         pass
 
-    # def compute_reward(self, sim_result: Dict[str, int], is_route_end: bool, is_forced_end: bool) -> float:
-    #     """
-    #     ------------------------------------------------------------------------------------------------
-    #     FOR PARTIAL ROUTES:
-    #     A proxy reward for partial routes during route construction.
-    #     The magnitude of this needs to be significant enough to drive learning but not so large that it dominates the final or complete route reward.
-    #     - Component 1: demand coverage potential = wanting_to_onboard / total_demand [0 to 1]
-    #         - wanting_to_onboard = Σ_{served ODs} (volume_per_hour * horizon_hours * alpha)
-    #         - total_demand = Σ_{all ODs} (volume_per_hour * horizon_hours)
-    #         - This is an appropriate measure:
-    #             - cheap to compute from route topology and the OD matrix only (no full sim required)
-    #             - un-affected by dynamics like service frequency
-    #         - In code: taken from sim_result['demand_coverage_potential'] which is precomputed without a full sim.
-        
-    #     - Component 2: Route overlap ratio
-    #         - Computed by `_calculate_route_overlap_ratio()`.
-    #         - The metric averages the normalized overlap depth of each undirected segment across all non-empty routes.
-    #         - In code: sim_result['route_overlap_ratio'] in [0 to 1].
-
-    #     - Forced end penalty during construction
-    #         - If the route is forcibly terminated while still partial (is_forced_end is True and is_route_end is False), apply a penalty:
-    #             forced_end_penalty = 1 - (len(current_route) / MAX_ROUTE_LENGTH)
-
-    #     ------------------------------------------------------------------------------------------------
-    #     FOR COMPLETED ROUTES:
-
-    #     Design routes that serve the highest possible demand (as close to 100 percent coverage as possible) with high passenger travel efficiency.
-    #     In addition to route performance, we use components that help the agent design better routes, that is complete routes with minimal overlaps.
-
-    #     Encourage:
-    #         1. Higher demand coverage potential.
-    #             - This encourages the agent to include O-D pairs that have high demand.
-    #             - In code: sim_result['demand_coverage_potential'] in [0 to 1].
-    #         2. Higher service rate.
-    #             - Calculated as total_onboarded_count / wanting_to_onboard 
-    #             - In code: sim_result['service_rate'] in [0 to 1].
-
-    #     Penalize:
-    #         1. Average passenger travel time (in-vehicle time plus wait time) to improve passenger travel efficiency.
-    #             - In code: average over completed and ongoing passengers
-    #                 total_travel = total_travel_completed + total_travel_ongoing
-    #                 served = completed_passengers + ongoing_passengers
-    #                 avg_travel_seconds = total_travel / served, then normalized by 3600 and capped at 1.0.
-    #         2. Overlap between routes: some minimal overlaps are necessary for transfers and full demand coverage,
-    #            but high overlaps mean duplication of service and waste of resources. Uses the same `route_overlap_ratio` definition as above.
-    #         3. Forced end:
-    #             - The penalty is applied when a route is forcibly terminated during construction, as described in the partial routes section.
-    #               There is no additional forced end penalty at route end in the current implementation.
-    #             - Not getting the route force end penalty is equivalent to a bonus for completion.
-
-    #     TODO: Should I add a final reward at the end of the episode? Based on final performace metrics?
-
-    #     As of now do not care about, operator side metrics like:
-    #     - route_efficiency: Passengers served per km of route (passengers/km)
-    #         - Prevents wastefully long routes with few passengers (encourages compact, high-demand route design, prevents arbitrarily long routes)
-    #     - bus_utilization: Average bus capacity utilization (0 to 100 percent)
-    #         - Forces agent to choose routes with actual demand, preventing gaming via low-demand routes
-    #     - fleet cost:
-    #         - Some multiple of len(all_routes) * SERVICE_FREQUENCY
-    #     ---------
-
-    #     Reward formulation in code:
-
-    #     For partial routes (is_route_end is False):
-    #         reward_partial =
-    #             40.0 * demand_coverage_potential
-    #           - 20.0 * route_overlap_ratio
-    #           - 15.0 * forced_end_penalty   (only if is_forced_end is True; otherwise this term is 0)
-
-    #     For completed routes (is_route_end is True):
-    #         reward_final =
-    #             30.0 * demand_coverage_potential
-    #           + 15.0 * service_rate
-    #           - 15.0 * avg_travel_time_norm
-    #           - 10.0 * route_overlap_ratio
-
-    #     The function returns reward_partial while constructing a route and reward_final when a route ends.
-    #     There is no mixing of the two in a single step.
-
-    #     - Units are normalized:
-    #         - demand_coverage_potential: [0 to 1], provided by sim_result (already normalized, no divide by 100).
-    #         - service_rate: [0 to 1], provided by sim_result (already normalized, no divide by 100).
-    #         - avg_travel_time_norm: [0 to 1], computed as min(average passenger travel time in seconds / 3600, 1).
-    #         - route_overlap_ratio: [0 to 1], where 1 means the route is fully overlapped by another.
-    #         - forced_end_penalty: [0 to 1]
-    #             - early termination penalty: 1 - (current route length / MAX_ROUTE_LENGTH)
-    #             - TODO: For invalid action: Not done for now (the probability is very low)
-
-    #     ---------
-    #     See: https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
-    #     ---------
-    #     Potential pitfalls:
-    #     1. If the rewards are too small like 0.0001, then gradients are too small to be effective.
-    #     2. An improper reward formulation could lead to reward hacking
-
-    #     ---------
-    #     Reward ranges (on route end):
-    #         Max reward:
-    #         - 100 percent demand coverage: +30
-    #         - 100 percent service rate: +15
-    #         - 0 travel time penalty: +0
-    #         - No overlaps: +0
-    #         - No forced ends at route end: +0
-    #         → Total: +45
-
-    #         Min reward:
-    #         - 0 percent demand coverage: +0
-    #         - 0 percent service rate: +0
-    #         - Max travel time penalty: -15
-    #         - Overlap penalty: -10
-    #         - forced ends: 0 at route end in current implementation
-    #         → Total: -25
-
-    #         Typical range: [-25, +45]
-    #     """
-
-        
-    #     incremental_reward = 0.0
-    #     BETA_0 = 40.0      # Demand coverage potential
-    #     BETA_1 = -20.0     # Overlap penalty
-    #     BETA_2 = -15.0      # Forced end penalty
-
-    #     final_reward = 0.0
-    #     BETA_3 = 30.0      # Demand coverage potential
-    #     BETA_4 = 15.0      # Service rate  
-    #     BETA_5 = -15.0     # Travel time penalty 
-    #     BETA_6 = -10.0     # Route overlap penalty
-
-    #     # For partial routes, use proxy based on potential (no sim_result needed)
-    #     if not is_route_end:
-    #         pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
-    #         overlap_ratio = sim_result['route_overlap_ratio']
-    #         incremental_reward = (BETA_0 * pot_norm) + (BETA_1 * overlap_ratio)
-
-    #         # print(f"Incremental reward: {incremental_reward}")
-    #         # print(f"   Demand coverage potential: {BETA_0 * pot_norm:.2f}")
-    #         # print(f"   Overlap: {BETA_1 * overlap_ratio:.2f}")
-
-    #         if is_forced_end:
-    #             incremental_reward += BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH))
-    #             # print(f"   Forced end: {BETA_2 * (1.0 - (len(self.current_route) / self.MAX_ROUTE_LENGTH)):.2f}")
-
-    #     # For completed routes, use actual metrics from simulation
-    #     else: 
-    #         pot_norm = sim_result['demand_coverage_potential'] # already in [0-1]
-    #         service_norm = sim_result['service_rate'] # already in [0-1]
-    #         overlap_ratio = sim_result['route_overlap_ratio']
-
-    #         total_travel = sim_result['total_travel_completed'] + sim_result['total_travel_ongoing']
-    #         served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
-    #         avg_travel = total_travel / served if served > 0 else 0.0
-    #         avg_travel_norm = min(avg_travel / 3600.0, 1.0)  # [0-1] capped at 1
-
-    #         final_reward = (
-    #             BETA_3 * pot_norm +
-    #             BETA_4 * service_norm +
-    #             BETA_5 * avg_travel_norm +
-    #             BETA_6 * overlap_ratio 
-    #         )
-            
-    #         # print(f"Final reward: {final_reward:.2f}")
-    #         # print("Components:")
-    #         # print(f"   Demand coverage potential: {BETA_3 * pot_norm:.2f}")
-    #         # print(f"   Service rate: {BETA_4 * service_norm:.2f}")
-    #         # print(f"   Travel time: {BETA_5 * avg_travel_norm:.2f}")
-    #         # print(f"   Overlap: {BETA_6 * overlap_ratio:.2f}")
-            
-    #     return incremental_reward + final_reward
-
-    def compute_reward_new(self, sim_result: Dict[str, Any], is_route_end: bool, is_forced_end: bool, prev_coverage: float = 0.0) -> float:
+    def compute_reward(self, sim_result: Dict[str, Any], is_route_end: bool, is_forced_end: bool, prev_coverage: float = 0.0) -> float:
         """
         HIGH-LEVEL OBJECTIVES
 
@@ -1543,36 +1374,35 @@ class TransitEnv(gym.Env):
 
         FINAL REWARDS (primary learning signal - simulation-validated):
 
-          β₃ = +50.0  (demand coverage potential)
+          β₃ = +60.0  (demand coverage potential)
               - High weight ensures final rewards dominate episode return
               - Core objective: serve as much demand as possible
 
-          β₄ = +40.0  (service rate) *** MOST IMPORTANT ***
-              - Highest positive weight among all components
-              - This is the TRUE objective: passengers actually boarding
+          β₄ = +45.0  (service rate)
+              - Core objective: passengers actually boarding
               - High weight ensures policy optimizes for real service quality
 
-          β₅ = -25.0  (wait time penalty)
+          β₅ = -20.0  (wait time penalty)
               - Higher than movement time (passengers hate waiting)
               - Incentivizes routes that reduce wait times
               - Normalized to 30-minute cap
 
-          β₆ = -15.0  (movement time penalty)
+          β₆ = -10.0  (movement time penalty)
               - Lower than wait time (less burdensome to passengers)
               - Still important for overall travel efficiency
               - Normalized to 40-minute cap
 
-          β₇ = -12.0  (overlap penalty)
+          β₇ = -10.0  (overlap penalty)
               - Moderate penalty for route duplication
               - Prevents wasteful resource allocation
               - Allows some overlap for transfer connectivity
 
-          β₈ = -3.0   (fleet size penalty)
+          β₈ = -2.0   (fleet size penalty)
               - Penalizes high fleet size relative to number of routes
               - Uses fleet_size / NUM_ROUTES (average buses per route)
               - Encourages efficient route design that doesn't require excessive buses
 
-          β₉ = +8.0   (utilization bonus)
+          β₉ = +12.0  (utilization bonus)
               - Rewards high bus utilization (0-100% normalized to 0-1)
               - Higher utilization means buses are well-used
               - Encourages routes that attract sufficient ridership
@@ -1589,17 +1419,17 @@ class TransitEnv(gym.Env):
           Additional: -15 × 0.50 = -7.5
 
         Final rewards (per route completion):
-          Best case:  +50×0.8 + 40×0.95 - 25×0.1 - 15×0.2 - 12×0.0 - 3×1.5 + 8×0.8
-                    = 40 + 38 - 2.5 - 3 - 0 - 4.5 + 6.4 = +74.4
-          Typical:    +50×0.5 + 40×0.7 - 25×0.25 - 15×0.3 - 12×0.1 - 3×2.0 + 8×0.5
-                    = 25 + 28 - 6.25 - 4.5 - 1.2 - 6 + 4 = +39.05
-          Worst case: +50×0.2 + 40×0.3 - 25×0.8 - 15×0.6 - 12×0.5 - 3×4.0 + 8×0.1
-                    = 10 + 12 - 20 - 9 - 6 - 12 + 0.8 = -24.2
+          Best case:  +60×0.8 + 45×0.95 - 20×0.1 - 10×0.2 - 10×0.0 - 2×1.5 + 12×0.8
+                    = 48 + 42.75 - 2 - 2 - 0 - 3 + 9.6 = +93.35
+          Typical:    +60×0.5 + 45×0.7 - 20×0.25 - 10×0.3 - 10×0.1 - 2×2.0 + 12×0.5
+                    = 30 + 31.5 - 5 - 3 - 1 - 4 + 6 = +54.5
+          Worst case: +60×0.2 + 45×0.3 - 20×0.8 - 10×0.6 - 10×0.5 - 2×4.0 + 12×0.1
+                    = 12 + 13.5 - 16 - 6 - 5 - 8 + 1.2 = -8.3
 
         Episode totals (16 routes × 13 partial + 1 final each):
           Partial: 208 steps × ~0.3 avg = ~62
-          Final:   16 routes × ~36 avg = ~576
-          Ratio: ~1:9 in favor of final (DESIRED: final rewards dominate)
+          Final:   16 routes × ~55 avg = ~880
+          Ratio: ~1:14 in favor of final (DESIRED: final rewards dominate)
 
         USAGE NOTES
         -----------
@@ -1609,7 +1439,7 @@ class TransitEnv(gym.Env):
            # In step() method:
            prev_cov = self._get_partial_route_metrics()['demand_coverage_potential']
            # ... apply action ...
-           reward = self.compute_reward_new(sim_result, is_route_end, is_forced_end,
+           reward = self.compute_reward(sim_result, is_route_end, is_forced_end,
                                             prev_coverage=prev_cov)
 
         2. For the first step of each route, prev_coverage should be the coverage
@@ -1631,13 +1461,13 @@ class TransitEnv(gym.Env):
         BETA_2 = -15.0    # Forced end penalty (encourages route completion)
 
         # FINAL REWARD COEFFICIENTS (primary learning signal)
-        BETA_3 = 50.0     # Demand coverage potential
-        BETA_4 = 40.0     # Service rate (TRUE OBJECTIVE - highest positive weight)
-        BETA_5 = -25.0    # Wait time penalty (passengers hate waiting)
-        BETA_6 = -15.0    # Movement time penalty (less annoying than waiting)
-        BETA_7 = -12.0    # Route overlap penalty
-        BETA_8 = -3.0     # Fleet size penalty (per bus per route)
-        BETA_9 = 8.0      # Utilization bonus (reward high utilization)
+        BETA_3 = 60.0     # Demand coverage potential
+        BETA_4 = 45.0     # Service rate (core objective, high weight)
+        BETA_5 = -20.0    # Wait time penalty (passengers hate waiting)
+        BETA_6 = -10.0    # Movement time penalty (less annoying than waiting)
+        BETA_7 = -10.0    # Route overlap penalty
+        BETA_8 = -2.0     # Fleet size penalty (per bus per route)
+        BETA_9 = 12.0     # Utilization bonus (reward high utilization)
 
         # NORMALIZATION CONSTANTS
         WAIT_TIME_CAP = 1800.0       # 30 minutes in seconds
@@ -1752,7 +1582,7 @@ class TransitEnv(gym.Env):
 
             # Reward (route didnt end gracefully, forced end)
             # reward = self.compute_reward(sim_result, is_route_end=False, is_forced_end=True)
-            reward = self.compute_reward_new(sim_result, is_route_end=False, is_forced_end=True, prev_coverage=prev_coverage)
+            reward = self.compute_reward(sim_result, is_route_end=False, is_forced_end=True, prev_coverage=prev_coverage)
 
             # Advance to next route of finish episode
             terminated = False
@@ -1804,7 +1634,7 @@ class TransitEnv(gym.Env):
             
         # 6. Compute reward with termination signals
         # reward = self.compute_reward(sim_result, is_route_end=is_route_end, is_forced_end=False)
-        reward = self.compute_reward_new(sim_result, is_route_end=is_route_end, is_forced_end=False, prev_coverage=prev_coverage)
+        reward = self.compute_reward(sim_result, is_route_end=is_route_end, is_forced_end=False, prev_coverage=prev_coverage)
             
         # 7. If route completed this step, init next route NOW (after sim/ reward)
         terminated = False  # Default to continue episode
