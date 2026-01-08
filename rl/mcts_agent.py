@@ -97,8 +97,8 @@ class MCTSAgent:
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
         self.model.apply_orthogonal_init()
 
-        # Compile model for faster inference
-        self.model = torch.compile(self.model)
+        # TODO: Uncomment when PyTorch 2.10 is released (adds Python 3.14 support)
+        # self.model = torch.compile(self.model)
 
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)

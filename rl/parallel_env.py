@@ -256,7 +256,8 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
 
     # Although each worker gets their own policy model, the weights come from a shared memory.
     model = GATV2ActorCritic(**policy_kwargs).to(device)
-    model = torch.compile(model)
+    # TODO: Uncomment when PyTorch 2.10 is released (adds Python 3.14 support)
+    # model = torch.compile(model)
     converter = PyGConverter(device)
 
     while True:
