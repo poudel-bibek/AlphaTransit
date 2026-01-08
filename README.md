@@ -19,9 +19,12 @@ The pre-processed Bloomington network dataset (network, demand, transit routes) 
 ## Highlights
 
 - Built on UXsim's mesoscopic traffic engine for fast, numerically stable simulations.
-- Graph-attention PPO agent that proposes complete route sets and scores coverage, wait time, and overlap.
+- Two learning algorithms:
+  - **PPO**: Graph-attention PPO agent with parallel environment workers
+  - **MCTS (AlphaTransit)**: AlphaZero-style MCTS with neural network guidance
 - Baseline heuristics (`random_walk`, `demand_cover`, `shortest_path`, `reward_max`, `real_world`) for comparison.
-- Cached PyG data pipelines, demand visualizations, and rich WANDB logging.
+- Cached PyG data pipelines, demand visualizations, and rich WandB logging.
+- Hyperparameter sweep support via `sweep.py`.
 
 ## Requirements
 
@@ -76,53 +79,96 @@ python main.py --mode=baseline --baseline_type=demand_cover --network=bloomingto
 
 This runs a single evaluation on the Bloomington network, generates 16 candidate routes (the default), and writes animation gif to `training_data/`.
 
-### 2. Train a new RL policy
+### 2. Train an RL policy
 
+**PPO Training:**
 ```bash
-# Sequential training (default, single process)
-python main.py --gpu --anneal_lr
+# Single process training
+python main.py --algorithm ppo --gpu --anneal_lr
 
-# Parallel training with 4 workers
-python main.py --gpu --anneal_lr --num_workers=4
+# Parallel training with 8 workers (default)
+python main.py --algorithm ppo --gpu --anneal_lr --num_workers=8
 ```
 
-When `--num_workers` is greater than 1, training runs in parallel using Python 3.14's multiprocessing. Each worker runs its own `TransitEnv` and collects transitions independently, while a central learner aggregates experiences and performs PPO updates.
+**MCTS (AlphaTransit) Training:**
+```bash
+python main.py --algorithm mcts --gpu
+```
 
-Training defaults run on `bloomington` with `--mode=train` and `--num_episodes=2000` (~1 000 000 simulator steps). Adjust `--num_episodes` if you want a shorter run (e.g., `--num_episodes=50` ≈ 25 000 steps).
-
-Training artifacts land in `training_data/<timestamp>/` with policy checkpoints under `policies/` and summary CSVs in `results/`.
+Training artifacts are saved to `training_data/<timestamp>/` with policy checkpoints under `ppo_policies/` or `mcts_policies/`.
 
 ### 3. Evaluate a saved policy
 
 ```bash
-python main.py --mode=eval --network=bloomington --saved_policy_path=training_data/policies/policy_up_10_ep_50.pth --num_eval_runs=5 --save_dir=eval_runs
+# Evaluate PPO policy
+python main.py --algorithm ppo --mode=eval --saved_policy_path=training_data/<timestamp>/ppo_policies/policy_final.pth
+
+# Evaluate MCTS policy
+python main.py --algorithm mcts --mode=eval --saved_policy_path=training_data/<timestamp>/mcts_policies/policy_final.pth
 ```
 
-Aggregated metrics (such as mean wait time, transfer rate, coverage) are saved to `eval_runs/summary.json`.
-
-### 4. Optional: Log to Weights & Biases
+### 4. Run hyperparameter sweeps
 
 ```bash
-python main.py --mode=train --wandb_project=transit_design --wandb_entity=my-team
+# PPO sweep (requires WandB)
+python sweep.py --algorithm ppo
+
+# MCTS sweep
+python sweep.py --algorithm mcts
+```
+
+### 5. Optional: Log to Weights & Biases
+
+```bash
+python main.py --algorithm ppo --wandb_project=transit_design --wandb_entity=my-team
 ```
 
 Disable logging anytime with `--wandb_off`.
 
+## Algorithms
+
+### PPO (Proximal Policy Optimization)
+
+Graph-attention actor-critic that proposes routes node-by-node. Uses parallel environment workers for efficient sample collection.
+
+Key hyperparameters:
+- `--lr`: Learning rate (default: 5e-5)
+- `--K_epochs`: PPO epochs per update (default: 4)
+- `--clip_frac`: PPO clipping ratio (default: 0.1)
+- `--num_workers`: Parallel workers (default: 8)
+- `--max_steps`: Total training steps (default: 1M)
+
+### MCTS (AlphaTransit)
+
+AlphaZero-style Monte Carlo Tree Search with neural network guidance. Uses PUCT selection, Dirichlet noise for exploration, and terminal-only rewards with Welford normalization.
+
+Key hyperparameters:
+- `--n_iter`: MCTS simulations per move (default: 100)
+- `--c_puct`: PUCT exploration constant (default: 1.5)
+- `--dirichlet_alpha`: Dirichlet noise concentration (default: 0.3)
+- `--episodes_per_iter`: Self-play episodes per iteration (default: 2)
+- `--max_iterations`: Training iterations (default: 500)
+
 ## Project Structure
 
 ```
-├── main.py                # CLI for train/eval/baseline workflows
+├── main.py                # CLI entry point for train/eval/baseline
+├── config.py              # Shared configuration and argument parsing
+├── ppo.py                 # PPO training loop and entry points
+├── mcts.py                # MCTS training loop and entry points
+├── sweep.py               # WandB hyperparameter sweep runner
 ├── rl/
 │   ├── env.py             # TransitEnv: wraps UXsim worlds and bus operations
-│   ├── models.py          # GATv2 actor-critic definitions
-│   ├── ppo_agent.py       # PPO implementation and rollout memory
-│   ├── ppo_utils.py       # Memory buffer, Welford normalizer, collate functions
-│   ├── parallel_env.py    # Multi-process environment workers for parallel training
+│   ├── models.py          # GATv2 actor-critic network
+│   ├── ppo_agent.py       # PPO agent implementation
+│   ├── ppo_utils.py       # PPO memory buffer, normalizers
+│   ├── mcts_agent.py      # MCTS agent (AlphaTransit) implementation
+│   ├── mcts_utils.py      # MCTS tree, replay buffer, utilities
+│   ├── parallel_env.py    # Multi-process workers for PPO
 │   ├── env_utils.py       # Plotting, result aggregation, seed helpers
 │   └── baselines.py       # Heuristic route design baselines
-├── plots/
-│   ├── plot_results.py    # Utilities for comparing training/eval outputs
-│   └── plot_networks.py   # Network plots
+├── networks/              # Network datasets (Bloomington, Sioux Falls)
+├── plots/                 # Visualization utilities
 └── uxsim/                 # Core UXsim simulator (upstream code)
 ```
 

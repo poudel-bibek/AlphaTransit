@@ -508,18 +508,38 @@ def aggregate_results(results_list: List[Dict[str, Any]]) -> Dict[str, Any]:
                 'combined_wait_seconds': wait_seconds,
                 'combined_travel_seconds': travel_seconds,
             })
-        else: # For Policy Evaluation, results have metrics directly
+        else: # For Policy Evaluation (PPO/MCTS), results have metrics directly
             for key, value in res.items():
-                if key == 'routes':
+                if key in ('routes', 'seed'):  # Skip non-metric fields
                     continue
-                scalar_series[key].append(float(value))
+                # Type-checking logic (same as Baselines branch):
+                # - Scalars (int/float): aggregate into scalar_series for mean calculation
+                # - Lists (e.g., waiting_time_dstr, travel_time_dstr): extend into
+                #   distribution_series for combined distribution analysis
+                # - Other types: silently ignored
+                if isinstance(value, (int, float)):
+                    scalar_series[key].append(float(value))
+                elif isinstance(value, (list, tuple)):
+                    distribution_series[key].extend(value)
+
+            # Compute derived metrics (same as Baselines branch)
+            # PPO pre-computes these in parallel_env.py, MCTS doesn't - handle both cases
+            if 'combined_avg_wait_minutes' in res:
+                # PPO case: use pre-computed values
+                wait_minutes = res['combined_avg_wait_minutes']
+                travel_minutes = res['combined_avg_travel_minutes']
+            else:
+                # MCTS case: compute from raw totals
+                wait_minutes, travel_minutes = calculate_combined_metrics(res)
+                scalar_series['combined_avg_wait_minutes'].append(wait_minutes)
+                scalar_series['combined_avg_travel_minutes'].append(travel_minutes)
 
             total_served = res['completed_passengers'] + res['ongoing_passengers']
             per_run_stats.append({
                 'episode_total_reward': res['episode_total_reward'],
                 'served_passengers': total_served,
-                'combined_wait_seconds': res['combined_avg_wait_minutes'] * 60 * total_served,
-                'combined_travel_seconds': res['combined_avg_travel_minutes'] * 60 * total_served,
+                'combined_wait_seconds': wait_minutes * 60 * total_served,
+                'combined_travel_seconds': travel_minutes * 60 * total_served,
             })
 
     # Calculate aggregated values

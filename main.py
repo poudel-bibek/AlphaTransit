@@ -2,7 +2,8 @@ import torch
 from rl.env import TransitEnv
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 from rl.parallel_env import _cap_worker_threads
-from ppo import get_config, set_global_seeds, ppo_train, ppo_eval
+from config import get_config, set_global_seeds
+from ppo import ppo_train, ppo_eval
 from mcts import mcts_train, mcts_eval
 
 def main():
@@ -34,6 +35,8 @@ def main():
         return
 
     if mode in {"train", "eval"}:
+        if algorithm is None:
+            raise ValueError("--algorithm is required for train/eval modes. Use --algorithm ppo or --algorithm mcts")
         set_global_seeds(config["seed"])
 
     device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
@@ -79,5 +82,6 @@ python main.py --mode=baseline --baseline_type=demand_cover --save_animations --
 python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=1.0
 python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
 
-python main.py --gpu --anneal_lr
+python main.py --algorithm ppo --gpu --anneal_lr
+python main.py --algorithm mcts --gpu
 """

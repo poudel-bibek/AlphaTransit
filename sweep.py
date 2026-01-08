@@ -3,7 +3,8 @@ import torch
 import wandb
 import argparse
 from typing import Any, Dict
-from ppo import get_config, set_global_seeds, train as ppo_train_internal
+from config import get_config, set_global_seeds
+from ppo import train as ppo_train_internal
 from mcts import mcts_train
 
 def build_ppo_sweep_config() -> Dict[str, Any]:
@@ -23,8 +24,13 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "K_epochs": {"values": [2, 4]},
             "batch_size": {"values": [16, 32]},
             "update_frequency": {"values": [128, 256]},
+            
+            # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+            "activation": {"values": ["tanh", "leaky_relu"]},
+            "num_gat_blocks": {"values": [4, 8]},
 
             # Fixed values
+            "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
             "max_steps": {"value": 120_000},
@@ -34,25 +40,32 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
 def build_mcts_sweep_config() -> Dict[str, Any]:
     """
     MCTS hyperparameter sweep search space.
-    TODO: Finish
     """
     return {
         "method": "bayes",
         "metric": {
-            "name": "eval/episode_total_reward", 
+            "name": "eval/episode_total_reward",
             "goal": "maximize"
         },
         "parameters": {
-            # MCTS hyperparameters (placeholders - adjust when MCTS is implemented)
-            # "exploration_constant": {"values": [1.0, 1.414, 2.0]},
-            # "num_simulations": {"values": [50, 100, 200]},
-            # "max_depth": {"values": [10, 20, 50]},
-            
+            "n_iter": {"values": [50, 100]},
+            "c_puct": {"values": [1.0, 1.5]},
+            "lr": {"values": [1e-5, 5e-5]},
+            "batch_size": {"values": [64, 128]},
+            "episodes_per_iter": {"values": [2, 4]},
+            "dirichlet_alpha": {"values": [0.3, 0.5]},
+
+            # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+            "activation": {"values": ["tanh", "leaky_relu"]},
+            "num_gat_blocks": {"values": [4, 8]},
+
             # Fixed values
+            "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_steps": {"value": 100_000},
+            "max_iterations": {"value": 500},
         },
     }
+
 
 def get_sweep_config(algorithm: str) -> Dict[str, Any]:
     """
@@ -117,12 +130,12 @@ def create_agent_train(algorithm: str):
 def main() -> None:
     """
     Usage:
-        python sweep.py --algorithm ppo --count 32
-        python sweep.py --algorithm mcts --count 16
+        python sweep.py --algorithm ppo 
+        python sweep.py --algorithm mcts 
     """
     parser = argparse.ArgumentParser(description="Hyperparameter sweep for transit design RL")
-    parser.add_argument("--algorithm", choices=["ppo", "mcts"], default="ppo", 
-                        help="Algorithm to sweep (default: ppo)")
+    parser.add_argument("--algorithm", choices=["ppo", "mcts"], required=True,
+                        help="Algorithm to sweep (required)")
     args = parser.parse_args()
     
     # Get configs

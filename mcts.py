@@ -1,94 +1,210 @@
 """
-\section{Full version of the MCTS algorithm}
+AlphaTransit: MCTS-Based Policy Learning for TRNDP
+================================================================================
 
-\begin{algorithm}[t!]
-\caption{AlphaTransit (Full version) -- Phase 1: Self-play with MCTS}
-\label{alg:alphatransit_selfplay}
-\begin{algorithmic}[1]
-  \STATE \textbf{Input:} $N_{\mathrm{episodes}}$, $N_{\mathrm{iter}}{=}100$, $B_{\max}{=}100{,}000$, $c_{\mathrm{puct}}{=}1.5$, $\gamma{=}1.0$, \texttt{dirichlet\_alpha}=0.3, \texttt{dirichlet\_epsilon}=0.25, temperature schedule $\tau(k)$
-  \STATE \textbf{Output:} Replay buffer $\mathcal{D}$ (a rollout yields route set $\Pi=\{r_1,\dots,r_K\}$)
-  \STATE \textbf{Initialize:} Network $f_\theta$ outputs $(P_\theta,V_\theta)$; $\mathcal{D}\gets\varnothing$; Welford stats $(\mu,\sigma)$ for terminal reward normalization
-  \FOR{training iteration $k = 1,2,\dots$}
-    \STATE $\tau \gets \textsc{TempSchedule}(k)$ \COMMENT{$\tau=1.0$ (first 30\%), $0.5$ (next 30\%), $0.1$ (last 40\%)}
-    \FOR{episode $e = 1$ to $N_{\mathrm{episodes}}$}
-      \STATE Reset env; initialize current route per configuration; $E\gets[\,]$; root $\gets$ null
-      \WHILE{\textbf{not} terminal (all $K$ routes built)}
-        \STATE $X_t \gets \textsc{FormState}(\cdot)$; $s_t \gets (X_t,\mathcal{I},Z)$
-        \STATE $\mathcal{C}_t \gets$ one-hop neighbors of frontier not in current route
-        \STATE $\mathcal{A}_t \gets \{\texttt{NO\_VALID\_ACTION}\}$ if $\mathcal{C}_t=\varnothing$ else $\mathcal{C}_t$
-        \STATE \COMMENT{MCTS with PUCT and tree reuse}
-        \STATE If root exists: re-root to child from previous action; discard siblings
-        \IF{root is new}
-          \STATE $(P_{\text{root}},V_{\text{root}})\gets f_\theta(s_t)$; mask+renorm $P_{\text{root}}$
-        \ENDIF
-        \STATE Add Dirichlet noise at root: $P_{\text{root}} \leftarrow (1-\epsilon)P_{\text{root}} + \epsilon\,\text{Dir}(\alpha_{\text{dir}})$
-        \FOR{simulation $i=1$ to $N_{\mathrm{iter}}$}
-          \STATE Select path using PUCT: $Q + c_{\mathrm{puct}} P \sqrt{N}/(1+N_{sa})$ (mask to valid actions at each node)
-          \STATE If leaf unexpanded: $(P_{\text{leaf}}, V_{\text{leaf}})\gets f_\theta(s_{\text{leaf}})$; mask+renorm $P_{\text{leaf}}$; expand
-          \STATE Backprop $V_{\text{leaf}}$ along the path \COMMENT{terminal-only; no step rewards, $\gamma=1$}
-        \ENDFOR
-        \STATE $\pi_t(a)\propto N(s_t,a)^{1/\tau(k)}$ over $\mathcal{A}_t$
-        \STATE Append $(s_t,\pi_t)$ to $E$
-        \STATE Sample $a_t \sim \pi_t$ (if $\tau\rightarrow 0$ use argmax)
-        \STATE $s_{t+1}\gets \textsc{ApplyAction}(s_t,a_t)$ \COMMENT{deterministic; may advance to next route}
-      \ENDWHILE
-      \STATE $z_{\text{raw}}\gets \mathcal{R}_{\text{final}}(\Pi)$ via full traffic simulation
-      \STATE Update Welford stats $(\mu,\sigma)$ with $z_{\text{raw}}$
-      \STATE $z\gets \mathrm{clip}\left(\frac{z_{\text{raw}}-\mu}{\sigma+10^{-8}}, -3, 3\right)$
-      \FOR{each $(s_i,\pi_i)$ in $E$}
-        \STATE Add $(s_i,\pi_i,z)$ to $\mathcal{D}$ (FIFO, keep max $B_{\max}$)
-      \ENDFOR
-    \ENDFOR
-  \ENDFOR
-\end{algorithmic}
-\end{algorithm}
+FULL VERSION (Two-Part Algorithm)
+================================================================================
 
-\begin{algorithm}[t!]
-\caption{AlphaTransit (Full version) -- Phase 2: Network Optimization}
-\label{alg:alphatransit_train}
-\begin{algorithmic}[1]
-  \STATE \textbf{Input:} Replay buffer $\mathcal{D}$, training steps $N_{\mathrm{steps}}{=}500$, batch size $B{=}128$, learning rate $\alpha$
-  \STATE \textbf{Output:} Updated parameters $\theta$ for $f_\theta$
-  \FOR{training step $=1$ to $N_{\mathrm{steps}}$}
-    \STATE Sample batch $B$ from $\mathcal{D}$ (uniform)
-    \FOR{each $(s,\pi,z)$ in $B$}
-      \STATE $(P_{\mathrm{pred}},V_{\mathrm{pred}})\gets f_\theta(s)$; mask+renorm $P_{\mathrm{pred}}$ using valid actions implied by $s$
-      \STATE $\mathcal{L}_{\mathrm{policy}} \gets -\pi \cdot \log(P_{\mathrm{pred}})$
-      \STATE $\mathcal{L}_{\mathrm{value}} \gets (z - V_{\mathrm{pred}})^2$
-    \ENDFOR
-    \STATE $\theta \gets \theta - \alpha \nabla_\theta \left(\frac{1}{|B|}\sum(\mathcal{L}_{\mathrm{policy}}+\mathcal{L}_{\mathrm{value}})\right)$
-  \ENDFOR
-  \STATE \COMMENT{Periodic evaluation: $\tau=0$, no Dirichlet noise, $N_{\mathrm{iter}}=100$}
-\end{algorithmic}
-\end{algorithm}
+Algorithm 1: AlphaTransit for TRNDP -- Phase 1: Self-Play
+---------------------------------------------------------
+Input: Graph G=(V,E), OD matrix D, directed edges I, edge features Z,
+       routes K, max length L_max, MCTS simulations N_iter, exploration c_puct,
+       noise (alpha_dir, epsilon)
+Output: Replay buffer D with tuples (s, pi, z_tilde)
 
-Training follows the MDP defined in the methodology with terminal-only returns: rewards are zero during construction and the full traffic simulation yields $\mathcal{R}_{\text{final}}(\Pi)$ once all $K$ routes are built. 
-We reuse the MCTS tree by re-rooting at the selected child each step and restrict actions to the valid neighbor set $\mathcal{C}_t$ (allowing \texttt{NO\_VALID\_ACTION} only when $\mathcal{C}_t=\varnothing$). 
-Root priors are perturbed with Dirichlet noise (\texttt{dirichlet\_alpha}=0.3, \texttt{dirichlet\_epsilon}=0.25), and the temperature $\tau(k)$ decays across training (1.0/0.5/0.1). 
-Terminal returns are normalized online with Welford statistics and clipped to [-3,3] for stable value targets; raw rewards are still logged. 
-We maintain a FIFO replay buffer of size $B_{\max}=100{,}000$ and sample uniformly with batch size $B=128$ for $N_{\mathrm{steps}}=500$ updates per iteration.
+Initialize: Buffer D <- empty, Welford statistics (mu, sigma, n_w) <- (0, 0, 0)
+
+FOR training iteration = 1, 2, ...
+    tau <- TempSchedule(progress)                    # 1.0 -> 0.5 -> 0.1
+    FOR episode e = 1 to N_ep
+        Pi <- empty; V_cmp <- empty; E <- []; T <- InitTree()
+        FOR k = 1 to K
+            r_k <- [transit_center]; V_cur <- {r_k[0]}
+            WHILE |r_k| < L_max
+                C_t <- valid one-hop neighbors of frontier
+                IF C_t = empty THEN break                # no feasible extension
+
+                X_t <- FormState(V_cur, V_cmp)
+                s_t <- (X_t, I, Z)
+
+                # Expand root if needed
+                IF NOT T.root.expanded THEN
+                    (P, V) <- f_theta(s_t)
+                    P <- MaskNorm(P, C_t)
+                    T.root.Expand(P, V)
+                ENDIF
+
+                eta ~ Dir(alpha_dir)
+                P <- (1 - epsilon) * P + epsilon * eta   # Dirichlet noise
+
+                # MCTS simulations
+                FOR i = 1 to N_iter
+                    node <- T.root; path <- []
+                    WHILE node.expanded AND NOT IsTerminal(node)
+                        a <- argmax_a' [Q + c_puct * P * sqrt(sum_b N_b) / (1 + N_a')]
+                        path.Append((node, a))
+                        node <- node.Child(a)
+                    ENDWHILE
+
+                    IF NOT node.expanded AND NOT IsTerminal(node) THEN
+                        (P', V') <- f_theta(node.state)
+                        P' <- MaskNorm(P', C)
+                        node.Expand(P', V')
+                        v <- V'
+                    ELSE
+                        v <- node.V
+                    ENDIF
+
+                    FOR (n, a) in Reversed(path)
+                        N_{n,a} += 1
+                        W_{n,a} += v
+                        Q_{n,a} <- W_{n,a} / N_{n,a}
+                    ENDFOR
+                ENDFOR
+
+                pi_t <- Softmax(N_{T.root}^{1/tau})      # visit count policy
+                E.Append((s_t, pi_t))
+                a_t ~ pi_t
+                Append a_t to r_k
+                V_cur <- nodes in r_k
+                T.Advance(a_t)                           # re-root tree to child
+            ENDWHILE
+            V_cmp <- V_cmp UNION V_cur
+            Pi <- Pi UNION {r_k}
+        ENDFOR
+
+        z <- R_final(Pi)                                 # traffic simulation
+        (mu, sigma, n_w) <- WelfordUpdate(mu, sigma, n_w, z)
+        z_tilde <- Clip((z - mu) / (sigma + 1e-8), -3, 3)
+
+        FOR (s_i, pi_i) in E
+            D.Add((s_i, pi_i, z_tilde))                  # FIFO if |D| > B_max
+        ENDFOR
+    ENDFOR
+    # Proceed to Phase 2: Network Optimization
+ENDFOR
+
+
+Algorithm 2: AlphaTransit for TRNDP -- Phase 2: Training
+--------------------------------------------------------
+Input: Replay buffer D, network f_theta, training steps N_steps,
+       batch size B, learning rate alpha
+Output: Updated parameters theta
+
+FOR step = 1 to N_steps
+    Sample minibatch B <- Sample(D, B)
+    L <- 0
+    FOR (s, pi, z_tilde) in B
+        (P_theta, V_theta) <- f_theta(s)
+        P_theta <- MaskNorm(P_theta, C)
+        L_policy <- -sum_a pi(a) * log(P_theta(a))       # cross-entropy
+        L_value <- (z_tilde - V_theta)^2                 # MSE
+        L <- L + L_policy + L_value
+    ENDFOR
+    theta <- theta - alpha * grad_theta(L / |B|)
+ENDFOR
+RETURN theta
+
+
+================================================================================
+HYPERPARAMETERS
+================================================================================
+- N_iter = 100          (MCTS simulations per move)
+- c_puct = 1.5          (exploration constant)
+- alpha_dir = 0.3       (Dirichlet noise concentration)
+- epsilon = 0.25        (Dirichlet noise weight)
+- Buffer capacity = 100,000 (FIFO eviction)
+- N_ep = 2              (episodes per iteration)
+- N_steps = 500         (training steps per iteration)
+- Batch size B = 128
+- Learning rate = 5e-5
+- Temperature schedule: tau = 1.0 (progress < 0.3), 0.5 (0.3-0.6), 0.1 (> 0.6)
+- Evaluation: tau -> 0 (greedy), no Dirichlet noise
+
+
+================================================================================
+SUPPORTING DEFINITIONS
+================================================================================
+- MaskNorm(P, C): Set P(a) = 0 for a not in C, renormalize so sum = 1
+- WelfordUpdate(mu, sigma, n, x): Online mean/variance update
+- FormState(V_cur, V_cmp): Construct node features encoding current/completed routes
+- IsTerminal(s): True when all K routes constructed
+- T.Advance(a): Re-root tree to child node for action a, discard siblings
+- TempSchedule(progress): Returns tau based on training progress (steps/max_steps)
+
 """
 
+import wandb
 from typing import Any, Dict
 from rl.env import TransitEnv
 from rl.mcts_agent import MCTSAgent
 
+
+def get_policy_kwargs_mcts(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
+    """
+    Get model kwargs for MCTS. Matches structure of get_policy_kwargs_ppo.
+    """
+    n = config.get("num_gat_blocks", 4)
+    half = n // 2
+    
+    # gat_channels and num_heads must be specified together
+    if ("gat_channels" in config) != ("num_heads" in config):
+        raise ValueError("gat_channels and num_heads must be specified together")
+    
+    # Defaults: 4 blocks -> [128,128,64,64], [8,8,4,4]
+    #           6 blocks -> [128,128,128,64,64,64], [8,8,8,4,4,4]
+    #           8 blocks -> [128,128,128,128,64,64,64,64], [8,8,8,8,4,4,4,4]
+    gat_channels = config.get("gat_channels", [128] * half + [64] * (n - half))
+    num_heads = config.get("num_heads", [8] * half + [4] * (n - half))
+
+    return {
+        "n_node_features": node_feature_dim,
+        "proj_out": config.get("proj_out", 64),
+        "num_gat_blocks": n,
+        "gat_channels": gat_channels,
+        "num_heads": num_heads,
+        "attn_dropout": [0.0] * n,
+        "feat_dropout": [0.0] * n,
+        "actor_head_dropout": 0.0,
+        "critic_head_dropout": 0.0,
+        "concat": config.get("concat_heads", False),
+        "activation": config.get("activation", "tanh"),
+        "n_edge_features": edge_feature_dim,
+        "actor_head_layers": config.get("actor_head_layers", [256, 128, 64]),
+        "critic_head_layers": config.get("critic_head_layers", [256, 128, 64]),
+        "critic_readout_type": config.get("critic_readout_type", "sum"),
+    }
+
+
 def mcts_train(config: Dict[str, Any]) -> None:
     """
     Entry point for MCTS training mode.
-    TODO: Implement MCTS training pipeline in rl/mcts_agent.py
+    Initializes wandb if enabled, runs training, and cleans up.
     """
+    if not config.get("wandb_off"):
+        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
+
     env = TransitEnv(config)
-    mcts_agent = MCTSAgent(env, config)
-    # TODO: Implement MCTS training pipeline in rl/mcts_agent.py
-    pass
+    policy_kwargs = get_policy_kwargs_mcts(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
+    mcts_agent = MCTSAgent(env, config, policy_kwargs)
+    mcts_agent.train()
+
+    if not config.get("wandb_off"):
+        wandb.finish()
+
 
 def mcts_eval(config: Dict[str, Any]) -> None:
     """
-    Entry point for MCTS evaluation mode.
-    TODO: Implement MCTS evaluation pipeline in rl/mcts_agent.py
+    Entry point for standalone MCTS evaluation mode (like ppo_eval).
     """
+    import os
+    os.makedirs(config["save_dir"], exist_ok=True)
+    config["wandb_off"] = True
+
     env = TransitEnv(config)
-    mcts_agent = MCTSAgent(env, config)
-    # TODO: Implement MCTS evaluation pipeline in rl/mcts_agent.py
-    pass
+    policy_kwargs = get_policy_kwargs_mcts(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
+    mcts_agent = MCTSAgent(env, config, policy_kwargs)
+    mcts_agent.evaluate(
+        policy_path=config.get("saved_policy_path", ""),
+        save_dir=config["save_dir"]
+    )

@@ -1,8 +1,6 @@
 import os
 import wandb
 import torch
-import random
-import argparse
 import numpy as np
 import pandas as pd
 from collections import deque
@@ -15,6 +13,7 @@ from rl.ppo_agent import PPOAgent
 from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json, calculate_combined_metrics
 from rl.parallel_env import ParallelEnvManager
 from rl.ppo_utils import RunningMeanStd
+from config import get_config, set_global_seeds
 
 def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, update_count: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """
@@ -127,7 +126,7 @@ def train(config: Dict[str, Any]) -> None:
 
     # Set policy hyper-param defaults
     config["n_nodes"] = env.n_nodes
-    policy_kwargs = get_policy_kwargs(config, node_feature_dim, edge_feature_dim)
+    policy_kwargs = get_policy_kwargs_ppo(config, node_feature_dim, edge_feature_dim)
 
     device = torch.device(config["device"])
     model = GATV2ActorCritic(**policy_kwargs).to(device)
@@ -140,7 +139,7 @@ def train(config: Dict[str, Any]) -> None:
     model.count_params()
 
     ppo = PPOAgent(model, **config)
-    policy_dir = os.path.join(training_save_dir, "policies")
+    policy_dir = os.path.join(training_save_dir, "ppo_policies")
     os.makedirs(policy_dir, exist_ok=True)
 
     max_steps = config["max_steps"]
@@ -360,40 +359,33 @@ def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, step
 
     return aggregated
 
-def get_config() -> Dict[str, Any]:
-    """
-    A unified config interface for both main and sweep.
-    Does NOT set seeds or device here to allow overrides from sweep.
-    """
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    return vars(args)
-
-def set_global_seeds(seed: int) -> None:
-    """
-    Set seeds for Python, NumPy, and PyTorch.
-    """
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
+def get_policy_kwargs_ppo(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
     """
     Dropout has been disabled.
     In the parallelized setup, it breaks some core PPO assumptions and causes policy mismatch.
     """
-    num_gat_blocks = config.get("num_gat_blocks", 4)
+    n = config.get("num_gat_blocks", 4)
+    half = n // 2
+    
+    # gat_channels and num_heads must be specified together
+    if ("gat_channels" in config) != ("num_heads" in config):
+        raise ValueError("gat_channels and num_heads must be specified together")
+    
+    # Defaults: 4 blocks -> [128,128,64,64], [8,8,4,4]
+    #           6 blocks -> [128,128,128,64,64,64], [8,8,8,4,4,4]
+    #           8 blocks -> [128,128,128,128,64,64,64,64], [8,8,8,8,4,4,4,4]
+    gat_channels = config.get("gat_channels", [128] * half + [64] * (n - half))
+    num_heads = config.get("num_heads", [8] * half + [4] * (n - half))
+
+
     return {
         "n_node_features": node_feature_dim,
         "proj_out": config.get("proj_out", 64),
-        "num_gat_blocks": num_gat_blocks,
-        "gat_channels": config.get("gat_channels", [128, 128, 64, 64]),
-        "num_heads": config.get("num_heads", [8, 8, 4, 4]),
-        "attn_dropout": [0.0] * num_gat_blocks,
-        "feat_dropout": [0.0] * num_gat_blocks,
+        "num_gat_blocks": n,
+        "gat_channels": gat_channels,
+        "num_heads": num_heads,
+        "attn_dropout": [0.0] * n,
+        "feat_dropout": [0.0] * n,
         "actor_head_dropout": 0.0,
         "critic_head_dropout": 0.0,
         "concat": config.get("concat_heads", False),
@@ -403,78 +395,6 @@ def get_policy_kwargs(config: Dict[str, Any], node_feature_dim: int, edge_featur
         "critic_head_layers": config.get("critic_head_layers", [256, 128, 64]),
         "critic_readout_type": config.get("critic_readout_type", "sum"),
     }
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    """
-    Create and configure an argument parser for CLI usage.
-    Define common RL, system, and sweepable hyperparameters.
-    """
-    parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
-    parser.add_argument("--algorithm", choices=["ppo", "mcts"], default="ppo", help="Select learning algorithm")
-    # Simulation setup: 
-    parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
-    parser.add_argument("--mode", choices=["train", "eval", "baseline"], default="train", help="Run mode")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--gpu", action="store_true", help="Use CUDA if available. Pass --gpu to enable.")
-    parser.add_argument("--horizon", type=int, default=10000, help="Simulation horizon") # 10k = 2.7 hours
-    parser.add_argument("--delta_t", type=float, default=1, help="Simulation time step") # Increasing delta_t makes simulation faster.
-    parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size") # Increasing delta_n also makes simulation faster. Does not apply for bus passenger demand.
-    parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
-    parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--update_frequency", type=int, default=128, help="Update PPO when memory has N samples") 
-    parser.add_argument("--max_steps", type=int, default=1_000_000, help="Total training steps (transitions)")
-    parser.add_argument("--eval_every", type=int, default=10, help="Evaluate every N updates to the policy")
-    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
-    parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of runs (over which we average the results) for both evaluation and baselines")
-    parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
-    parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
-    
-    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers (1=single worker, >1=parallel)")
-    parser.add_argument("--steps_per_worker", type=int, default=32, help="Steps per worker before sending data back (buffer size)")
-    parser.add_argument("--weight_refresh_interval", type=int, default=4, help="Refresh worker weights every N PPO updates (mitigates policy lag)")
-    # When steps_per_worker is set to too small, the GAE computation will assign a 0 to last advantage more often, which will make advantages more biased.
-
-    # Learning environment specific: 
-    parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode, e.g., 'fixed' or 'max_load'")
-    parser.add_argument("--stop_spacing", type=int, default=1, help="Stop spacing. 1 means every node is a stop")
-    parser.add_argument("--alpha", type=float, default=0.3, help="Modal split parameter for served O-D pairs (proportion taking bus)")
-    parser.add_argument("--ignore_unserved", action="store_true", help="If this flag is set, demand that is not served by buses is ignored. Otherwise, it is allocated to cars.")
-    parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor allowed per bus when computing service frequency")
-    parser.add_argument("--radius", type=float, default=0.5, help="Radius within each node to consider for demand allocation")
-    parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end with no demand (0.0-0.5)")
-    parser.add_argument("--route_init", type=str, default="transit_center", help="Initialize path using various schemes (possible: random, highest demand node, transit_center)")
-    parser.add_argument("--transit_center_node", type=str, default="96", help="Node identifier to use when route_init is 'transit_center'")
-    
-    # Constraints:
-    parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
-    parser.add_argument("--max_route_length", type=int, default=14, help="Maximum path length")
-    parser.add_argument("--min_route_length", type=int, default=2, help="Minimum path length")
-
-    # PPO params: 
-    parser.add_argument("--K_epochs", type=int, default=4, help="Number of PPO epochs")
-    parser.add_argument("--batch_size", type=int, default= 16, help="Mini-batch size")
-    parser.add_argument("--clip_frac", type=float, default=0.1, help="PPO clipping ratio for policy loss")
-    parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO clipping ratio for value loss")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-    parser.add_argument("--gae_lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--entropy_coef", type=float, default=0.01, help="Entropy coefficient")
-    parser.add_argument("--value_loss_coef", type=float, default=0.5, help="Value loss coefficient")
-    parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
-    parser.add_argument("--lr", type=float, default=0.00005, help="Learning rate")
-    parser.add_argument("--anneal_lr", action="store_true", help="Anneal learning rate over training episodes")
-    
-    # parser.add_argument("--activation", type=str, default="elu", help="Activation function") # elu better for deeper networks?
-    parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
-    # WandB:
-    parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
-    parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
-    parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
-
-    parser.add_argument("--save_dir", type=str, default="./training_data", help="Directory to save training data")
-    parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy that you want to evaluate")
-    # parser.add_argument("--demand_method", choices=["volume", "flow"], default="volume", help="Demand allocation method")
-    return parser
-
 
 # =============================================================================
 # PPO-specific entry points for train and eval modes.
@@ -508,7 +428,7 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     node_feature_dim = env.N_NODE_FEATURES
     edge_feature_dim = env.N_EDGE_FEATURES
     config["n_nodes"] = env.n_nodes
-    policy_kwargs = get_policy_kwargs(config, node_feature_dim, edge_feature_dim)
+    policy_kwargs = get_policy_kwargs_ppo(config, node_feature_dim, edge_feature_dim)
     
     # Load model to get architecture for workers
     device = torch.device(config["device"])
