@@ -1,4 +1,5 @@
 import os
+import warnings
 import wandb
 import torch
 import numpy as np
@@ -14,6 +15,9 @@ from rl.env_utils import plot_network_and_demand, aggregate_results, write_resul
 from rl.parallel_env import ParallelEnvManager
 from rl.ppo_utils import RunningMeanStd
 from config import get_config, set_global_seeds
+
+# Suppress torch-scatter installation warning from PyTorch Geometric
+warnings.filterwarnings("ignore", message=".*torch-scatter.*")
 
 def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, update_count: int, anneal_lr: bool, config: Dict[str, Any]) -> None:
     """

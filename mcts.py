@@ -134,10 +134,14 @@ SUPPORTING DEFINITIONS
 
 """
 
+import warnings
 import wandb
 from typing import Any, Dict
 from rl.env import TransitEnv
 from rl.mcts_agent import MCTSAgent
+
+# Suppress torch-scatter installation warning from PyTorch Geometric
+warnings.filterwarnings("ignore", message=".*torch-scatter.*")
 
 
 def get_policy_kwargs_mcts(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
