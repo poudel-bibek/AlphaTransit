@@ -91,7 +91,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
 
     # MCTS hyperparameters:
-    parser.add_argument("--n_iter", type=int, default=100, help="MCTS: Simulations per move")
+    parser.add_argument("--n_iter", type=int, default=50, help="MCTS: Simulations per move")
     parser.add_argument("--c_puct", type=float, default=1.5, help="MCTS: PUCT exploration constant")
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")

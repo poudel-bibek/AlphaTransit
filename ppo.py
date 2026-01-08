@@ -142,6 +142,9 @@ def train(config: Dict[str, Any]) -> None:
     )
     model.count_params()
 
+    # Compile model for faster inference
+    model = torch.compile(model)
+
     ppo = PPOAgent(model, **config)
     policy_dir = os.path.join(training_save_dir, "ppo_policies")
     os.makedirs(policy_dir, exist_ok=True)
@@ -439,7 +442,8 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     model = GATV2ActorCritic(**policy_kwargs).to(device)
     state_dict = torch.load(policy_path, map_location=device)
     model.load_state_dict(state_dict)
-    
+    model = torch.compile(model)
+
     # Create and start env_manager
     num_workers = config.get("num_workers")
     env_manager = ParallelEnvManager(config=config, num_workers=num_workers)

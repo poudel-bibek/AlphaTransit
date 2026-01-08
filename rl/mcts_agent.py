@@ -97,6 +97,9 @@ class MCTSAgent:
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
         self.model.apply_orthogonal_init()
 
+        # Compile model for faster inference
+        self.model = torch.compile(self.model)
+
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
 
@@ -105,7 +108,12 @@ class MCTSAgent:
         self.reward_normalizer = WelfordNormalizer()
 
         # Training state
-        self.total_steps = 0
+        # total_env_steps: Total environment interactions (actions taken across all episodes).
+        # This is the key metric for sample efficiency comparison with PPO, which also
+        # measures progress in environment steps. Enables apples-to-apples comparison
+        # of how many environment interactions each algorithm needs to reach a given
+        # performance level.
+        self.total_env_steps = 0
         self.total_episodes = 0
 
         # Evaluation config
@@ -524,8 +532,6 @@ class MCTSAgent:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.optimizer.step()
 
-        self.total_steps += 1
-
         return {
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
@@ -570,6 +576,8 @@ class MCTSAgent:
                 for state_dict, policy, valid_actions in episode_data:
                     self.replay_buffer.add(state_dict, policy, valid_actions, normalized_reward)
 
+                # Track environment steps for sample efficiency comparison with PPO
+                self.total_env_steps += len(episode_data)
                 episode_rewards.append(raw_reward)
 
             # Training phase
@@ -606,6 +614,7 @@ class MCTSAgent:
                     "mcts/temperature": tau,
                     "mcts/iteration": iteration,
                     "mcts/progress": progress,
+                    "mcts/total_env_steps": self.total_env_steps,
                 }, step=iteration)
 
             # Save policy and track best
@@ -707,7 +716,7 @@ class MCTSAgent:
         episode_dir = ensure_eval_step_update_dir(
             str(self.training_save_dir),
             update=iteration,
-            steps=iteration,  # Use iteration as step proxy
+            steps=self.total_env_steps,
             folder_name="eval_results"
         )
 

@@ -10,6 +10,19 @@ from mcts import mcts_train
 def build_ppo_sweep_config() -> Dict[str, Any]:
     """
     PPO hyperparameter sweep search space.
+
+    Key takeaways from PPO sweep in Jan 5: 
+    Alpha = 0.3 (10 runs)
+    1. K_epochs: Tried 2 and 4. Higher is better — optimizer chose 4 in 60% of runs. Impact: +55 reward.
+    2. batch_size: Tried 16 and 32. Higher is better — optimizer chose 32 in 80% of runs. Impact: +55 reward.
+    3. lr: Tried 1e-05 and 1e-04. Higher is better — optimizer chose 1e-04 in 90% of runs. Impact: +52 reward.
+
+
+    Alpha = 1.0 (39 runs)
+    1. lr: Tried 1e-05 and 1e-04. Lower is better — optimizer chose 1e-05 in 95% of runs. Impact: +119 reward.
+    2. batch_size: Tried 16 and 32. Higher is better — optimizer chose 32 in 95% of runs. Impact: +84 reward.
+    3. update_frequency: Tried 128 and 256. Lower is better — optimizer chose 128 in 90% of runs. Impact: +81 reward.
+
     """
     return {
         "method": "bayes",
@@ -17,24 +30,49 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "name": "eval/episode_total_reward", 
             "goal": "maximize"
         },
+
+        # Alpha = 0.3
         "parameters": {
             "clip_frac": {"values": [0.1, 0.2]},
             "entropy_coef": {"values": [0.01, 0.02]},
-            "lr": {"values": [1e-5, 1e-4]},
-            "K_epochs": {"values": [2, 4]},
-            "batch_size": {"values": [16, 32]},
+            "lr": {"values": [1e-4]},
+            "K_epochs": {"values": [4]},
+            "batch_size": {"values": [32]},
             "update_frequency": {"values": [128, 256]},
             
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh", "leaky_relu"]},
             "num_gat_blocks": {"values": [4, 8]},
 
-            # Fixed values
+            # Fixed values (Not sweep params)
+            "alpha": {"value": 0.3}, # ALPHA SETTING. 
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
             "max_steps": {"value": 120_000},
         },
+
+        # Alpha = 1.0
+        # "parameters": {
+        #     "clip_frac": {"values": [0.1, 0.2]},
+        #     "entropy_coef": {"values": [0.01, 0.02]},
+        #     "lr": {"values": [1e-5]},
+        #     "K_epochs": {"values": [2, 4]},
+        #     "batch_size": {"values": [32]},
+        #     "update_frequency": {"values": [128]},
+            
+        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+        #     "activation": {"values": ["tanh", "leaky_relu"]},
+        #     "num_gat_blocks": {"values": [4, 8]},
+
+        #     # Fixed values (Not sweep params)
+        #     "alpha": {"value": 1.0}, # ALPHA SETTING. 
+        #     "algorithm": {"value": "ppo"},
+        #     "gpu": {"value": True},
+        #     "anneal_lr": {"value": True},
+        #     "max_steps": {"value": 120_000},
+        # },
+
     }
 
 def build_mcts_sweep_config() -> Dict[str, Any]:
@@ -47,6 +85,8 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "name": "eval/episode_total_reward",
             "goal": "maximize"
         },
+
+        # Alpha = 0.3
         "parameters": {
             "n_iter": {"values": [50, 100]},
             "c_puct": {"values": [1.0, 1.5]},
@@ -59,11 +99,32 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "activation": {"values": ["tanh", "leaky_relu"]},
             "num_gat_blocks": {"values": [4, 8]},
 
-            # Fixed values
+            # Fixed values (Not sweep params)
+            "alpha": {"value": 0.3}, # ALPHA SETTING. 
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "max_iterations": {"value": 500},
         },
+
+        # # Alpha = 1.0
+        # "parameters": {
+        #     "n_iter": {"values": [50, 100]},
+        #     "c_puct": {"values": [1.0, 1.5]},
+        #     "lr": {"values": [1e-5, 5e-5]},
+        #     "batch_size": {"values": [64, 128]},
+        #     "episodes_per_iter": {"values": [2, 4]},
+        #     "dirichlet_alpha": {"values": [0.3, 0.5]},
+
+        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+        #     "activation": {"values": ["tanh", "leaky_relu"]},
+        #     "num_gat_blocks": {"values": [4, 8]},
+
+        #     # Fixed values (Not sweep params)
+        #     "alpha": {"value": 1.0}, # ALPHA SETTING. 
+        #     "algorithm": {"value": "mcts"},
+        #     "gpu": {"value": True},
+        #     "max_iterations": {"value": 500},
+        # },
     }
 
 
@@ -157,3 +218,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
