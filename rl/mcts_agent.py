@@ -34,23 +34,8 @@ from torch_geometric.data import Data, Batch
 mp_ctx = mp.get_context('spawn')
 
 from rl.models import GATV2ActorCritic
-from rl.env_utils import (
-    plot_network_and_demand,
-    aggregate_results,
-    write_results_summary,
-    ensure_eval_step_update_dir,
-    make_seed_output_dir,
-    save_routes_json,
-)
-from rl.mcts_utils import (
-    MCTSState,
-    MCTSNode,
-    MCTSTree,
-    ReplayBuffer,
-    WelfordNormalizer,
-    add_dirichlet_noise,
-    get_temperature,
-)
+from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json
+from rl.mcts_utils import MCTSState, MCTSNode, MCTSTree, ReplayBuffer, WelfordNormalizer, add_dirichlet_noise, get_temperature
 
 
 class MCTSAgent:
@@ -198,11 +183,7 @@ class MCTSAgent:
         return mask
 
     @torch.no_grad()
-    def _network_forward(
-        self,
-        state_dict: Dict[str, Any],
-        valid_actions: List[int]
-    ) -> Tuple[Dict[int, float], float]:
+    def _network_forward(self, state_dict: Dict[str, Any], valid_actions: List[int]) -> Tuple[Dict[int, float], float]:
         """
         Forward pass through network to get priors and value.
 
@@ -250,12 +231,7 @@ class MCTSAgent:
 
         return priors, value
 
-    def _run_mcts(
-        self,
-        tree: MCTSTree,
-        tau: float,
-        add_noise: bool = True
-    ) -> np.ndarray:
+    def _run_mcts(self, tree: MCTSTree, tau: float, add_noise: bool = True) -> np.ndarray:
         """
         Run MCTS simulations from current tree root.
 
@@ -549,7 +525,7 @@ class MCTSAgent:
                       f"Tau: {tau:.2f}")
 
                 # WandB logging
-                if not self.config.get("wandb_off", True):
+                if not self.config.get("wandb_off"):
                     wandb.log({
                         "mcts/policy_loss": avg_policy_loss,
                         "mcts/value_loss": avg_value_loss,
@@ -683,7 +659,7 @@ class MCTSAgent:
         write_results_summary(aggregated, self.num_eval_runs, episode_dir, 'eval_results_summary.json')
 
         # Log to wandb
-        if not self.config.get("wandb_off", True):
+        if not self.config.get("wandb_off"):
             wandb.log({
                 "eval/episode_total_reward": aggregated['episode_total_reward'],
                 "eval/episode_length": aggregated['episode_length'],

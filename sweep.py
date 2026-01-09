@@ -50,6 +50,7 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
             "max_steps": {"value": 120_000},
+            "num_ppo_workers": {"value": 8},
         },
 
         # Alpha = 1.0
@@ -71,6 +72,7 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
         #     "gpu": {"value": True},
         #     "anneal_lr": {"value": True},
         #     "max_steps": {"value": 120_000},
+        #     "num_ppo_workers": {"value": 8},
         # },
 
     }
@@ -98,23 +100,23 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             
             # How many times to sample batch_size from buffer per iteration.
             # 500 steps × 256 batch = 128,000 samples trained per iteration (~1600 new samples with 8 workers)
-            "train_steps_per_iter": {"values": [200, 500]},
+            "train_steps_per_iter": {"values": [100, 200]},
 
             # How many items to sample from buffer per update.
-            "batch_size": {"values": [256, 512]},
+            "batch_size": {"values": [128, 256]},
             
             # How many MCTS simulations to run 
             # Each of the n_iter simulations only:
             # 1. Traverses the tree using PUCT 2. Calls the neural network for P(actions) and V(state)
             # The full UXsim traffic simulation only runs once per completed route 
-            "n_iter": {"values": [200, 400]},
+            "n_iter": {"values": [50, 100]},
             
             # Fixed values (Not sweep params)
             "alpha": {"value": 0.3}, # ALPHA SETTING. 
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "max_iterations": {"value": 500},
-            "num_mcts_workers": {"value": 8}, # Each iteration runs num_mcts_workers episodes in parallel
+            "num_mcts_workers": {"value": 6}, # Each iteration runs num_mcts_workers episodes in parallel
         },
 
         # # Alpha = 1.0
@@ -124,16 +126,16 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         #     "dirichlet_alpha": {"values": [0.3, 0.5]},
         #     "activation": {"values": ["tanh", "leaky_relu"]},
         #     "num_gat_blocks": {"values": [4, 8]},
-        #     "train_steps_per_iter": {"values": [200, 500]},
-        #     "batch_size": {"values": [256, 512]},
-        #     "n_iter": {"values": [200, 400]},
+        #     "train_steps_per_iter": {"values": [100, 200]},
+        #     "batch_size": {"values": [128, 256]},
+        #     "n_iter": {"values": [50, 100]},
             
         #     # Fixed values (Not sweep params)
         #     "alpha": {"value": 0.3}, # ALPHA SETTING. 
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
         #     "max_iterations": {"value": 500},
-        #     "num_mcts_workers": {"value": 8}, # Each iteration runs num_mcts_workers episodes in parallel
+        #     "num_mcts_workers": {"value": 6}, # Each iteration runs num_mcts_workers episodes in parallel
         # },
     }
 

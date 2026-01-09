@@ -214,11 +214,12 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
     # 2. Create environment
     env = TransitEnv(config)
 
-    # 3. Create model on CPU, load weights
+    # 3. Create model and load weights
+    device = 'cuda' if (config.get('gpu', False) and torch.cuda.is_available()) else 'cpu'
     model = GATV2ActorCritic(**policy_kwargs)
     model.load_state_dict(model_state_dict)
     model.eval()
-    model.to('cpu')
+    model.to(device)
 
     # 4. Run episode
     state_dict, _ = env.reset()
@@ -242,7 +243,7 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
         current_state_dict = get_state_tensor(env, mcts_state)
 
         # Run MCTS and get policy
-        policy = run_mcts_simulations(model, env, tree, tau, config, add_noise=True)
+        policy = run_mcts_simulations(model, env, tree, tau, config, add_noise=True, device=device)
 
         # Record state and policy
         episode_data.append((
