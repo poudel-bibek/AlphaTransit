@@ -4,8 +4,8 @@ import wandb
 import argparse
 from typing import Any, Dict
 from config import get_config, set_global_seeds
-from ppo import train as ppo_train_internal
-from mcts import train as mcts_train_internal
+from ppo import train as ppo_train
+from mcts import train as mcts_train
 
 def build_ppo_sweep_config() -> Dict[str, Any]:
     """
@@ -154,9 +154,9 @@ def get_train_fn(algorithm: str):
     Get the training function for the specified algorithm.
     """
     if algorithm == "ppo":
-        return ppo_train_internal
+        return ppo_train
     elif algorithm == "mcts":
-        return mcts_train_internal
+        return mcts_train
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'mcts'")
 
