@@ -24,9 +24,10 @@ class MCTSState:
     Lightweight state representation for MCTS tree exploration.
     Stores route-building state with env reference for initialize_route() calls.
 
-    WARNING: route_init="random" is incompatible with MCTS. The replay reset (after MCTS
-    episode) doesn't re-seed RNG, so initialize_route picks a different starting node than
-    the first reset, causing trajectory mismatch. Use "transit_center" or "highest_demand".
+    WARNING: route_init="random" is incompatible with MCTS. apply_action() calls
+    initialize_route() which consumes shared RNG, making transitions stochastic and
+    path-dependent. Tree statistics become invalid (same state+action → different
+    successors across simulations). Only "transit_center" or "highest_demand" work.
     """
     current_route: List[str]
     all_routes: List[List[str]]

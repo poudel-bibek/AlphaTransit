@@ -479,12 +479,16 @@ class TransitEnv(gym.Env):
         node_features[:, 4] = self.demand_in / self.max_demand # d_in
         
         # Calculations for dynamic node features:
-        current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route], dtype=np.int64) 
-        
-        frontier = self.current_route[-1] 
-        current_route_set = set(self.current_route)  # O(1) lookup
-        valid_neighbors = self.adj[frontier] - current_route_set  # Set difference 
-        valid_neighbor_indices = [self.node_to_idx[node] for node in valid_neighbors]
+        current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route], dtype=np.int64)
+
+        # Handle terminal states where current_route is empty
+        if self.current_route:
+            frontier = self.current_route[-1]
+            current_route_set = set(self.current_route)  # O(1) lookup
+            valid_neighbors = self.adj[frontier] - current_route_set  # Set difference
+            valid_neighbor_indices = [self.node_to_idx[node] for node in valid_neighbors]
+        else:
+            valid_neighbor_indices = []
         
         completed_routes_indices_set = set()  # Unique indices across all completed routes
         for route in self.all_routes:
