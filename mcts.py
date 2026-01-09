@@ -188,12 +188,16 @@ def get_policy_kwargs_mcts(config: Dict[str, Any], node_feature_dim: int, edge_f
     }
 
 
-def mcts_train(config: Dict[str, Any]) -> None:
+def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     """
-    Entry point for MCTS training mode.
-    Initializes wandb if enabled, runs training, and cleans up.
+    Main MCTS training function for both standalone and sweep use.
+
+    Args:
+        config: Configuration dictionary
+        is_sweep: If True, assumes wandb is already initialized by sweep agent
     """
-    if not config.get("wandb_off"):
+    # Initialize wandb for standalone runs (sweep handles its own init)
+    if not is_sweep and not config.get("wandb_off"):
         wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
 
     env = TransitEnv(config)
@@ -201,9 +205,15 @@ def mcts_train(config: Dict[str, Any]) -> None:
     mcts_agent = MCTSAgent(env, config, policy_kwargs)
     mcts_agent.train()
 
-    if not config.get("wandb_off"):
+    # Finish wandb for standalone runs
+    if not is_sweep and not config.get("wandb_off"):
         wandb.finish()
 
+
+# =============================================================================
+# MCTS eval entry point. Called from main.py when algorithm == "mcts" and mode == "eval".
+# For training, use train() directly.
+# =============================================================================
 
 def mcts_eval(config: Dict[str, Any]) -> None:
     """

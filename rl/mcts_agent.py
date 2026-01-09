@@ -374,7 +374,10 @@ class MCTSAgent:
         ]
 
         # Run episodes in parallel
-        return self.pool.starmap(run_mcts_episode, worker_inputs)
+        print(f"  Collecting...", end="", flush=True)
+        results = self.pool.starmap(run_mcts_episode, worker_inputs)
+        print(" done")
+        return results
 
     def _cleanup(self) -> None:
         """Clean up pool at end of training."""

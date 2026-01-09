@@ -5,7 +5,7 @@ import argparse
 from typing import Any, Dict
 from config import get_config, set_global_seeds
 from ppo import train as ppo_train_internal
-from mcts import mcts_train
+from mcts import train as mcts_train_internal
 
 def build_ppo_sweep_config() -> Dict[str, Any]:
     """
@@ -156,7 +156,7 @@ def get_train_fn(algorithm: str):
     if algorithm == "ppo":
         return ppo_train_internal
     elif algorithm == "mcts":
-        return mcts_train
+        return mcts_train_internal
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'mcts'")
 
@@ -186,12 +186,8 @@ def create_agent_train(algorithm: str):
             device = torch.device("cuda" if config.get("gpu", True) and torch.cuda.is_available() else "cpu")
             config["device"] = device
             
-            # WandB is already initialized by the sweep agent context
-            # Set wandb_off=False so train() logs to the active run
-            config["wandb_off"] = False
-            
-            # Run training
-            train_fn(config)
+            # Run training with is_sweep=True (wandb already initialized by sweep context)
+            train_fn(config, is_sweep=True)
         
         # Cleanup between sweep runs
         gc.collect()

@@ -52,8 +52,14 @@ def perform_ppo_update(ppo: PPOAgent, episode: int, steps_elapsed: int, update_c
             "ppo/update_count": update_count,
         }, step=steps_elapsed)
 
-def train(config: Dict[str, Any]) -> None:
+def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     """
+    Main PPO training function for both standalone and sweep use.
+
+    Args:
+        config: Configuration dictionary
+        is_sweep: If True, assumes wandb is already initialized by sweep agent
+
     Parallel Training Architecture (Multiprocessing with Shared Memory):
     Main Process (Learner):
     - Owns the model and optimizer
@@ -87,6 +93,10 @@ def train(config: Dict[str, Any]) -> None:
     - If terminated naturally, bootstrap value = 0 (no more rewards coming).
     - If truncated at chunk boundary, bootstrap value = V(s_last) from the critic.
     """
+    # Initialize wandb for standalone runs (sweep handles its own init)
+    if not is_sweep and not config.get("wandb_off"):
+        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
+
     num_workers = config.get("num_ppo_workers")
     max_steps = config["max_steps"]
     print(f"Training started: network={config['network']}, workers={num_workers}, max_steps={max_steps:,}")
@@ -301,7 +311,11 @@ def train(config: Dict[str, Any]) -> None:
         env_manager.stop()
     
     print(f"\nTraining Complete: steps={steps_elapsed:,}, episodes={episode_count}, updates={update_count}")
-        
+
+    # Finish wandb for standalone runs
+    if not is_sweep and not config.get("wandb_off"):
+        wandb.finish()
+
 
 def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager) -> Dict[str, float]:
     """
@@ -404,21 +418,9 @@ def get_policy_kwargs_ppo(config: Dict[str, Any], node_feature_dim: int, edge_fe
     }
 
 # =============================================================================
-# PPO-specific entry points for train and eval modes.
-# Called from main.py when algorithm == "ppo".
+# PPO eval entry point. Called from main.py when algorithm == "ppo" and mode == "eval".
+# For training, use train() directly.
 # =============================================================================
-
-def ppo_train(config: Dict[str, Any]) -> None:
-    """
-    Entry point for PPO training mode.
-    Initializes wandb if enabled, runs training, and cleans up.
-    """
-    if not config.get("wandb_off"):
-        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
-    train(config)
-    if not config.get("wandb_off"):
-        wandb.finish()
-
 
 def ppo_eval(config: Dict[str, Any]) -> None:
     """

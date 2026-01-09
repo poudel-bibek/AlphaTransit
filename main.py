@@ -3,8 +3,8 @@ from rl.env import TransitEnv
 from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
 from rl.parallel_env import _cap_worker_threads
 from config import get_config, set_global_seeds
-from ppo import ppo_train, ppo_eval
-from mcts import mcts_train, mcts_eval
+from ppo import train as ppo_train, ppo_eval
+from mcts import train as mcts_train, mcts_eval
 
 def main():
 
