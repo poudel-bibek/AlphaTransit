@@ -75,7 +75,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # PPO hyperparameters:
     parser.add_argument("--update_frequency", type=int, default=128, help="PPO: Update when memory has N samples")
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
-    parser.add_argument("--num_workers", type=int, default=8, help="PPO: Number of parallel workers")
+    parser.add_argument("--num_ppo_workers", type=int, default=8, help="PPO: Number of parallel workers")
     parser.add_argument("--steps_per_worker", type=int, default=32, help="PPO: Steps per worker before sync")
     parser.add_argument("--weight_refresh_interval", type=int, default=4, help="PPO: Refresh weights every N updates")
     parser.add_argument("--K_epochs", type=int, default=4, help="PPO: Number of epochs per update")
@@ -96,7 +96,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
     parser.add_argument("--buffer_capacity", type=int, default=100000, help="MCTS: Replay buffer capacity")
-    parser.add_argument("--episodes_per_iter", type=int, default=10, help="MCTS: Episodes per iteration")
+    parser.add_argument("--num_mcts_workers", type=int, default=8, help="MCTS: Number of parallel workers for episode collection")
     parser.add_argument("--train_steps_per_iter", type=int, default=500, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=500, help="MCTS: Max training iterations")
 

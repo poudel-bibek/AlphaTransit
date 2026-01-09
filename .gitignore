@@ -117,3 +117,9 @@ plots/networks_to_plot/
 
 .cursor/
 .cursor/*
+
+claude_docs/
+./claude_docs/
+
+claude_docs/*
+./claude_docs/*

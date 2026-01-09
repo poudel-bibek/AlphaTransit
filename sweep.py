@@ -88,61 +88,52 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
 
         # Alpha = 0.3
         "parameters": {
-            "n_iter": {"values": [50, 100]},
+            "lr": {"values": [1e-4, 1e-5]},
             "c_puct": {"values": [1.0, 1.5]},
-            "lr": {"values": [1e-5, 5e-5]},
-            "batch_size": {"values": [64, 128]},
-            "episodes_per_iter": {"values": [2, 4]},
             "dirichlet_alpha": {"values": [0.3, 0.5]},
 
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh", "leaky_relu"]},
             "num_gat_blocks": {"values": [4, 8]},
             
-            # Next round.
             # How many times to sample batch_size from buffer per iteration.
-            # 500 steps × 64 batch = 32,000 samples trained per iteration (~400 new samples collected)
-            # "train_steps_per_iter": {"values": [200, 500]},
+            # 500 steps × 256 batch = 128,000 samples trained per iteration (~1600 new samples with 8 workers)
+            "train_steps_per_iter": {"values": [200, 500]},
 
             # How many items to sample from buffer per update.
-            # "batch_size": {"values": [256, 512]},
-
-            # How many episodes to sample per iteration.
-            # "episodes_per_iter": {"values": [6, 10]},
+            "batch_size": {"values": [256, 512]},
             
             # How many MCTS simulations to run 
             # Each of the n_iter simulations only:
             # 1. Traverses the tree using PUCT 2. Calls the neural network for P(actions) and V(state)
             # The full UXsim traffic simulation only runs once per completed route 
-            # "n_iter": {"values": [200, 400]},
-
-            # "lr": {"values": [1e-4, 1e-5]},
+            "n_iter": {"values": [200, 400]},
             
             # Fixed values (Not sweep params)
             "alpha": {"value": 0.3}, # ALPHA SETTING. 
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "max_iterations": {"value": 500},
+            "num_mcts_workers": {"value": 8}, # Each iteration runs num_mcts_workers episodes in parallel
         },
 
         # # Alpha = 1.0
         # "parameters": {
-        #     "n_iter": {"values": [50, 100]},
+        # "lr": {"values": [1e-4, 1e-5]},
         #     "c_puct": {"values": [1.0, 1.5]},
-        #     "lr": {"values": [1e-5, 5e-5]},
-        #     "batch_size": {"values": [64, 128]},
-        #     "episodes_per_iter": {"values": [2, 4]},
         #     "dirichlet_alpha": {"values": [0.3, 0.5]},
-
-        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
         #     "activation": {"values": ["tanh", "leaky_relu"]},
         #     "num_gat_blocks": {"values": [4, 8]},
-
+        #     "train_steps_per_iter": {"values": [200, 500]},
+        #     "batch_size": {"values": [256, 512]},
+        #     "n_iter": {"values": [200, 400]},
+            
         #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 1.0}, # ALPHA SETTING. 
+        #     "alpha": {"value": 0.3}, # ALPHA SETTING. 
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
         #     "max_iterations": {"value": 500},
+        #     "num_mcts_workers": {"value": 8}, # Each iteration runs num_mcts_workers episodes in parallel
         # },
     }
 

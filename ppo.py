@@ -87,7 +87,7 @@ def train(config: Dict[str, Any]) -> None:
     - If terminated naturally, bootstrap value = 0 (no more rewards coming).
     - If truncated at chunk boundary, bootstrap value = V(s_last) from the critic.
     """
-    num_workers = config.get("num_workers")
+    num_workers = config.get("num_ppo_workers")
     max_steps = config["max_steps"]
     print(f"Training started: network={config['network']}, workers={num_workers}, max_steps={max_steps:,}")
     
@@ -446,7 +446,7 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     # model = torch.compile(model)
 
     # Create and start env_manager
-    num_workers = config.get("num_workers")
+    num_workers = config.get("num_ppo_workers")
     env_manager = ParallelEnvManager(config=config, num_workers=num_workers)
     env_manager.start(model, policy_kwargs)
     

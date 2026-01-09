@@ -143,10 +143,10 @@ Key hyperparameters:
 AlphaZero-style Monte Carlo Tree Search with neural network guidance. Uses PUCT selection, Dirichlet noise for exploration, and terminal-only rewards with Welford normalization.
 
 Key hyperparameters:
-- `--n_iter`: MCTS simulations per move (default: 100)
+- `--n_iter`: MCTS simulations per move (default: 400)
 - `--c_puct`: PUCT exploration constant (default: 1.5)
 - `--dirichlet_alpha`: Dirichlet noise concentration (default: 0.3)
-- `--episodes_per_iter`: Self-play episodes per iteration (default: 2)
+- `--num_mcts_workers`: Parallel workers for episode collection (default: 8)
 - `--max_iterations`: Training iterations (default: 500)
 
 ## Project Structure

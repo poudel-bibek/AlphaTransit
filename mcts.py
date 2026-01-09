@@ -7,130 +7,138 @@ FULL VERSION (Two-Part Algorithm)
 
 Algorithm 1: AlphaTransit for TRNDP -- Phase 1: Self-Play
 ---------------------------------------------------------
-Input: Graph G=(V,E), OD matrix D, directed edges I, edge features Z,
-       routes K, max length L_max, MCTS simulations N_iter, exploration c_puct,
-       noise (alpha_dir, epsilon)
-Output: Replay buffer D with tuples (s, pi, z_tilde)
+\textbf{Input:} Graph $G=(V,E)$, OD matrix $D$, directed edges $I$, edge features $Z$,
+       routes $K$, max length $L_{\max}$, MCTS simulations $N_{\text{iter}}$,
+       exploration $c_{\text{puct}}$, noise $(\alpha_{\text{dir}}, \epsilon)$, workers $W$
+\textbf{Output:} Replay buffer $\mathcal{D}$ with tuples $(s, \pi, \tilde{z})$
 
-Initialize: Buffer D <- empty, Welford statistics (mu, sigma, n_w) <- (0, 0, 0)
+\textbf{Initialize:} $\mathcal{D} \gets \emptyset$, Welford statistics $(\mu, \sigma^2, n) \gets (0, 0, 0)$
 
-FOR training iteration = 1, 2, ...
-    tau <- TempSchedule(progress)                    # 1.0 -> 0.5 -> 0.1
-    FOR episode e = 1 to N_ep
-        Pi <- empty; V_cmp <- empty; E <- []; T <- InitTree()
-        FOR k = 1 to K
-            r_k <- [transit_center]; V_cur <- {r_k[0]}
-            WHILE |r_k| < L_max
-                C_t <- valid one-hop neighbors of frontier
-                IF C_t = empty THEN break                # no feasible extension
+\FOR{iteration $= 1, 2, \ldots$}
+    $\tau \gets \text{TemperatureSchedule}(\text{progress})$
 
-                X_t <- FormState(V_cur, V_cmp)
-                s_t <- (X_t, I, Z)
+    \tcp{Run $W$ episodes in parallel, each with unique seed}
+    \FORALL{worker $w = 1, \ldots, W$ \textbf{in parallel}}
+        $\Pi_w \gets \emptyset$; $V_{\text{cmp}} \gets \emptyset$; $\mathcal{E}_w \gets \emptyset$; $\mathcal{T} \gets \text{InitTree}()$
+        \FOR{$k = 1$ \TO $K$}
+            $r_k \gets [\text{transit\_center}]$; $V_{\text{cur}} \gets \{r_k[0]\}$
+            \WHILE{$|r_k| < L_{\max}$}
+                $\mathcal{C}_t \gets$ valid one-hop neighbors of frontier
+                \IF{$\mathcal{C}_t = \emptyset$}
+                    \textbf{break}  \tcp{no feasible extension}
+                \ENDIF
 
-                # Expand root if needed
-                IF NOT T.root.expanded THEN
-                    (P, V) <- f_theta(s_t)
-                    P <- MaskNorm(P, C_t)
-                    T.root.Expand(P, V)
-                ENDIF
+                $X_t \gets \text{FormState}(V_{\text{cur}}, V_{\text{cmp}})$
+                $s_t \gets (X_t, I, Z)$
 
-                eta ~ Dir(alpha_dir)
-                P <- (1 - epsilon) * P + epsilon * eta   # Dirichlet noise
+                \tcp{Expand root if needed}
+                \IF{$\mathcal{T}.\text{root}$ not expanded}
+                    $(P, v) \gets f_\theta(s_t)$
+                    $P \gets \text{MaskNorm}(P, \mathcal{C}_t)$
+                    Expand $\mathcal{T}.\text{root}$ with $(P, v)$
+                \ENDIF
 
-                # MCTS simulations
-                FOR i = 1 to N_iter
-                    node <- T.root; path <- []
-                    WHILE node.expanded AND NOT IsTerminal(node)
-                        a <- argmax_a' [Q + c_puct * P * sqrt(sum_b N_b) / (1 + N_a')]
-                        path.Append((node, a))
-                        node <- node.Child(a)
-                    ENDWHILE
+                $\eta \sim \text{Dir}(\alpha_{\text{dir}})$
+                $P \gets (1 - \epsilon) P + \epsilon \eta$  \tcp{Dirichlet noise}
 
-                    IF NOT node.expanded AND NOT IsTerminal(node) THEN
-                        (P', V') <- f_theta(node.state)
-                        P' <- MaskNorm(P', C)
-                        node.Expand(P', V')
-                        v <- V'
-                    ELSE
-                        v <- node.V
-                    ENDIF
+                \tcp{MCTS simulations}
+                \FOR{$i = 1$ \TO $N_{\text{iter}}$}
+                    $\text{node} \gets \mathcal{T}.\text{root}$; $\text{path} \gets []$
+                    \WHILE{node expanded \AND node not terminal}
+                        $a \gets \argmax_{a'} \left[ Q_{a'} + c_{\text{puct}} \cdot P_{a'} \cdot \frac{\sqrt{\sum_b N_b}}{1 + N_{a'}} \right]$
+                        Add $(\text{node}, a)$ to path
+                        $\text{node} \gets \text{Child}(\text{node}, a)$
+                    \ENDWHILE
 
-                    FOR (n, a) in Reversed(path)
-                        N_{n,a} += 1
-                        W_{n,a} += v
-                        Q_{n,a} <- W_{n,a} / N_{n,a}
-                    ENDFOR
-                ENDFOR
+                    \IF{node not expanded \AND node not terminal}
+                        $(P', v') \gets f_\theta(\text{node.state})$
+                        $P' \gets \text{MaskNorm}(P', \mathcal{C})$
+                        Expand node with $(P', v')$
+                        $v \gets v'$
+                    \ELSE
+                        $v \gets \text{node}.V$
+                    \ENDIF
 
-                pi_t <- Softmax(N_{T.root}^{1/tau})      # visit count policy
-                E.Append((s_t, pi_t))
-                a_t ~ pi_t
-                Append a_t to r_k
-                V_cur <- nodes in r_k
-                T.Advance(a_t)                           # re-root tree to child
-            ENDWHILE
-            V_cmp <- V_cmp UNION V_cur
-            Pi <- Pi UNION {r_k}
-        ENDFOR
+                    \FOR{$(n, a)$ in reversed(path)}
+                        $N_{n,a} \gets N_{n,a} + 1$
+                        $W_{n,a} \gets W_{n,a} + v$
+                        $Q_{n,a} \gets W_{n,a} / N_{n,a}$
+                    \ENDFOR
+                \ENDFOR
 
-        z <- R_final(Pi)                                 # traffic simulation
-        (mu, sigma, n_w) <- WelfordUpdate(mu, sigma, n_w, z)
-        z_tilde <- Clip((z - mu) / (sigma + 1e-8), -3, 3)
+                $\pi_t \gets \text{Softmax}(N_{\mathcal{T}.\text{root}}^{1/\tau})$  \tcp{visit count policy}
+                $\mathcal{E}_w \gets \mathcal{E}_w \cup \{(s_t, \pi_t)\}$
+                $a_t \sim \pi_t$
+                Add $a_t$ to $r_k$
+                $V_{\text{cur}} \gets$ nodes in $r_k$
+                Re-root $\mathcal{T}$ to child of $a_t$
+            \ENDWHILE
+            $V_{\text{cmp}} \gets V_{\text{cmp}} \cup V_{\text{cur}}$
+            $\Pi_w \gets \Pi_w \cup \{r_k\}$
+        \ENDFOR
+        $z_w \gets R_{\text{final}}(\Pi_w)$  \tcp{traffic simulation}
+    \ENDFOR
 
-        FOR (s_i, pi_i) in E
-            D.Add((s_i, pi_i, z_tilde))                  # FIFO if |D| > B_max
-        ENDFOR
-    ENDFOR
-    # Proceed to Phase 2: Network Optimization
-ENDFOR
+    \tcp{Aggregate results from all workers}
+    \FOR{$w = 1$ \TO $W$}
+        $(\mu, \sigma^2, n) \gets \text{WelfordUpdate}(\mu, \sigma^2, n, z_w)$
+    \ENDFOR
+    \FOR{$w = 1$ \TO $W$}
+        $\tilde{z}_w \gets \text{clip}\left(\frac{z_w - \mu}{\sigma + \epsilon}, -3, 3\right)$
+        \FOR{$(s_i, \pi_i) \in \mathcal{E}_w$}
+            $\mathcal{D} \gets \mathcal{D} \cup \{(s_i, \pi_i, \tilde{z}_w)\}$  \tcp{FIFO if $|\mathcal{D}| > B_{\max}$}
+        \ENDFOR
+    \ENDFOR
+    \tcp{Proceed to Phase 2: Network Optimization}
+\ENDFOR
 
 
 Algorithm 2: AlphaTransit for TRNDP -- Phase 2: Training
 --------------------------------------------------------
-Input: Replay buffer D, network f_theta, training steps N_steps,
-       batch size B, learning rate alpha
-Output: Updated parameters theta
+\textbf{Input:} Replay buffer $\mathcal{D}$, network $f_\theta$, training steps $N_{\text{steps}}$,
+       batch size $B$, learning rate $\alpha$
+\textbf{Output:} Updated parameters $\theta$
 
-FOR step = 1 to N_steps
-    Sample minibatch B <- Sample(D, B)
-    L <- 0
-    FOR (s, pi, z_tilde) in B
-        (P_theta, V_theta) <- f_theta(s)
-        P_theta <- MaskNorm(P_theta, C)
-        L_policy <- -sum_a pi(a) * log(P_theta(a))       # cross-entropy
-        L_value <- (z_tilde - V_theta)^2                 # MSE
-        L <- L + L_policy + L_value
-    ENDFOR
-    theta <- theta - alpha * grad_theta(L / |B|)
-ENDFOR
-RETURN theta
+\FOR{step $= 1$ \TO $N_{\text{steps}}$}
+    Sample minibatch $\mathcal{B} \gets \text{Sample}(\mathcal{D}, B)$
+    $\mathcal{L} \gets 0$
+    \FOR{$(s, \pi, \tilde{z}) \in \mathcal{B}$}
+        $(P_\theta, V_\theta) \gets f_\theta(s)$
+        $P_\theta \gets \text{MaskNorm}(P_\theta, \mathcal{C})$
+        $\mathcal{L}_{\text{policy}} \gets -\sum_a \pi(a) \log P_\theta(a)$  \tcp{cross-entropy}
+        $\mathcal{L}_{\text{value}} \gets (\tilde{z} - V_\theta)^2$  \tcp{MSE}
+        $\mathcal{L} \gets \mathcal{L} + \mathcal{L}_{\text{policy}} + \mathcal{L}_{\text{value}}$
+    \ENDFOR
+    $\theta \gets \theta - \alpha \nabla_\theta (\mathcal{L} / |\mathcal{B}|)$
+\ENDFOR
+\RETURN $\theta$
 
 
 ================================================================================
 HYPERPARAMETERS
 ================================================================================
-- N_iter = 100          (MCTS simulations per move)
-- c_puct = 1.5          (exploration constant)
-- alpha_dir = 0.3       (Dirichlet noise concentration)
-- epsilon = 0.25        (Dirichlet noise weight)
-- Buffer capacity = 100,000 (FIFO eviction)
-- N_ep = 2              (episodes per iteration)
-- N_steps = 500         (training steps per iteration)
-- Batch size B = 128
-- Learning rate = 5e-5
-- Temperature schedule: tau = 1.0 (progress < 0.3), 0.5 (0.3-0.6), 0.1 (> 0.6)
-- Evaluation: tau = 0.1 (near-greedy), no Dirichlet noise
+- $N_{\text{iter}} = 400$       (MCTS simulations per move)
+- $c_{\text{puct}} = 1.5$       (exploration constant)
+- $\alpha_{\text{dir}} = 0.3$   (Dirichlet noise concentration)
+- $\epsilon = 0.25$             (Dirichlet noise weight)
+- Buffer capacity $B_{\max} = 100{,}000$ (FIFO eviction)
+- $W = 8$                       (parallel workers, episodes per iteration)
+- $N_{\text{steps}} = 500$      (training steps per iteration)
+- Batch size $B = 256$
+- Learning rate $\alpha = 5 \times 10^{-5}$
+- Temperature schedule: $\tau = 1.0$ (progress $< 0.3$), $0.5$ ($0.3$-$0.6$), $0.1$ ($> 0.6$)
+- Evaluation: $\tau = 0.1$ (near-greedy), no Dirichlet noise
 
 
 ================================================================================
 SUPPORTING DEFINITIONS
 ================================================================================
-- MaskNorm(P, C): Set P(a) = 0 for a not in C, renormalize so sum = 1
-- WelfordUpdate(mu, sigma, n, x): Online mean/variance update
-- FormState(V_cur, V_cmp): Construct node features encoding current/completed routes
-- IsTerminal(s): True when all K routes constructed
-- T.Advance(a): Re-root tree to child node for action a, discard siblings
-- TempSchedule(progress): Returns tau based on training progress (steps/max_steps)
+- $\text{MaskNorm}(P, \mathcal{C})$: Set $P(a) = 0$ for $a \notin \mathcal{C}$, renormalize so $\sum_a P(a) = 1$
+- $\text{WelfordUpdate}(\mu, \sigma^2, n, x)$: Online mean/variance update
+- $\text{FormState}(V_{\text{cur}}, V_{\text{cmp}})$: Construct node features encoding current/completed routes
+- Terminal state: All $K$ routes constructed
+- Re-root tree: Move root to child node for action $a$, discard siblings
+- $\text{TemperatureSchedule}(\text{progress})$: Returns $\tau$ based on training progress
 
 """
 

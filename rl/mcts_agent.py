@@ -10,6 +10,7 @@ Key components:
 - Dirichlet noise for exploration during self-play
 - Replay buffer with terminal-only rewards
 - Welford normalization for reward stability
+- Parallel episode collection via num_mcts_workers (replaces episodes_per_iter)
 """
 
 import os
@@ -21,11 +22,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.multiprocessing as mp
 import wandb
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from torch_geometric.data import Data, Batch
+
+# Use get_context (not set_start_method) - can be called multiple times safely
+# Following PPO's pattern in rl/parallel_env.py
+mp_ctx = mp.get_context('spawn')
 
 from rl.models import GATV2ActorCritic
 from rl.env_utils import (
@@ -68,6 +74,7 @@ class MCTSAgent:
         """
         self.env = env
         self.config = dict(config)
+        self.policy_kwargs = policy_kwargs  # Store for passing to workers
         self.device = torch.device(
             config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         )
@@ -80,7 +87,6 @@ class MCTSAgent:
 
         # Training hyperparameters
         self.buffer_capacity = config['buffer_capacity']
-        self.episodes_per_iter = config['episodes_per_iter']
         self.train_steps_per_iter = config['train_steps_per_iter']
         self.batch_size = config['batch_size']
         self.lr = config['lr']
@@ -131,6 +137,10 @@ class MCTSAgent:
         # Policy directory for model weights
         self.policy_dir = self.training_save_dir / "mcts_policies"
         self.policy_dir.mkdir(parents=True, exist_ok=True)
+
+        # Parallel workers configuration
+        self.num_workers = config.get('num_mcts_workers', 4)
+        self.pool = mp_ctx.Pool(self.num_workers)
 
         # Save initial network visualization
         self._save_network_visualization()
@@ -338,105 +348,38 @@ class MCTSAgent:
 
         return policy
 
-    def _play_episode(self, tau: float, add_noise: bool = True) -> Tuple[List[Tuple], float]:
+    def _collect_episodes(self, tau: float, iteration: int) -> List[Tuple]:
         """
-        Play one self-play episode using MCTS.
+        Collect episodes from parallel workers.
 
         Args:
-            tau: Temperature for action selection (passed from train loop for consistency)
-            add_noise: Whether to add Dirichlet noise at root
+            tau: Temperature for action selection
+            iteration: Current training iteration (for seed generation)
 
         Returns:
-            episode_data: List of (state_dict, policy, valid_actions) tuples
-            terminal_reward: Raw terminal reward from simulation
+            List of (episode_data, raw_reward, episode_length, routes) tuples
         """
-        # Reset environment
-        state_dict, _ = self.env.reset()
-        mcts_state = self._create_mcts_state()
+        from rl.mcts_worker import run_mcts_episode
 
-        # Initialize MCTS tree
-        tree = MCTSTree(mcts_state)
+        # Generate unique seeds for each worker
+        base_seed = self.seed + iteration * self.num_workers
 
-        episode_data: List[Tuple[Dict[str, Any], np.ndarray, List[int]]] = []
-        actions_taken: List[int] = []
+        # Serialize model weights to CPU for workers
+        cpu_state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
 
-        # Play episode
-        while not mcts_state.is_terminal():
-            valid_actions = mcts_state.get_valid_actions()
+        # Prepare worker inputs
+        worker_inputs = [
+            (cpu_state_dict, self.policy_kwargs, self.config, base_seed + i, tau)
+            for i in range(self.num_workers)
+        ]
 
-            if not valid_actions:
-                """
-                CRITICAL FIX: Record NO_VALID_ACTION when forcing route end.
+        # Run episodes in parallel
+        return self.pool.starmap(run_mcts_episode, worker_inputs)
 
-                Problem: MCTSState and the real TransitEnv can diverge if we don't
-                record this transition. Here's what goes wrong without this fix:
-
-                  MCTSState simulation:
-                    Route 0: [96,42,17] → no valid actions → force_route_end()
-                    Route 1: [96,83] → ...
-                    actions_taken = [42, 17, 83, ...]  ← missing route transition!
-
-                  Real env replay:
-                    env.step(42) → Route 0: [96,42]
-                    env.step(17) → Route 0: [96,42,17]
-                    env.step(83) → Route 0: [96,42,17,83]  ← WRONG! Should be Route 1!
-
-                The states diverge because the real env doesn't know to end Route 0.
-                This creates malformed routes, and UXsim crashes during simulation
-                when it encounters routes with length ≤ 1 (e.g., just [96]).
-
-                Solution: Record NO_VALID_ACTION (= n_nodes) so the real env knows
-                to force-end the current route, keeping both in sync.
-                """
-                actions_taken.append(self.env.NO_VALID_ACTION)
-                mcts_state = mcts_state.force_route_end()
-                tree = MCTSTree(mcts_state)  # Restart tree for new route
-                continue
-
-            # Get state and run MCTS
-            state_dict = self._get_state_tensor(mcts_state)
-            policy = self._run_mcts(tree, tau=tau, add_noise=add_noise)
-
-            # Store transition with valid_actions for proper masking during training.
-            # We store valid_actions separately because the network should learn over
-            # ALL valid actions, not just visited ones (where policy > 0).
-            episode_data.append((
-                {k: v.copy() if isinstance(v, np.ndarray) else v
-                 for k, v in state_dict.items()},
-                policy.copy(),
-                list(valid_actions)  # Store valid actions for training mask
-            ))
-
-            # Sample action from policy
-            valid_policy = policy[valid_actions]
-            if valid_policy.sum() > 0:
-                valid_policy = valid_policy / valid_policy.sum()
-                action_idx = np.random.choice(len(valid_actions), p=valid_policy)
-                action = valid_actions[action_idx]
-            else:
-                action = random.choice(valid_actions)
-
-            actions_taken.append(action)
-
-            # Apply action
-            mcts_state = mcts_state.apply_action(action)
-
-            # Advance tree
-            tree.advance(action)
-
-        # Get terminal reward by replaying actions in actual environment
-        state_dict, _ = self.env.reset()
-        terminal_reward = 0.0
-
-        for action in actions_taken:
-            state_dict, reward, terminated, _, info = self.env.step(action)
-            terminal_reward = reward  # Keep updating - final one is terminal reward
-
-            if terminated:
-                break
-
-        self.total_episodes += 1
-        return episode_data, terminal_reward
+    def _cleanup(self) -> None:
+        """Clean up pool at end of training."""
+        self.pool.close()
+        self.pool.join()
 
     def _train_step(self) -> Dict[str, float]:
         """
@@ -543,96 +486,99 @@ class MCTSAgent:
         Main training loop.
 
         Alternates between self-play data generation and network optimization.
+        Uses parallel workers to collect episodes concurrently.
         """
         print(f"Starting MCTS training for {self.max_iterations} iterations")
-        print(f"  Episodes per iteration: {self.episodes_per_iter}")
+        print(f"  Parallel workers: {self.num_workers}")
         print(f"  Train steps per iteration: {self.train_steps_per_iter}")
         print(f"  MCTS simulations per move: {self.n_iter}")
         print(f"  Device: {self.device}")
 
         best_reward = float('-inf')
 
-        for iteration in range(1, self.max_iterations + 1):
-            # Temperature is computed once per iteration from iteration-based progress,
-            # ensuring consistency between self-play action selection and logging.
-            # This avoids the alternative of computing from training steps, which would
-            # give tau=1.0 for all of iteration 1 (before any training steps occur).
-            progress = iteration / self.max_iterations
-            tau = get_temperature(progress)
+        try:
+            for iteration in range(1, self.max_iterations + 1):
+                # Temperature is computed once per iteration from iteration-based progress,
+                # ensuring consistency between self-play action selection and logging.
+                progress = iteration / self.max_iterations
+                tau = get_temperature(progress)
 
-            # Self-play phase
-            episode_rewards = []
-            for ep in range(self.episodes_per_iter):
-                episode_data, raw_reward = self._play_episode(tau=tau, add_noise=True)
+                # Parallel self-play phase
+                results = self._collect_episodes(tau, iteration)
 
-                # Normalize reward
-                self.reward_normalizer.update(raw_reward)
-                normalized_reward = self.reward_normalizer.normalize(raw_reward)
+                # Aggregate results: first update Welford with all raw rewards
+                episode_rewards = []
+                for episode_data, raw_reward, length, routes in results:
+                    self.reward_normalizer.update(raw_reward)
+                    episode_rewards.append(raw_reward)
 
-                # Store valid_actions alongside (state, policy) in the replay buffer.
-                # During training, we mask over all valid actions (not just visited ones)
-                # so the network learns to assign low probability to valid-but-unvisited
-                # actions, rather than ignoring them entirely.
-                for state_dict, policy, valid_actions in episode_data:
-                    self.replay_buffer.add(state_dict, policy, valid_actions, normalized_reward)
+                # Then add normalized data to buffer
+                for episode_data, raw_reward, length, routes in results:
+                    normalized_reward = self.reward_normalizer.normalize(raw_reward)
+                    for state_dict, policy, valid_actions in episode_data:
+                        self.replay_buffer.add(state_dict, policy, valid_actions, normalized_reward)
 
-                # Track environment steps for sample efficiency comparison with PPO
-                self.total_env_steps += len(episode_data)
-                episode_rewards.append(raw_reward)
+                # Track environment steps and episodes
+                total_steps = sum(length for _, _, length, _ in results)
+                self.total_env_steps += total_steps
+                self.total_episodes += len(results)
 
-            # Training phase
-            train_metrics = []
-            for _ in range(self.train_steps_per_iter):
-                metrics = self._train_step()
-                if metrics:
-                    train_metrics.append(metrics)
+                # Training phase
+                train_metrics = []
+                for _ in range(self.train_steps_per_iter):
+                    metrics = self._train_step()
+                    if metrics:
+                        train_metrics.append(metrics)
 
-            # Logging
-            avg_reward = np.mean(episode_rewards)
-            if train_metrics:
-                avg_policy_loss = np.mean([m['policy_loss'] for m in train_metrics])
-                avg_value_loss = np.mean([m['value_loss'] for m in train_metrics])
-            else:
-                avg_policy_loss = avg_value_loss = 0.0
+                # Logging
+                avg_reward = np.mean(episode_rewards)
+                if train_metrics:
+                    avg_policy_loss = np.mean([m['policy_loss'] for m in train_metrics])
+                    avg_value_loss = np.mean([m['value_loss'] for m in train_metrics])
+                else:
+                    avg_policy_loss = avg_value_loss = 0.0
 
-            print(f"Iter {iteration:4d} | "
-                  f"Reward: {avg_reward:8.2f} | "
-                  f"Policy Loss: {avg_policy_loss:.4f} | "
-                  f"Value Loss: {avg_value_loss:.4f} | "
-                  f"Buffer: {len(self.replay_buffer):6d} | "
-                  f"Tau: {tau:.2f}")
+                print(f"Iter {iteration:4d} | "
+                      f"Reward: {avg_reward:8.2f} | "
+                      f"Policy Loss: {avg_policy_loss:.4f} | "
+                      f"Value Loss: {avg_value_loss:.4f} | "
+                      f"Buffer: {len(self.replay_buffer):6d} | "
+                      f"Tau: {tau:.2f}")
 
-            # WandB logging
-            if not self.config.get("wandb_off", True):
-                wandb.log({
-                    "mcts/policy_loss": avg_policy_loss,
-                    "mcts/value_loss": avg_value_loss,
-                    "mcts/total_loss": avg_policy_loss + avg_value_loss,
-                    "mcts/avg_reward": avg_reward,
-                    "mcts/best_reward": best_reward if avg_reward <= best_reward else avg_reward,
-                    "mcts/buffer_size": len(self.replay_buffer),
-                    "mcts/temperature": tau,
-                    "mcts/iteration": iteration,
-                    "mcts/progress": progress,
-                }, step=self.total_env_steps)
+                # WandB logging
+                if not self.config.get("wandb_off", True):
+                    wandb.log({
+                        "mcts/policy_loss": avg_policy_loss,
+                        "mcts/value_loss": avg_value_loss,
+                        "mcts/total_loss": avg_policy_loss + avg_value_loss,
+                        "mcts/avg_reward": avg_reward,
+                        "mcts/best_reward": best_reward if avg_reward <= best_reward else avg_reward,
+                        "mcts/buffer_size": len(self.replay_buffer),
+                        "mcts/temperature": tau,
+                        "mcts/iteration": iteration,
+                        "mcts/progress": progress,
+                    }, step=self.total_env_steps)
 
-            # Save policy and track best
-            policy_path = self._save_policy(iteration)
-            if avg_reward > best_reward:
-                best_reward = avg_reward
-                # Save best policy separately
-                best_path = self.policy_dir / "policy_best.pth"
-                torch.save(self.model.state_dict(), best_path)
+                # Save policy and track best
+                policy_path = self._save_policy(iteration)
+                if avg_reward > best_reward:
+                    best_reward = avg_reward
+                    # Save best policy separately
+                    best_path = self.policy_dir / "policy_best.pth"
+                    torch.save(self.model.state_dict(), best_path)
 
-            # Periodic evaluation (like PPO)
-            if self.eval_every > 0 and iteration % self.eval_every == 0:
-                self._run_evaluation(policy_path, iteration)
+                # Periodic evaluation (like PPO)
+                if self.eval_every > 0 and iteration % self.eval_every == 0:
+                    self._run_evaluation(policy_path, iteration)
 
-        # Final save
-        final_path = self.policy_dir / "policy_final.pth"
-        torch.save(self.model.state_dict(), final_path)
-        print(f"Training complete. Best reward: {best_reward:.2f}")
-        print(f"Results saved to: {self.training_save_dir}")
+            # Final save
+            final_path = self.policy_dir / "policy_final.pth"
+            torch.save(self.model.state_dict(), final_path)
+            print(f"Training complete. Best reward: {best_reward:.2f}")
+            print(f"Results saved to: {self.training_save_dir}")
+
+        finally:
+            self._cleanup()  # Always clean up pool
 
     def _save_policy(self, iteration: int) -> str:
         """
@@ -671,7 +617,7 @@ class MCTSAgent:
             valid_actions = mcts_state.get_valid_actions()
             if not valid_actions:
                 # Record NO_VALID_ACTION to keep MCTSState and real env in sync
-                # (same fix as in _play_episode - see detailed comment there)
+                # (see run_mcts_episode in mcts_worker.py for detailed explanation)
                 actions.append(self.env.NO_VALID_ACTION)
                 mcts_state = mcts_state.force_route_end()
                 tree = MCTSTree(mcts_state)
