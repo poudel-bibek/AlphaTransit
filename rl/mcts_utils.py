@@ -207,7 +207,8 @@ class MCTSNode:
         pi(a) = N(a)^(1/tau) / sum_b N(b)^(1/tau)
 
         Args:
-            tau: Temperature (1.0 = proportional, 0 = greedy)
+            tau: Temperature (must be > 0). Lower = more greedy, higher = more uniform.
+                 Typical range: 0.1 (near-greedy) to 1.0 (proportional to visits).
             n_actions: Total number of possible actions (for output size)
 
         Returns:

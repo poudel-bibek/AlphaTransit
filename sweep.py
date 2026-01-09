@@ -98,7 +98,26 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh", "leaky_relu"]},
             "num_gat_blocks": {"values": [4, 8]},
+            
+            # Next round.
+            # How many times to sample batch_size from buffer per iteration.
+            # 500 steps × 64 batch = 32,000 samples trained per iteration (~400 new samples collected)
+            # "train_steps_per_iter": {"values": [200, 500]},
 
+            # How many items to sample from buffer per update.
+            # "batch_size": {"values": [256, 512]},
+
+            # How many episodes to sample per iteration.
+            # "episodes_per_iter": {"values": [6, 10]},
+            
+            # How many MCTS simulations to run 
+            # Each of the n_iter simulations only:
+            # 1. Traverses the tree using PUCT 2. Calls the neural network for P(actions) and V(state)
+            # The full UXsim traffic simulation only runs once per completed route 
+            # "n_iter": {"values": [200, 400]},
+
+            # "lr": {"values": [1e-4, 1e-5]},
+            
             # Fixed values (Not sweep params)
             "alpha": {"value": 0.3}, # ALPHA SETTING. 
             "algorithm": {"value": "mcts"},

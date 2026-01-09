@@ -119,7 +119,7 @@ HYPERPARAMETERS
 - Batch size B = 128
 - Learning rate = 5e-5
 - Temperature schedule: tau = 1.0 (progress < 0.3), 0.5 (0.3-0.6), 0.1 (> 0.6)
-- Evaluation: tau -> 0 (greedy), no Dirichlet noise
+- Evaluation: tau = 0.1 (near-greedy), no Dirichlet noise
 
 
 ================================================================================

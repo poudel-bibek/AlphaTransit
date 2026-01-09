@@ -79,7 +79,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps_per_worker", type=int, default=32, help="PPO: Steps per worker before sync")
     parser.add_argument("--weight_refresh_interval", type=int, default=4, help="PPO: Refresh weights every N updates")
     parser.add_argument("--K_epochs", type=int, default=4, help="PPO: Number of epochs per update")
-    parser.add_argument("--batch_size", type=int, default=16, help="Mini-batch size")
+    parser.add_argument("--batch_size", type=int, default=256, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.1, help="PPO: Clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO: Clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO: Discount factor")
@@ -91,12 +91,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
 
     # MCTS hyperparameters:
-    parser.add_argument("--n_iter", type=int, default=50, help="MCTS: Simulations per move")
+    parser.add_argument("--n_iter", type=int, default=400, help="MCTS: Simulations per move")
     parser.add_argument("--c_puct", type=float, default=1.5, help="MCTS: PUCT exploration constant")
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
     parser.add_argument("--buffer_capacity", type=int, default=100000, help="MCTS: Replay buffer capacity")
-    parser.add_argument("--episodes_per_iter", type=int, default=2, help="MCTS: Episodes per iteration")
+    parser.add_argument("--episodes_per_iter", type=int, default=10, help="MCTS: Episodes per iteration")
     parser.add_argument("--train_steps_per_iter", type=int, default=500, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=500, help="MCTS: Max training iterations")
 
