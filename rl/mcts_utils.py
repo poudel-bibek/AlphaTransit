@@ -16,23 +16,27 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-
+from rl.env_utils import initialize_route
 
 @dataclass
 class MCTSState:
     """
     Lightweight state representation for MCTS tree exploration.
-    Avoids deepcopy of the entire TransitEnv by storing only route-building state.
+    Stores route-building state with env reference for initialize_route() calls.
+
+    WARNING: route_init="random" is incompatible with MCTS. The replay reset (after MCTS
+    episode) doesn't re-seed RNG, so initialize_route picks a different starting node than
+    the first reset, causing trajectory mismatch. Use "transit_center" or "highest_demand".
     """
     current_route: List[str]
     all_routes: List[List[str]]
     current_route_index: int
-    transit_center: str
     num_routes: int
     max_route_length: int
     adj: Dict[str, set]  # Reference to env's adjacency (shared, not copied)
     node_to_idx: Dict[str, int]  # Reference to env's node mapping (shared)
     idx_to_node: Dict[int, str]  # Reference to env's reverse mapping (shared)
+    env: Any  # Reference to TransitEnv for initialize_route() calls
 
     def clone(self) -> 'MCTSState':
         """Create a shallow copy suitable for tree expansion."""
@@ -40,12 +44,12 @@ class MCTSState:
             current_route=list(self.current_route),
             all_routes=[list(r) for r in self.all_routes],
             current_route_index=self.current_route_index,
-            transit_center=self.transit_center,
             num_routes=self.num_routes,
             max_route_length=self.max_route_length,
-            adj=self.adj,  # Shared reference
-            node_to_idx=self.node_to_idx,  # Shared reference
-            idx_to_node=self.idx_to_node,  # Shared reference
+            adj=self.adj,
+            node_to_idx=self.node_to_idx,
+            idx_to_node=self.idx_to_node,
+            env=self.env,
         )
 
     def get_valid_actions(self) -> List[int]:
@@ -70,9 +74,10 @@ class MCTSState:
         if len(new_state.current_route) >= self.max_route_length:
             new_state.all_routes.append(list(new_state.current_route))
             new_state.current_route_index += 1
-            # Start new route from transit center if more routes to build
             if new_state.current_route_index < self.num_routes:
-                new_state.current_route = [self.transit_center]
+                # Sync env state and use initialize_route (same as PPO/env.step)
+                self.env.all_routes = [list(r) for r in new_state.all_routes]
+                new_state.current_route = initialize_route(self.env)
             else:
                 new_state.current_route = []  # Episode done
 
@@ -93,7 +98,9 @@ class MCTSState:
             new_state.all_routes.append(list(new_state.current_route))
             new_state.current_route_index += 1
             if new_state.current_route_index < self.num_routes:
-                new_state.current_route = [self.transit_center]
+                # Sync env state and use initialize_route (same as PPO/env.step)
+                self.env.all_routes = [list(r) for r in new_state.all_routes]
+                new_state.current_route = initialize_route(self.env)
             else:
                 new_state.current_route = []
         return new_state

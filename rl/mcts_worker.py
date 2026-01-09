@@ -152,15 +152,13 @@ def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, con
             else:
                 # No valid actions - evaluate forced-end successor
                 next_state = node.state.force_route_end()
-                if next_state.is_terminal():
-                    v = 0.0
-                else:
-                    next_valid = next_state.get_valid_actions()
-                    if next_valid:
-                        next_state_dict = get_state_tensor(env, next_state)
-                        _, v = network_forward(model, next_state_dict, next_valid, device)
-                    else:
-                        v = 0.0
+                next_state_dict = get_state_tensor(env, next_state)
+                next_valid = next_state.get_valid_actions()
+                _, v = network_forward(model, next_state_dict, next_valid, device)
+        elif node.state.is_terminal():
+            # Terminal state: get value estimate from network (no valid actions)
+            state_dict = get_state_tensor(env, node.state)
+            _, v = network_forward(model, state_dict, [], device)
         else:
             v = node.value
 
@@ -180,12 +178,12 @@ def _create_mcts_state(env: TransitEnv) -> MCTSState:
         current_route=list(env.current_route),
         all_routes=[list(r) for r in env.all_routes],
         current_route_index=env.current_route_index,
-        transit_center=env.transit_center_node,
         num_routes=env.NUM_ROUTES,
         max_route_length=env.MAX_ROUTE_LENGTH,
         adj=env.adj,
         node_to_idx=env.node_to_idx,
         idx_to_node=env.idx_to_node,
+        env=env,
     )
 
 
@@ -222,7 +220,7 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
     model.to(device)
 
     # 4. Run episode
-    state_dict, _ = env.reset()
+    state_dict, _ = env.reset(seed=seed)
     mcts_state = _create_mcts_state(env)
     tree = MCTSTree(mcts_state)
 
@@ -265,7 +263,7 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
         tree.advance(action)
 
     # 5. Replay actions to get terminal reward
-    state_dict, _ = env.reset()
+    state_dict, _ = env.reset(seed=seed)
     terminal_reward = 0.0
 
     for action in actions_taken:

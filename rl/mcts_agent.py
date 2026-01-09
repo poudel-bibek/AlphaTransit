@@ -83,7 +83,6 @@ class MCTSAgent:
         self.n_actions = env.n_nodes + 1  # +1 for NO_VALID_ACTION
         self.num_routes = env.NUM_ROUTES
         self.max_route_length = env.MAX_ROUTE_LENGTH
-        self.transit_center = env.transit_center_node
 
         # Initialize model
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
@@ -144,12 +143,12 @@ class MCTSAgent:
             current_route=list(self.env.current_route),
             all_routes=[list(r) for r in self.env.all_routes],
             current_route_index=self.env.current_route_index,
-            transit_center=self.transit_center,
             num_routes=self.num_routes,
             max_route_length=self.max_route_length,
             adj=self.env.adj,
             node_to_idx=self.env.node_to_idx,
             idx_to_node=self.env.idx_to_node,
+            env=self.env,
         )
 
     def _sync_env_from_mcts_state(self, mcts_state: MCTSState) -> None:
@@ -301,18 +300,13 @@ class MCTSAgent:
                     # value of starting the next route from the transit center?" This
                     # removes bias against exploration paths that lead to shorter routes.
                     next_state = node.state.force_route_end()
-                    if next_state.is_terminal():
-                        # All routes done - use 0 (will get actual reward at episode end)
-                        v = 0.0
-                    else:
-                        # Evaluate the state after starting new route
-                        next_valid = next_state.get_valid_actions()
-                        if next_valid:
-                            next_state_dict = self._get_state_tensor(next_state)
-                            _, v = self._network_forward(next_state_dict, next_valid)
-                        else:
-                            # Recursively no valid actions - rare edge case
-                            v = 0.0
+                    next_state_dict = self._get_state_tensor(next_state)
+                    next_valid = next_state.get_valid_actions()
+                    _, v = self._network_forward(next_state_dict, next_valid)
+            elif node.state.is_terminal():
+                # Terminal state: get value estimate from network (no valid actions)
+                state_dict = self._get_state_tensor(node.state)
+                _, v = self._network_forward(state_dict, [])
             else:
                 v = node.value
 
@@ -593,7 +587,7 @@ class MCTSAgent:
         self.model.eval()
         eval_tau = 0.1  # Near-greedy (matches training minimum)
 
-        state_dict, _ = self.env.reset()
+        state_dict, _ = self.env.reset(seed=seed)
         mcts_state = self._create_mcts_state()
         tree = MCTSTree(mcts_state)
         actions = []
@@ -620,7 +614,7 @@ class MCTSAgent:
             tree.advance(action)
 
         # Replay to get actual reward and metrics
-        state_dict, _ = self.env.reset()
+        state_dict, _ = self.env.reset(seed=seed)
         for action in actions:
             state_dict, reward, terminated, _, info = self.env.step(action)
             if terminated:
