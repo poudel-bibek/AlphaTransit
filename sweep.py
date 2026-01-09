@@ -112,10 +112,14 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "n_iter": {"values": [50, 100]},
             
             # Fixed values (Not sweep params)
-            "alpha": {"value": 0.3}, # ALPHA SETTING. 
+            # Each iteration: workers collect episodes in parallel, then train on replay buffer
+            # Policy learns to match MCTS visit counts, value head learns to predict terminal reward
+            # total_steps = num_mcts_workers * num_routes * max_route_length * max_iterations
+            # total_steps = 6 * 16 * 14 * 150 = 201,600
+            "alpha": {"value": 0.3}, # ALPHA SETTING.
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 500},
+            "max_iterations": {"value": 150},
             "num_mcts_workers": {"value": 6}, # Each iteration runs num_mcts_workers episodes in parallel
         },
 
@@ -134,7 +138,7 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         #     "alpha": {"value": 0.3}, # ALPHA SETTING. 
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 500},
+        #     "max_iterations": {"value": 150},
         #     "num_mcts_workers": {"value": 6}, # Each iteration runs num_mcts_workers episodes in parallel
         # },
     }
