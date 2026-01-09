@@ -13,6 +13,7 @@ Key components:
 - Parallel episode collection via num_mcts_workers (replaces episodes_per_iter)
 """
 
+import gc
 import os
 import json
 import math
@@ -501,6 +502,11 @@ class MCTSAgent:
                 total_steps = sum(length for _, _, length, _ in results)
                 self.total_env_steps += total_steps
                 self.total_episodes += len(results)
+
+                # Memory cleanup after processing worker results
+                del results
+                gc.collect()
+                torch.cuda.empty_cache()
 
                 # Training phase
                 train_metrics = []
