@@ -479,9 +479,12 @@ class TransitEnv(gym.Env):
         node_features[:, 4] = self.demand_in / self.max_demand # d_in
         
         # Calculations for dynamic node features:
+        # Terminal states (all routes complete) have current_route=[]. For these states:
+        # - current_route_indices is empty → demand features (5-6, 9-10) become zero
+        # - valid_neighbor_indices is empty → no valid actions, feature 15 all zeros
+        # - Completed route features (7-8, 11-12, 14) remain valid, letting network predict V(terminal)
         current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route], dtype=np.int64)
 
-        # Handle terminal states where current_route is empty
         if self.current_route:
             frontier = self.current_route[-1]
             current_route_set = set(self.current_route)  # O(1) lookup
@@ -551,8 +554,8 @@ class TransitEnv(gym.Env):
         if self.current_route_index < self.NUM_ROUTES:  # Only if there's a current route being built
             route_progress[self.current_route_index] = len(self.current_route) / self.MAX_ROUTE_LENGTH
         
-        # Return the state as a dict
-        frontier_idx = self.node_to_idx[self.current_route[-1]]
+        # Return the state as a dict (frontier_idx=-1 for terminal states)
+        frontier_idx = self.node_to_idx[self.current_route[-1]] if self.current_route else -1
         state: Dict[str, Any] = {
             "node_features": node_features,
             "edge_index": self.edge_index,
