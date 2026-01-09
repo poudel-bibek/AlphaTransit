@@ -163,9 +163,9 @@ class MCTSNode:
         best_puct = float('-inf')
 
         for action in self.P.keys():
-            q_value = self.Q.get(action, 0.0)
+            q_value = self.Q[action]
             prior = self.P[action]
-            visits = self.N.get(action, 0)
+            visits = self.N[action]
 
             # PUCT formula
             exploration = c_puct * prior * sqrt_total / (1 + visits)
@@ -185,8 +185,8 @@ class MCTSNode:
             action: The action taken
             value: The value to backpropagate
         """
-        self.N[action] = self.N.get(action, 0) + 1
-        self.W[action] = self.W.get(action, 0.0) + value
+        self.N[action] += 1
+        self.W[action] += value
         self.Q[action] = self.W[action] / self.N[action]
 
     def get_child(self, action: int) -> 'MCTSNode':
@@ -218,21 +218,16 @@ class MCTSNode:
         if not self.N:
             return policy
 
-        if tau < 1e-6:
-            # Greedy selection
-            best_action = max(self.N.keys(), key=lambda a: self.N[a])
-            policy[best_action] = 1.0
-        else:
-            # Temperature-scaled softmax over visit counts
-            inv_tau = 1.0 / tau
-            visit_counts = np.array([
-                (a, self.N.get(a, 0) ** inv_tau) for a in self.P.keys()
-            ], dtype=object)
+        # Temperature-scaled softmax over visit counts
+        inv_tau = 1.0 / tau
+        visit_counts = np.array([
+            (a, self.N[a] ** inv_tau) for a in self.P.keys()
+        ], dtype=object)
 
-            total = sum(vc[1] for vc in visit_counts)
-            if total > 0:
-                for action, count in visit_counts:
-                    policy[action] = count / total
+        total = sum(vc[1] for vc in visit_counts)
+        if total > 0:
+            for action, count in visit_counts:
+                policy[action] = count / total
 
         return policy
 

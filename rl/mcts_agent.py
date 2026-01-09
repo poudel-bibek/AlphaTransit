@@ -614,8 +614,7 @@ class MCTSAgent:
                     "mcts/temperature": tau,
                     "mcts/iteration": iteration,
                     "mcts/progress": progress,
-                    "mcts/total_env_steps": self.total_env_steps,
-                }, step=iteration)
+                }, step=self.total_env_steps)
 
             # Save policy and track best
             policy_path = self._save_policy(iteration)
@@ -661,7 +660,7 @@ class MCTSAgent:
         torch.manual_seed(seed)
 
         self.model.eval()
-        eval_tau = 0.01  # Near-greedy
+        eval_tau = 0.1  # Near-greedy (matches training minimum)
 
         state_dict, _ = self.env.reset()
         mcts_state = self._create_mcts_state()
@@ -737,14 +736,15 @@ class MCTSAgent:
         # Log to wandb
         if not self.config.get("wandb_off", True):
             wandb.log({
-                "eval/episode_total_reward": aggregated.get('episode_total_reward', 0),
-                "eval/episode_length": aggregated.get('episode_length', 0),
-                "eval/demand_coverage_potential": aggregated.get('demand_coverage_potential', 0),
-                "eval/demand_coverage_actual": aggregated.get('demand_coverage_actual', 0),
-                "eval/route_overlap_ratio": aggregated.get('route_overlap_ratio', 0),
-                "eval/node_coverage": aggregated.get('node_coverage', 0),
-                "eval/service_rate": aggregated.get('service_rate', 0),
-            }, step=iteration)
+                "eval/episode_total_reward": aggregated['episode_total_reward'],
+                "eval/episode_length": aggregated['episode_length'],
+                "eval/demand_coverage_potential": aggregated['demand_coverage_potential'],
+                "eval/demand_coverage_actual": aggregated['demand_coverage_actual'],
+                "eval/route_overlap_ratio": aggregated['route_overlap_ratio'],
+                "eval/node_coverage": aggregated['node_coverage'],
+                "eval/service_rate": aggregated['service_rate'],
+                "eval/iteration": iteration,
+            }, step=self.total_env_steps)
 
         return aggregated
 
