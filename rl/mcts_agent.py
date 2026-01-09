@@ -539,7 +539,7 @@ class MCTSAgent:
                     }, step=self.total_env_steps)
 
                 # Save policy and track best
-                policy_path = self._save_policy(iteration)
+                policy_path = self._save_policy(iteration, self.total_env_steps)
                 if avg_reward > best_reward:
                     best_reward = avg_reward
                     # Save best policy separately
@@ -559,12 +559,12 @@ class MCTSAgent:
         finally:
             self._cleanup()  # Always clean up pool
 
-    def _save_policy(self, iteration: int) -> str:
+    def _save_policy(self, update: int, steps: int) -> str:
         """
         Save model weights (consistent with PPO naming).
         Returns path to saved policy.
         """
-        filename = f"policy_iter_{iteration}.pth"
+        filename = f"policy_up_{update}_step_{steps}.pth"
         path = self.policy_dir / filename
         torch.save(self.model.state_dict(), path)
         return str(path)
