@@ -484,7 +484,7 @@ class TransitEnv(gym.Env):
         # - valid_neighbor_indices is empty → no valid actions, feature 15 all zeros
         # - Completed route features (7-8, 11-12, 14) remain valid, letting network predict V(terminal)
         current_route_indices = np.array([self.node_to_idx[node] for node in self.current_route], dtype=np.int64)
-
+        # print(f"\nCurrent route indices: {current_route_indices}\n")
         if self.current_route:
             frontier = self.current_route[-1]
             current_route_set = set(self.current_route)  # O(1) lookup
@@ -500,7 +500,8 @@ class TransitEnv(gym.Env):
         completed_routes_indices = (np.array(list(completed_routes_indices_set), dtype=np.int64) if completed_routes_indices_set else np.empty(0, dtype=np.int64))
         # print(f"\nCompleted routes indices: {completed_routes_indices}\n")
 
-        completed_and_current_route_indices = np.concatenate([completed_routes_indices, current_route_indices]).astype(np.int64)
+        # Use set union to prevent double-counting when current_route overlaps with completed routes
+        completed_and_current_route_indices = np.array(list(completed_routes_indices_set | set(current_route_indices.tolist())), dtype=np.int64)
         # print(f"\nCompleted and current route indices: {completed_and_current_route_indices}\n")
         # Dymanic node features (5-6, local route-aware demands to valid neighbors):
         d_out_current_route_local = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the path
@@ -1588,8 +1589,10 @@ class TransitEnv(gym.Env):
             sim_result['route_completed'] = False
 
             # Reward (route didnt end gracefully, forced end)
-            # reward = self.compute_reward(sim_result, is_route_end=False, is_forced_end=True)
-            reward = self.compute_reward(sim_result, is_route_end=False, is_forced_end=True, prev_coverage=prev_coverage)
+            # If the last route of an episode happens to force-end, use is_route_end=True to get
+            # the final network reward; otherwise partial shaping rewards would leak into terminal transitions.
+            is_last_route = (self.current_route_index == self.NUM_ROUTES - 1)
+            reward = self.compute_reward(sim_result, is_route_end=is_last_route, is_forced_end=True, prev_coverage=prev_coverage)
 
             # Advance to next route of finish episode
             terminated = False

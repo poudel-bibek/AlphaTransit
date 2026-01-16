@@ -305,6 +305,10 @@ class MCTSAgent:
                     _, v = self._network_forward(next_state_dict, next_valid)
             elif node.state.is_terminal():
                 # Terminal state: get value estimate from network (no valid actions)
+                # CONCEPTUAL GAP VS ALPHAZERO: AlphaZero uses ground-truth outcome z here,
+                # but we substitute the Value Network V(s). This risks a "closed loop" where
+                # erroneous network values are reinforced by MCTS without reality checks (sim),
+                # though final MSE targets are eventually grounded in real rewards.
                 state_dict = self._get_state_tensor(node.state)
                 _, v = self._network_forward(state_dict, [])
             else:
@@ -367,7 +371,9 @@ class MCTSAgent:
 
         self.model.train()
 
-        # Sample batch: (state_dict, policy, valid_actions, value)
+        # Sample batch: (state_dict, policy, valid_actions, raw_reward)
+        # Normalize rewards at sample time using current statistics to avoid
+        # non-stationarity from storing already-normalized values
         batch_data = self.replay_buffer.sample(self.batch_size)
 
         # Prepare batch
@@ -376,11 +382,11 @@ class MCTSAgent:
         target_values = []
         valid_masks = []
 
-        for state_dict, policy, valid_actions, value in batch_data:
+        for state_dict, policy, valid_actions, raw_reward in batch_data:
             data = self._state_to_pyg_data(state_dict)
             data_list.append(data)
             target_policies.append(torch.from_numpy(policy).float())
-            target_values.append(value)
+            target_values.append(self.reward_normalizer.normalize(raw_reward))
 
             # Build mask from valid_actions (not from policy > 0).
             # This ensures the network learns over ALL valid actions, including
@@ -486,11 +492,10 @@ class MCTSAgent:
                     self.reward_normalizer.update(raw_reward)
                     episode_rewards.append(raw_reward)
 
-                # Then add normalized data to buffer
+                # Store raw rewards in buffer (normalization happens at sample time)
                 for episode_data, raw_reward, length, routes in results:
-                    normalized_reward = self.reward_normalizer.normalize(raw_reward)
                     for state_dict, policy, valid_actions in episode_data:
-                        self.replay_buffer.add(state_dict, policy, valid_actions, normalized_reward)
+                        self.replay_buffer.add(state_dict, policy, valid_actions, raw_reward)
 
                 # Track environment steps and episodes
                 total_steps = sum(length for _, _, length, _ in results)

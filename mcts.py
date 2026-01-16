@@ -82,11 +82,8 @@ Algorithm 1: AlphaTransit for TRNDP -- Phase 1: Self-Play
     \tcp{Aggregate results from all workers}
     \FOR{$w = 1$ \TO $W$}
         $(\mu, \sigma^2, n) \gets \text{WelfordUpdate}(\mu, \sigma^2, n, z_w)$
-    \ENDFOR
-    \FOR{$w = 1$ \TO $W$}
-        $\tilde{z}_w \gets \text{clip}\left(\frac{z_w - \mu}{\sigma + \epsilon}, -3, 3\right)$
         \FOR{$(s_i, \pi_i) \in \mathcal{E}_w$}
-            $\mathcal{D} \gets \mathcal{D} \cup \{(s_i, \pi_i, \tilde{z}_w)\}$  \tcp{FIFO if $|\mathcal{D}| > B_{\max}$}
+            $\mathcal{D} \gets \mathcal{D} \cup \{(s_i, \pi_i, z_w)\}$  \tcp{Store raw reward; FIFO if $|\mathcal{D}| > B_{\max}$}
         \ENDFOR
     \ENDFOR
     \tcp{Proceed to Phase 2: Network Optimization}
@@ -102,7 +99,8 @@ Algorithm 2: AlphaTransit for TRNDP -- Phase 2: Training
 \FOR{step $= 1$ \TO $N_{\text{steps}}$}
     Sample minibatch $\mathcal{B} \gets \text{Sample}(\mathcal{D}, B)$
     $\mathcal{L} \gets 0$
-    \FOR{$(s, \pi, \tilde{z}) \in \mathcal{B}$}
+    \FOR{$(s, \pi, z) \in \mathcal{B}$}
+        $\tilde{z} \gets \text{clip}\left(\frac{z - \mu}{\sigma + \epsilon}, -3, 3\right)$  \tcp{Normalize with current stats}
         $(P_\theta, V_\theta) \gets f_\theta(s)$
         $P_\theta \gets \text{MaskNorm}(P_\theta, \mathcal{C})$
         $\mathcal{L}_{\text{policy}} \gets -\sum_a \pi(a) \log P_\theta(a)$  \tcp{cross-entropy}
@@ -196,6 +194,17 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         config: Configuration dictionary
         is_sweep: If True, assumes wandb is already initialized by sweep agent
     """
+    # IMPORTANT: route_init="random" is DISABLED for MCTS.
+    # Reason: MCTSState.apply_action() and force_route_end() call initialize_route()
+    # which consumes shared RNG when random, making transitions stochastic and
+    # path-dependent. Tree statistics become invalid (same state + action → different
+    # successors across simulations). Only "transit_center" or "highest_demand" work.
+    if config.get("route_init") == "random":
+        raise ValueError(
+            "route_init='random' is incompatible with MCTS. "
+            "Use 'transit_center' or 'highest_demand' instead."
+        )
+
     # Initialize wandb for standalone runs (sweep handles its own init)
     if not is_sweep and not config.get("wandb_off"):
         wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)

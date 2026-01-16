@@ -23,11 +23,6 @@ class MCTSState:
     """
     Lightweight state representation for MCTS tree exploration.
     Stores route-building state with env reference for initialize_route() calls.
-
-    WARNING: route_init="random" is incompatible with MCTS. apply_action() calls
-    initialize_route() which consumes shared RNG, making transitions stochastic and
-    path-dependent. Tree statistics become invalid (same state+action → different
-    successors across simulations). Only "transit_center" or "highest_demand" work.
     """
     current_route: List[str]
     all_routes: List[List[str]]
@@ -40,7 +35,9 @@ class MCTSState:
     env: Any  # Reference to TransitEnv for initialize_route() calls
 
     def clone(self) -> 'MCTSState':
-        """Create a shallow copy suitable for tree expansion."""
+        """
+        Create a shallow copy suitable for tree expansion.
+        """
         return MCTSState(
             current_route=list(self.current_route),
             all_routes=[list(r) for r in self.all_routes],
@@ -54,7 +51,9 @@ class MCTSState:
         )
 
     def get_valid_actions(self) -> List[int]:
-        """Get valid action indices from current state."""
+        """
+        Get valid action indices from current state.
+        """
         if not self.current_route:
             return []
         frontier = self.current_route[-1]
@@ -85,15 +84,21 @@ class MCTSState:
         return new_state
 
     def is_terminal(self) -> bool:
-        """Check if all routes have been constructed."""
+        """
+        Check if all routes have been constructed.
+        """
         return self.current_route_index >= self.num_routes
 
     def is_route_end(self) -> bool:
-        """Check if current route has reached max length."""
+        """
+        Check if current route has reached max length.
+        """
         return len(self.current_route) >= self.max_route_length
 
     def force_route_end(self) -> 'MCTSState':
-        """Force current route to end (when no valid actions)."""
+        """
+        Force current route to end (when no valid actions).
+        """
         new_state = self.clone()
         if new_state.current_route:
             new_state.all_routes.append(list(new_state.current_route))
@@ -118,12 +123,7 @@ class MCTSNode:
     - P[a]: prior probability from neural network
     """
 
-    def __init__(
-        self,
-        state: MCTSState,
-        parent: Optional['MCTSNode'] = None,
-        action_from_parent: Optional[int] = None,
-    ):
+    def __init__(self, state: MCTSState, parent: Optional['MCTSNode'] = None, action_from_parent: Optional[int] = None):
         self.state = state
         self.parent = parent
         self.action_from_parent = action_from_parent
@@ -198,7 +198,9 @@ class MCTSNode:
         self.Q[action] = self.W[action] / self.N[action]
 
     def get_child(self, action: int) -> 'MCTSNode':
-        """Get or create child node for action."""
+        """
+        Get or create child node for action.
+        """
         if action not in self.children:
             new_state = self.state.apply_action(action)
             self.children[action] = MCTSNode(
@@ -270,7 +272,9 @@ class MCTSTree:
             self.root = MCTSNode(state=new_state)
 
     def get_policy(self, tau: float, n_actions: int) -> np.ndarray:
-        """Get visit count policy from root."""
+        """
+        Get visit count policy from root.
+        """
         return self.root.get_visit_count_policy(tau, n_actions)
 
 
@@ -287,13 +291,7 @@ class ReplayBuffer:
         self.capacity = capacity
         self.buffer: deque = deque(maxlen=capacity)
 
-    def add(
-        self,
-        state_dict: Dict[str, Any],
-        policy: np.ndarray,
-        valid_actions: List[int],
-        value: float
-    ) -> None:
+    def add(self, state_dict: Dict[str, Any], policy: np.ndarray, valid_actions: List[int], value: float) -> None:
         """
         Add a transition to the buffer.
 
@@ -375,11 +373,15 @@ class WelfordNormalizer:
 
     @property
     def std(self) -> float:
-        """Get current standard deviation."""
+        """
+        Get current standard deviation.
+        """
         return math.sqrt(self.var) if self.var > 0 else 0.0
 
     def state_dict(self) -> Dict[str, Any]:
-        """Get state for checkpointing."""
+        """
+        Get state for checkpointing.
+        """
         return {
             'mean': self.mean,
             'var': self.var,
@@ -389,7 +391,9 @@ class WelfordNormalizer:
         }
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
-        """Load state from checkpoint."""
+        """
+        Load state from checkpoint.
+        """
         self.mean = state['mean']
         self.var = state['var']
         self.count = state['count']
@@ -397,11 +401,7 @@ class WelfordNormalizer:
         self.eps = state.get('eps', 1e-8)
 
 
-def add_dirichlet_noise(
-    priors: Dict[int, float],
-    alpha: float,
-    eps: float
-) -> Dict[int, float]:
+def add_dirichlet_noise(priors: Dict[int, float], alpha: float, eps: float) -> Dict[int, float]:
     """
     Add Dirichlet noise to prior probabilities for exploration.
 
