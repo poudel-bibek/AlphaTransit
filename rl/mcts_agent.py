@@ -672,7 +672,17 @@ class MCTSAgent:
                 "eval/demand_coverage_actual": aggregated['demand_coverage_actual'],
                 "eval/route_overlap_ratio": aggregated['route_overlap_ratio'],
                 "eval/node_coverage": aggregated['node_coverage'],
+                "eval/completed_passengers": aggregated['completed_passengers'],
+                "eval/ongoing_passengers": aggregated['ongoing_passengers'],
+                "eval/total_onboarded_count": aggregated['total_onboarded_count'],
+                "eval/wanting_to_onboard": aggregated['wanting_to_onboard'],
                 "eval/service_rate": aggregated['service_rate'],
+                "eval/avg_wait_time": aggregated['combined_avg_wait_minutes'],
+                "eval/transfer_rate": aggregated['transfer_rate'],
+                "eval/avg_travel_time": aggregated['combined_avg_travel_minutes'],
+                "eval/route_efficiency": aggregated['route_efficiency'],
+                "eval/fleet_size": aggregated['fleet_size'],
+                "eval/bus_utilization": aggregated['bus_utilization'],
                 "eval/iteration": iteration,
             }, step=self.total_env_steps)
 
