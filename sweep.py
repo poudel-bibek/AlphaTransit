@@ -22,16 +22,19 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
     2. update_frequency: Tried 128 and 256. Lower is better — 128 appears in 38% of top runs (but avg is clearly better). Impact: 4.14 return_std improvement.                                           
     3. clip_frac: Tried 0.1 and 0.2. Higher is better — 0.2 appears in 69% of top runs. Impact: 2.22 return_std improvement.                                                                            
 
-     
-
+    
     Alpha = 1.0 (39 runs)
     1. lr: Tried 1e-05 and 1e-04. Lower is better — optimizer chose 1e-05 in 95% of runs. Impact: +119 reward.
     2. batch_size: Tried 16 and 32. Higher is better — optimizer chose 32 in 95% of runs. Impact: +84 reward.
     3. update_frequency: Tried 128 and 256. Lower is better — optimizer chose 128 in 90% of runs. Impact: +81 reward.
 
-    # Further insights from Jan 10 (130 runs):
-    1. 
-    2. 
+    # Further insights from Jan 10 (124 runs):
+    1. Reward function is most strongly driven by coverage metrics. Node and demand coverage are the strongest predictor of reward. Demand Coverage (correlation = 0.822), Node Coverage (correlation = 0.775)
+    2. K_epochs: Tried 2 and 4. Lower is better — optimizer chose 2 in 87% of runs. Impact: +47.7 reward
+    3. num_gat_blocks: Tried 4 and 8. Lower is better — optimizer chose 4 in 52% of runs. Impact: +39.5 reward
+    4. activation: Tried tanh and leaky_relu. tanh is better — optimizer chose tanh in 81% of runs. Impact: +32.6 reward
+    5. clip_frac: Tried 0.1 and 0.2. Higher is better — optimizer chose 0.2 in 88% of runs. Impact: +23.4 reward
+    6. entropy_coef: Tried 0.01 and 0.02. Negligible difference — optimizer slightly preferred 0.02 (76%). Impact: +2.0 reward
 
     """
     return {
@@ -59,29 +62,29 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
             "anneal_lr": {"value": True},
-            "max_steps": {"value": 120_000},
+            "max_steps": {"value": 1_000_000},
             "num_ppo_workers": {"value": 8},
         },
 
-        # Alpha = 1.0
+        # # Alpha = 1.0
         # "parameters": {
-        #     "clip_frac": {"values": [0.1, 0.2]},
-        #     "entropy_coef": {"values": [0.01, 0.02]},
+        #     "clip_frac": {"values": [0.2]},
+        #     "entropy_coef": {"values": [0.02]},
         #     "lr": {"values": [1e-5]},
-        #     "K_epochs": {"values": [2, 4]},
+        #     "K_epochs": {"values": [2, 4]},  
         #     "batch_size": {"values": [32]},
         #     "update_frequency": {"values": [128]},
             
         #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
-        #     "activation": {"values": ["tanh", "leaky_relu"]},
-        #     "num_gat_blocks": {"values": [4, 8]},
+        #     "activation": {"values": ["tanh"]},
+        #     "num_gat_blocks": {"values": [4, 8]}, 
 
         #     # Fixed values (Not sweep params)
         #     "alpha": {"value": 1.0}, # ALPHA SETTING. 
         #     "algorithm": {"value": "ppo"},
         #     "gpu": {"value": True},
         #     "anneal_lr": {"value": True},
-        #     "max_steps": {"value": 120_000},
+        #     "max_steps": {"value": 1_000_000},
         #     "num_ppo_workers": {"value": 8},
         # },
 
@@ -109,11 +112,11 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         "parameters": {
             "lr": {"values": [1e-4]},
             "c_puct": {"values": [1.0, 1.5]},
-            "dirichlet_alpha": {"values": [0.3, 0.5]},
+            "dirichlet_alpha": {"values": [0.3]},
 
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh"]},
-            "num_gat_blocks": {"values": [8]},
+            "num_gat_blocks": {"values": [4, 8]},
             
             # How many times to sample batch_size from buffer per iteration.
             # 500 steps × 256 batch = 128,000 samples trained per iteration (~1600 new samples with 8 workers)
@@ -139,29 +142,39 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "alpha": {"value": 0.3}, # ALPHA SETTING.
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 250},
+            "max_iterations": {"value": 400},
             "num_mcts_workers": {"value": 6}, # Each iteration runs num_mcts_workers episodes in parallel
         },
 
         # # Alpha = 1.0
         # "parameters": {
-        # "lr": {"values": [1e-4, 1e-5]},
+        #     "lr": {"values": [1e-4]},
         #     "c_puct": {"values": [1.0, 1.5]},
-        #     "dirichlet_alpha": {"values": [0.3, 0.5]},
-        #     "activation": {"values": ["tanh", "leaky_relu"]},
+        #     "dirichlet_alpha": {"values": [0.3]},
+
+        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+        #     "activation": {"values": ["tanh"]},
         #     "num_gat_blocks": {"values": [4, 8]},
+            
+        #     # How many times to sample batch_size from buffer per iteration.
         #     "train_steps_per_iter": {"values": [100, 200]},
-        #     "batch_size": {"values": [128, 256]},
+
+        #     # How many items to sample from buffer per update.
+        #     "batch_size": {"values": [256]},
+
+        #     # Replay buffer capacity
         #     "buffer_capacity": {"values": [100000, 50000]},
-        #     "n_iter": {"values": [50, 100]},
+            
+        #     # How many MCTS simulations to run 
+        #     "n_iter": {"values": [100]},
             
         #     # Fixed values (Not sweep params)
         #     "alpha": {"value": 1.0}, # ALPHA SETTING. 
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 150},
-        #     "num_mcts_workers": {"value": 6}, # Each iteration runs num_mcts_workers episodes in parallel
-        # },
+        #     "max_iterations": {"value": 400},
+        #     "num_mcts_workers": {"value": 6},
+        },
     }
 
 
