@@ -174,7 +174,7 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         #     "gpu": {"value": True},
         #     "max_iterations": {"value": 400},
         #     "num_mcts_workers": {"value": 6},
-        },
+        # },
     }
 
 
