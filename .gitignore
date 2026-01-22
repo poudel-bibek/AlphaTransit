@@ -123,3 +123,8 @@ claude_docs/
 
 claude_docs/*
 ./claude_docs/*
+
+second_last_runs/
+./second_last_runs/
+new_run/
+./new_run/

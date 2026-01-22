@@ -73,10 +73,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # PPO hyperparameters:
     # Training duration: max_steps = 1M env steps (comparable to MCTS with max_iterations=744)
-    # Eval frequency: eval_every=10 updates × update_frequency=128 = 1,280 steps per eval
+    # Eval frequency: 1M steps / 128 = 7,812 updates; eval_every=20 → ~390 eval points
     parser.add_argument("--update_frequency", type=int, default=128, help="PPO: Update when memory has N samples")
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
-    parser.add_argument("--ppo_eval_every", type=int, default=10, help="PPO: Evaluate every N updates (10 updates × 128 steps = 1,280 steps per eval)")
+    parser.add_argument("--ppo_eval_every", type=int, default=20, help="PPO: Evaluate every N updates (~390 eval points for 1M steps)")
     parser.add_argument("--num_ppo_workers", type=int, default=8, help="PPO: Number of parallel workers")
     parser.add_argument("--steps_per_worker", type=int, default=32, help="PPO: Steps per worker before sync")
     parser.add_argument("--weight_refresh_interval", type=int, default=4, help="PPO: Refresh weights every N updates")
@@ -95,7 +95,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # MCTS hyperparameters:
     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
     #                    max_iterations=744 × 1,344 ≈ 1M steps (comparable to PPO)
-    # Eval frequency: eval_every=1 iteration × 1,344 steps ≈ PPO's 1,280 steps per eval
+    # Eval frequency: 744 iterations / eval_every=3 → ~248 eval points
     parser.add_argument("--n_iter", type=int, default=400, help="MCTS: Simulations per move")
     parser.add_argument("--c_puct", type=float, default=1.5, help="MCTS: PUCT exploration constant")
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
@@ -104,7 +104,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_mcts_workers", type=int, default=6, help="MCTS: Number of parallel workers")
     parser.add_argument("--train_steps_per_iter", type=int, default=500, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=744, help="MCTS: Max iterations (744 × 6 workers × ~224 steps ≈ 1M steps)")
-    parser.add_argument("--mcts_eval_every", type=int, default=1, help="MCTS: Evaluate every N iterations (1 iter × ~1,344 steps per eval)")
+    parser.add_argument("--mcts_eval_every", type=int, default=3, help="MCTS: Evaluate every N iterations (~248 eval points for 744 iterations)")
     parser.add_argument("--temp_schedule", type=str, default="0.3:1.0,0.6:0.5,1.0:0.1", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.3:1.0,0.6:0.5,1.0:0.1')")
 
     # Model:

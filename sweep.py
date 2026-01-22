@@ -44,55 +44,55 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "goal": "maximize"
         },
 
-        # Alpha = 0.3
-        "parameters": {
-            "clip_frac": {"values": [0.2]},
-            "entropy_coef": {"values": [0.01, 0.02]},
-            "lr": {"values": [1e-4]},
-            "K_epochs": {"values": [4]},
-            "batch_size": {"values": [32]},
-            "update_frequency": {"values": [128]},
-            
-            # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
-            "activation": {"values": ["tanh"]},
-            "num_gat_blocks": {"values": [4, 8]},
-
-            # Fixed values (Not sweep params)
-            # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-            # Eval frequency: 10 updates × 128 steps = 1,280 steps per eval
-            "alpha": {"value": 0.3}, # ALPHA SETTING.
-            "algorithm": {"value": "ppo"},
-            "gpu": {"value": True},
-            "anneal_lr": {"value": True},
-            "max_steps": {"value": 1_000_000},
-            "num_ppo_workers": {"value": 8},
-            "ppo_eval_every": {"value": 10},
-        },
-
-        # # Alpha = 1.0
+        # # Alpha = 0.3
         # "parameters": {
         #     "clip_frac": {"values": [0.2]},
-        #     "entropy_coef": {"values": [0.02]},
-        #     "lr": {"values": [1e-5]},
-        #     "K_epochs": {"values": [2, 4]},  
+        #     "entropy_coef": {"values": [0.01, 0.02]},
+        #     "lr": {"values": [1e-4]},
+        #     "K_epochs": {"values": [4]},
         #     "batch_size": {"values": [32]},
         #     "update_frequency": {"values": [128]},
             
         #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
         #     "activation": {"values": ["tanh"]},
-        #     "num_gat_blocks": {"values": [4, 8]}, 
+        #     "num_gat_blocks": {"values": [4, 8]},
 
         #     # Fixed values (Not sweep params)
         #     # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-        #     # Eval frequency: 10 updates × 128 steps = 1,280 steps per eval
-        #     "alpha": {"value": 1.0}, # ALPHA SETTING.
+        #     # Eval frequency: 7,812 updates / 20 = ~390 eval points
+        #     "alpha": {"value": 0.3}, # ALPHA SETTING.
         #     "algorithm": {"value": "ppo"},
         #     "gpu": {"value": True},
         #     "anneal_lr": {"value": True},
         #     "max_steps": {"value": 1_000_000},
         #     "num_ppo_workers": {"value": 8},
-        #     "ppo_eval_every": {"value": 10},
+        #     "ppo_eval_every": {"value": 20},
         # },
+
+        # Alpha = 1.0
+        "parameters": {
+            "clip_frac": {"values": [0.2]},
+            "entropy_coef": {"values": [0.02]},
+            "lr": {"values": [1e-5]},
+            "K_epochs": {"values": [2, 4]},  
+            "batch_size": {"values": [32]},
+            "update_frequency": {"values": [128]},
+            
+            # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+            "activation": {"values": ["tanh"]},
+            "num_gat_blocks": {"values": [4, 8]}, 
+
+            # Fixed values (Not sweep params)
+            # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
+            # Eval frequency: 7,812 updates / 20 = ~390 eval points
+            "alpha": {"value": 1.0}, # ALPHA SETTING.
+            "algorithm": {"value": "ppo"},
+            "gpu": {"value": True},
+            "anneal_lr": {"value": True},
+            "max_steps": {"value": 1_000_000},
+            "num_ppo_workers": {"value": 8},
+            "ppo_eval_every": {"value": 20},
+        },
 
     }
 
@@ -144,13 +144,13 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         #     # Fixed values (Not sweep params)
         #     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
         #     # total_steps = 744 iterations × 1,344 ≈ 1M steps (comparable to PPO)
-        #     # Eval frequency: 1 iteration × 1,344 steps ≈ PPO's 1,280 steps per eval
+        #     # Eval frequency: 744 iterations / 3 = ~248 eval points
         #     "alpha": {"value": 0.3}, # ALPHA SETTING.
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
         #     "max_iterations": {"value": 744},
         #     "num_mcts_workers": {"value": 6},
-        #     "mcts_eval_every": {"value": 1},
+        #     "mcts_eval_every": {"value": 3},
         # },
 
         # Alpha = 1.0
@@ -186,13 +186,13 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             # Fixed values (Not sweep params)
             # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
             # total_steps = 744 iterations × 1,344 ≈ 1M steps (comparable to PPO)
-            # Eval frequency: 1 iteration × 1,344 steps ≈ PPO's 1,280 steps per eval
+            # Eval frequency: 744 iterations / 3 = ~248 eval points
             "alpha": {"value": 1.0}, # ALPHA SETTING.
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "max_iterations": {"value": 744},
             "num_mcts_workers": {"value": 6},
-            "mcts_eval_every": {"value": 1},
+            "mcts_eval_every": {"value": 3},
         },
     }
 
