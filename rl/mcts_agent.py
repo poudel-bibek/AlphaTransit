@@ -481,7 +481,7 @@ class MCTSAgent:
                 # Temperature is computed once per iteration from iteration-based progress,
                 # ensuring consistency between self-play action selection and logging.
                 progress = iteration / self.max_iterations
-                tau = get_temperature(progress)
+                tau = get_temperature(progress, self.config['temp_schedule'])
 
                 # Parallel self-play phase
                 results = self._collect_episodes(tau, iteration)

@@ -433,24 +433,45 @@ def add_dirichlet_noise(priors: Dict[int, float], alpha: float, eps: float) -> D
     return noisy_priors
 
 
-def get_temperature(progress: float) -> float:
+def parse_temp_schedule(schedule_str: str) -> list:
     """
-    Get temperature based on training progress.
+    Parse temperature schedule string into sorted list of (threshold, tau) tuples.
 
-    Schedule:
-    - progress < 0.3: tau = 1.0 (high exploration)
-    - 0.3 <= progress < 0.6: tau = 0.5 (medium)
-    - progress >= 0.6: tau = 0.1 (low exploration, more greedy)
+    Args:
+        schedule_str: Format "progress:tau,progress:tau,..." e.g., "0.3:1.0,0.6:0.5,1.0:0.1"
+
+    Returns:
+        List of (threshold, tau) tuples sorted by threshold ascending
+    """
+    pairs = []
+    for pair in schedule_str.split(","):
+        threshold, tau = pair.split(":")
+        pairs.append((float(threshold), float(tau)))
+    return sorted(pairs, key=lambda x: x[0])
+
+
+def get_temperature(progress: float, schedule_str: str = "0.3:1.0,0.6:0.5,1.0:0.1") -> float:
+    """
+    Get temperature based on training progress and configurable schedule.
 
     Args:
         progress: Training progress in [0, 1]
+        schedule_str: Temperature schedule as "progress:tau" pairs
+                      e.g., "0.3:1.0,0.6:0.5,1.0:0.1" means:
+                      - progress < 0.3: tau = 1.0
+                      - 0.3 <= progress < 0.6: tau = 0.5
+                      - progress >= 0.6: tau = 0.1
 
     Returns:
         Temperature value
     """
-    if progress < 0.3:
-        return 1.0
-    elif progress < 0.6:
-        return 0.5
-    else:
-        return 0.1
+    schedule = parse_temp_schedule(schedule_str)
+
+    # Find the appropriate temperature for current progress
+    # Schedule is sorted ascending, so we return tau for first threshold > progress
+    for threshold, tau in schedule:
+        if progress < threshold:
+            return tau
+
+    # If progress >= all thresholds, return the last tau
+    return schedule[-1][1]

@@ -106,6 +106,11 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
     2. n_iter: Tried 50 and 100. Higher is better — 100 simulations used in 100% of top runs. Impact:  +8pp service rate improvement.                                                                     
     3. num_gat_blocks: Tried 4 and 8. Higher is better — 8 blocks used in 100% of top runs. Impact:    2.5x better route efficiency.
 
+    Key takeaways from MCTS sweep in Jan 22:
+    Alpha = 1.0 (5 runs)
+    1. num_gat_blocks: Tried 4 and 8. Lower is better — 4 blocks used in 100% of top 2 runs. Impact: +3.4 reward (+11%), -7.8 min travel time (-20%), -22 buses fleet size (-23%).
+    2. c_puct: Tried 1.0 and 1.5. Higher is slightly better — 1.5 used in 50% of top 2 runs. Impact: +0.6 to +1.0 reward (controlled comparison), -1.9 min travel time.
+
     """
     return {
         "method": "bayes",
@@ -156,7 +161,7 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
 
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh"]},
-            "num_gat_blocks": {"values": [4, 8]},
+            "num_gat_blocks": {"values": [4]},
 
             # How many times to sample batch_size from buffer per iteration.
             "train_steps_per_iter": {"values": [100, 200]},
@@ -169,6 +174,14 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
 
             # How many MCTS simulations to run
             "n_iter": {"values": [100]},
+
+            # Temperature schedule: "progress:tau,..." pairs
+            # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
+            # Slower schedules maintain exploration longer
+            "temp_schedule": {"values": [
+                "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing (new default)
+                "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
+            ]},
 
             # Fixed values (Not sweep params)
             # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration

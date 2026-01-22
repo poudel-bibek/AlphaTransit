@@ -105,6 +105,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train_steps_per_iter", type=int, default=500, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=744, help="MCTS: Max iterations (744 × 6 workers × ~224 steps ≈ 1M steps)")
     parser.add_argument("--mcts_eval_every", type=int, default=1, help="MCTS: Evaluate every N iterations (1 iter × ~1,344 steps per eval)")
+    parser.add_argument("--temp_schedule", type=str, default="0.3:1.0,0.6:0.5,1.0:0.1", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.3:1.0,0.6:0.5,1.0:0.1')")
 
     # Model:
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
