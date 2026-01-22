@@ -294,7 +294,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
                 wandb.log(episode_log, step=steps_elapsed)
 
             # Evaluate the policy after a certain number of updates
-            if config.get("eval_every") > 0 and update_count % config["eval_every"] == 0:
+            if config.get("ppo_eval_every") > 0 and update_count % config["ppo_eval_every"] == 0:
                 # print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
                 eval(config, policy_path, update_count, steps_elapsed, training_save_dir, env_manager)
                 
@@ -356,6 +356,8 @@ def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, step
         wandb.log({
             # Total reward accumulated across the episode
             "eval/episode_total_reward": aggregated['episode_total_reward'],
+            # Terminal reward only (for fair comparison with MCTS which uses terminal-only rewards)
+            "eval/episode_terminal_reward": aggregated['episode_terminal_reward'],
             "eval/episode_length": aggregated['episode_length'],
 
             # reward related and others

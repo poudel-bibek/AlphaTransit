@@ -108,7 +108,7 @@ class MCTSAgent:
         self.total_episodes = 0
 
         # Evaluation config
-        self.eval_every = config.get('eval_every', 10)
+        self.eval_every = config.get('mcts_eval_every', 1)
         self.num_eval_runs = config.get('num_eval_runs', 5)
         self.seed = config.get('seed', 42)
         self.eval_seed_offset = config.get('eval_seed_offset', 2)
@@ -625,11 +625,10 @@ class MCTSAgent:
             if terminated:
                 break
 
-        # Get simulation results
-        # NOTE: env.step() returns sim_result directly as info (not wrapped like baselines)
         sim_result = info
         metrics = {
-            'episode_total_reward': reward,
+            'episode_terminal_reward': reward,
+            'episode_total_reward': reward,  # Same as terminal for MCTS; needed for aggregate_results
             'episode_length': len(actions),
             'routes': [list(r) for r in self.env.all_routes],
             'seed': seed,
@@ -666,7 +665,7 @@ class MCTSAgent:
         # Log to wandb
         if not self.config.get("wandb_off"):
             wandb.log({
-                "eval/episode_total_reward": aggregated['episode_total_reward'],
+                "eval/episode_terminal_reward": aggregated['episode_terminal_reward'],
                 "eval/episode_length": aggregated['episode_length'],
                 "eval/demand_coverage_potential": aggregated['demand_coverage_potential'],
                 "eval/demand_coverage_actual": aggregated['demand_coverage_actual'],
@@ -722,14 +721,14 @@ class MCTSAgent:
             save_routes_json(seed_dir, metrics['routes'])
             results.append(metrics)
 
-            print(f"Episode {i + 1}/{self.num_eval_runs}: Reward = {metrics['episode_total_reward']:.2f}")
+            print(f"Episode {i + 1}/{self.num_eval_runs}: Reward = {metrics['episode_terminal_reward']:.2f}")
 
         # Aggregate and save summary
         aggregated = aggregate_results(results)
         write_results_summary(aggregated, self.num_eval_runs, episode_dir, 'eval_results_summary.json')
 
         print(f"\nEvaluation Results ({self.num_eval_runs} episodes):")
-        print(f"  Mean Reward: {aggregated.get('episode_total_reward', 0):.2f}")
+        print(f"  Mean Reward: {aggregated.get('episode_terminal_reward', 0):.2f}")
         print(f"  Results saved to: {episode_dir}")
 
         return aggregated

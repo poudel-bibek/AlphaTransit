@@ -156,34 +156,36 @@ def run_single_eval(env, model, seed, device):
     state, _ = env.reset(seed=seed)
     terminated = False
     episode_reward = 0.0
+    terminal_reward = 0.0  # Track terminal reward separately for fair comparison with MCTS
     episode_steps = 0
     sim_result = None
-    
+
     while not terminated:
         data = converter.convert(state)
         batch = Batch.from_data_list([data]).to(device)
-        
+
         valid_list = env._get_valid_indices()
         num_nodes = batch.num_nodes
         valid_mask = torch.zeros(1, num_nodes, dtype=torch.bool, device=device)
-        
+
         if len(valid_list) > 0:
             valid_mask[0, valid_list] = True
-            
+
             with torch.no_grad():
-                action_tensor, _, _ = model.act( batch.x, 
-                                                 batch.edge_index, 
-                                                 batch.edge_attr, 
+                action_tensor, _, _ = model.act( batch.x,
+                                                 batch.edge_index,
+                                                 batch.edge_attr,
                                                  batch.batch,
-                                                 valid_mask=valid_mask, 
+                                                 valid_mask=valid_mask,
                                                  stochastic=False) # DETERMINISTIC action for evaluation
         else:
             # No valid next node found.
             action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=device)
-        
+
         action = action_tensor.cpu().item()
         next_state, reward, terminated, _, sim_result = env.step(action)
         episode_reward += reward
+        terminal_reward = reward  # Overwrite each step; final value is terminal reward
         episode_steps += 1
         state = next_state
     
@@ -196,6 +198,7 @@ def run_single_eval(env, model, seed, device):
     
     metrics = {
         'episode_total_reward': float(episode_reward),
+        'episode_terminal_reward': float(terminal_reward),  # For fair comparison with MCTS
         'episode_length': episode_steps,
         'demand_coverage_potential': sim_result['demand_coverage_potential'],
         'demand_coverage_actual': sim_result['demand_coverage_actual'],
