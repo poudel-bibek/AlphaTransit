@@ -50,10 +50,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world")
+    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world, genetic")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of evaluation runs")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
     parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
+
+    # Genetic Algorithm hyperparameters:
+    parser.add_argument("--ga_population", type=int, default=20, help="GA: Population size")
+    parser.add_argument("--ga_generations", type=int, default=50, help="GA: Number of generations")
+    parser.add_argument("--ga_mutation_rate", type=float, default=0.2, help="GA: Mutation probability")
+    parser.add_argument("--ga_crossover_rate", type=float, default=0.8, help="GA: Crossover probability")
+    parser.add_argument("--ga_tournament_size", type=int, default=3, help="GA: Tournament selection size")
+    parser.add_argument("--ga_elitism", type=int, default=2, help="GA: Number of elite individuals to preserve")
 
     # Learning environment specific:
     parser.add_argument("--service_frequency_mode", type=str, default="max_load", help="Service frequency mode")
@@ -91,6 +99,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=0.00005, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
+    parser.add_argument("--min_lr", type=float, default=1e-6, help="PPO: Minimum learning rate floor when annealing")
 
     # MCTS hyperparameters:
     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration

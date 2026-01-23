@@ -651,6 +651,273 @@ class RewardMaximization:
         return self.env.all_routes
 
 #####################################
+# Metaheuristic Baseline: Genetic Algorithm
+#####################################
+
+class GeneticAlgorithm:
+    """
+    Genetic Algorithm for transit network design.
+    No training required — pure evolutionary optimization.
+    
+    Uses the same compute_reward() as PPO/MCTS for fair comparison.
+    Budget can be matched to RL training steps via population × generations.
+    """
+    def __init__(self, env, config, num_runs, base_seed):
+        self.env = env
+        self.config = config
+        self.world = env.build_world(config.get("network"))
+        self.num_runs = num_runs
+        self.base_seed = base_seed
+        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
+        
+        # GA hyperparameters (configurable via CLI)
+        self.population_size = config.get("ga_population", 20)
+        self.generations = config.get("ga_generations", 50)
+        self.mutation_rate = config.get("ga_mutation_rate", 0.2)
+        self.crossover_rate = config.get("ga_crossover_rate", 0.8)
+        self.tournament_size = config.get("ga_tournament_size", 3)
+        self.elitism_count = config.get("ga_elitism", 2)
+
+    def run(self):
+        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
+        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
+        return results, aggregated
+
+    def construct_path(self, state):
+        """
+        Run genetic algorithm to find optimal route set.
+        
+        Algorithm:
+        1. Initialize population with diverse solutions (random + greedy heuristics)
+        2. For each generation:
+           a. Evaluate fitness of each individual (run simulation, compute_reward)
+           b. Select parents via tournament selection
+           c. Create offspring via crossover (swap routes between parents)
+           d. Mutate offspring (modify segments within routes)
+           e. Apply elitism (keep best individuals)
+        3. Return best solution found
+        """
+        print(f"\n=== Genetic Algorithm ===")
+        print(f"Population: {self.population_size}, Generations: {self.generations}")
+        print(f"Mutation rate: {self.mutation_rate}, Crossover rate: {self.crossover_rate}")
+        
+        # Initialize population
+        population = self._initialize_population()
+        print(f"Initialized {len(population)} individuals")
+        
+        # Track best solution across all generations
+        best_solution = None
+        best_fitness = -np.inf
+        
+        # Evolution loop
+        for gen in range(self.generations):
+            # Evaluate fitness for all individuals
+            fitness_scores = []
+            for i, individual in enumerate(population):
+                fitness = self._evaluate_fitness(individual)
+                fitness_scores.append(fitness)
+                
+                if fitness > best_fitness:
+                    best_fitness = fitness
+                    best_solution = [route.copy() for route in individual]
+            
+            print(f"Generation {gen + 1}/{self.generations}: Best fitness = {best_fitness:.2f}, "
+                  f"Avg = {np.mean(fitness_scores):.2f}")
+            
+            # Create next generation
+            next_population = []
+            
+            # Elitism: keep top individuals
+            sorted_indices = np.argsort(fitness_scores)[::-1]
+            for i in range(min(self.elitism_count, len(population))):
+                elite = population[sorted_indices[i]]
+                next_population.append([route.copy() for route in elite])
+            
+            # Fill rest with offspring
+            while len(next_population) < self.population_size:
+                # Selection
+                parent1 = self._tournament_select(population, fitness_scores)
+                parent2 = self._tournament_select(population, fitness_scores)
+                
+                # Crossover
+                if random.random() < self.crossover_rate:
+                    child1, child2 = self._crossover(parent1, parent2)
+                else:
+                    child1 = [route.copy() for route in parent1]
+                    child2 = [route.copy() for route in parent2]
+                
+                # Mutation
+                if random.random() < self.mutation_rate:
+                    child1 = self._mutate(child1)
+                if random.random() < self.mutation_rate:
+                    child2 = self._mutate(child2)
+                
+                next_population.append(child1)
+                if len(next_population) < self.population_size:
+                    next_population.append(child2)
+            
+            population = next_population
+        
+        print(f"\nGA complete. Best fitness: {best_fitness:.2f}")
+        print(f"Best solution: {best_solution}")
+        
+        # Set env state to best solution for final simulation
+        self.env.all_routes = best_solution
+        return best_solution
+
+    def _initialize_population(self):
+        """
+        Create initial population with diverse solutions.
+        Uses mix of random walks and greedy heuristics for diversity.
+        """
+        population = []
+        
+        for i in range(self.population_size):
+            # Reset env for fresh route construction
+            self.env.all_routes = []
+            self.env.current_route = []
+            self.env.current_route_index = 0
+            
+            individual = []
+            for route_idx in range(self.env.NUM_ROUTES):
+                # Alternate between random and greedy initialization
+                if i % 3 == 0:
+                    route = self._build_random_route()
+                elif i % 3 == 1:
+                    route = self._build_greedy_demand_route()
+                else:
+                    route = self._build_random_route()  # More random for diversity
+                
+                individual.append(route)
+            
+            population.append(individual)
+        
+        return population
+
+    def _build_random_route(self):
+        """Build a route using random neighbor selection."""
+        from rl.env_utils import initialize_route
+        route = initialize_route(self.env)
+        
+        while len(route) < self.env.MAX_ROUTE_LENGTH:
+            frontier = route[-1]
+            route_set = set(route)
+            valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+            
+            if not valid_neighbors:
+                break
+            
+            next_node = random.choice(valid_neighbors)
+            route.append(next_node)
+        
+        return route
+
+    def _build_greedy_demand_route(self):
+        """Build a route using greedy demand coverage."""
+        from rl.env_utils import initialize_route
+        route = initialize_route(self.env)
+        
+        while len(route) < self.env.MAX_ROUTE_LENGTH:
+            frontier = route[-1]
+            route_set = set(route)
+            valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+            
+            if not valid_neighbors:
+                break
+            
+            # Score by demand coverage
+            route_indices = np.array([self.env.node_to_idx[node] for node in route])
+            best_score = -np.inf
+            best_node = None
+            
+            for neighbor in valid_neighbors:
+                neigh_idx = self.env.node_to_idx[neighbor]
+                d_out = self.env.od_matrix[neigh_idx, route_indices].sum()
+                d_in = self.env.od_matrix[route_indices, neigh_idx].sum()
+                score = d_out + d_in
+                
+                if score > best_score:
+                    best_score = score
+                    best_node = neighbor
+            
+            route.append(best_node if best_node else random.choice(valid_neighbors))
+        
+        return route
+
+    def _evaluate_fitness(self, individual):
+        """
+        Evaluate fitness by running traffic simulation.
+        Uses same compute_reward as PPO/MCTS for fair comparison.
+        """
+        # Set env state to this individual
+        self.env.all_routes = [[str(n) for n in route] for route in individual]
+        self.env.current_route = []
+        self.env.current_route_index = len(individual)
+        self.env.is_baseline = True
+        
+        # Build world and run simulation
+        self.env.world = self.env.build_world(self.config.get("network"))
+        self.env._apply_action()
+        sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
+        
+        # Compute reward using same function as RL
+        sim_result['route_completed'] = True
+        sim_result['route_forced_end'] = False
+        fitness = self.env.compute_reward(sim_result, is_route_end=True, is_forced_end=False)
+        
+        return fitness
+
+    def _tournament_select(self, population, fitness_scores):
+        """Select parent via tournament selection."""
+        indices = random.sample(range(len(population)), min(self.tournament_size, len(population)))
+        best_idx = max(indices, key=lambda i: fitness_scores[i])
+        return [route.copy() for route in population[best_idx]]
+
+    def _crossover(self, parent1, parent2):
+        """Route-level crossover: swap routes between parents."""
+        child1 = []
+        child2 = []
+        
+        for i in range(len(parent1)):
+            if random.random() < 0.5:
+                child1.append(parent1[i].copy())
+                child2.append(parent2[i].copy())
+            else:
+                child1.append(parent2[i].copy())
+                child2.append(parent1[i].copy())
+        
+        return child1, child2
+
+    def _mutate(self, individual):
+        """
+        Mutate a solution by modifying a random segment of a random route.
+        Rebuilds from a random point using random walks.
+        """
+        route_idx = random.randint(0, len(individual) - 1)
+        route = individual[route_idx]
+        
+        if len(route) < 3:
+            return individual
+        
+        # Pick a random point to rebuild from
+        cut_point = random.randint(1, len(route) - 2)
+        new_route = route[:cut_point + 1]
+        
+        # Rebuild rest with random walks
+        while len(new_route) < self.env.MAX_ROUTE_LENGTH:
+            frontier = new_route[-1]
+            route_set = set(new_route)
+            valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+            
+            if not valid_neighbors:
+                break
+            
+            new_route.append(random.choice(valid_neighbors))
+        
+        individual[route_idx] = new_route
+        return individual
+
+#####################################
 # Real-world Baseline: 
 #####################################
 

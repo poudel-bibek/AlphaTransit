@@ -63,7 +63,8 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
         #     "alpha": {"value": 0.3}, # ALPHA SETTING.
         #     "algorithm": {"value": "ppo"},
         #     "gpu": {"value": True},
-        #     "anneal_lr": {"value": True},
+        #     "anneal_lr": {"values": [True, False]},  # Test both: annealing (with min_lr floor) vs constant LR
+        #     "min_lr": {"value": 1e-6},  # LR floor when anneal_lr=True; ignored when False
         #     "max_steps": {"value": 1_000_000},
         #     "num_ppo_workers": {"value": 8},
         #     "ppo_eval_every": {"value": 20},
@@ -72,15 +73,15 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
         # Alpha = 1.0
         "parameters": {
             "clip_frac": {"values": [0.2]},
-            "entropy_coef": {"values": [0.02]},
+            "entropy_coef": {"values": [0.02, 0.05]},
             "lr": {"values": [1e-5]},
-            "K_epochs": {"values": [2, 4]},  
+            "K_epochs": {"values": [2, 4]},
             "batch_size": {"values": [32]},
             "update_frequency": {"values": [128]},
-            
+
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh"]},
-            "num_gat_blocks": {"values": [4, 8]}, 
+            "num_gat_blocks": {"values": [4, 8]},
 
             # Fixed values (Not sweep params)
             # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
@@ -88,7 +89,8 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "alpha": {"value": 1.0}, # ALPHA SETTING.
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
-            "anneal_lr": {"value": True},
+            "anneal_lr": {"values": [True, False]},
+            "min_lr": {"value": 1e-6},
             "max_steps": {"value": 1_000_000},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 20},
@@ -138,8 +140,8 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         #     # Replay buffer capacity
         #     "buffer_capacity": {"values": [100000, 50000]},
 
-        #     # How many MCTS simulations to run
-        #     "n_iter": {"values": [100]},
+        #     # How many MCTS simulations to run per decision step
+        #     "n_iter": {"values": [200]},
 
         #     # Fixed values (Not sweep params)
         #     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
@@ -172,8 +174,8 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             # Replay buffer capacity
             "buffer_capacity": {"values": [100000, 50000]},
 
-            # How many MCTS simulations to run
-            "n_iter": {"values": [100]},
+            # How many MCTS simulations to run per decision step
+            "n_iter": {"values": [200]},
 
             # Temperature schedule: "progress:tau,..." pairs
             # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"

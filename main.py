@@ -1,6 +1,6 @@
 import torch
 from rl.env import TransitEnv
-from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld
+from rl.baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld, GeneticAlgorithm
 from rl.parallel_env import _cap_worker_threads
 from config import get_config, set_global_seeds
 from ppo import train as ppo_train, ppo_eval
@@ -27,6 +27,7 @@ def main():
             "shortest_path": ShortestPath,
             "reward_max": RewardMaximization,
             "real_world": RealWorld,
+            "genetic": GeneticAlgorithm,
         }
         
         BaselineClass = baseline_classes[config["baseline_type"]]

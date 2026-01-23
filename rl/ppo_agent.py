@@ -30,6 +30,7 @@ class PPOAgent:
         self.vf_clip_param = kwargs.get('vf_clip_param')
         self.lr = kwargs.get('lr')
         self.anneal_lr = kwargs.get('anneal_lr')
+        self.min_lr = kwargs.get('min_lr')
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.device = kwargs.get('device')
         self.memory = Memory()
@@ -266,12 +267,14 @@ class PPOAgent:
     def update_learning_rate(self, current_step: int, total_steps: int) -> None:
         """
         Update learning rate according to a linear schedule based on training steps.
+        Anneals from initial lr down to min_lr.
         """
         if total_steps <= 0:
             return
 
         progress = current_step / total_steps
-        new_lr = self.lr * (1 - progress)
+        # Linear decay from lr to min_lr
+        new_lr = self.lr + (self.min_lr - self.lr) * progress
 
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = new_lr
