@@ -719,14 +719,14 @@ class GeneticAlgorithm:
         self.base_seed = base_seed
         self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
 
-        # GA hyperparameters (configurable via CLI)
-        self.population_size = config.get("ga_population", 20)
-        self.generations = config.get("ga_generations", 50)
-        self.mutation_rate = config.get("ga_mutation_rate", 0.2)
-        self.crossover_rate = config.get("ga_crossover_rate", 0.8)
-        self.tournament_size = config.get("ga_tournament_size", 3)
-        self.elitism_count = config.get("ga_elitism", 2)
-        self.num_workers = config.get("ga_num_workers", 4)
+        # GA hyperparameters (from config, defaults defined in config.py)
+        self.population_size = config["ga_population"]
+        self.generations = config["ga_generations"]
+        self.mutation_rate = config["ga_mutation_rate"]
+        self.crossover_rate = config["ga_crossover_rate"]
+        self.tournament_size = config["ga_tournament_size"]
+        self.elitism_count = config["ga_elitism"]
+        self.num_workers = config["ga_num_workers"]
 
         # Route constraints (from env)
         self.min_route_len = getattr(env, 'MIN_ROUTE_LENGTH', 2)

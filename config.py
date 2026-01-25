@@ -56,9 +56,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
 
     # Genetic Algorithm hyperparameters:
-    parser.add_argument("--ga_population", type=int, default=20, help="GA: Population size")
-    parser.add_argument("--ga_generations", type=int, default=50, help="GA: Number of generations")
-    parser.add_argument("--ga_mutation_rate", type=float, default=0.2, help="GA: Mutation probability")
+    parser.add_argument("--ga_population", type=int, default=50, help="GA: Population size")
+    parser.add_argument("--ga_generations", type=int, default=100, help="GA: Number of generations")
+    parser.add_argument("--ga_mutation_rate", type=float, default=0.4, help="GA: Mutation probability")
     parser.add_argument("--ga_crossover_rate", type=float, default=0.8, help="GA: Crossover probability")
     parser.add_argument("--ga_tournament_size", type=int, default=3, help="GA: Tournament selection size")
     parser.add_argument("--ga_elitism", type=int, default=2, help="GA: Number of elite individuals to preserve")
