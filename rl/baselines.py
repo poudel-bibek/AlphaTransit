@@ -771,6 +771,7 @@ class GeneticAlgorithm:
         # Initialize and evolve
         print(f"\nInitializing population...")
         population = self._initialize_population()
+        self._save_initial_population(population)
         print(f"Population initialized. Starting evolution...\n")
         best_solution, best_fitness = self._evolve(population)
 
@@ -1248,6 +1249,37 @@ class GeneticAlgorithm:
     # ─────────────────────────────────────────────────────────────────────────
     # Utilities
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _save_initial_population(self, population):
+        """
+        Save initial population to JSON files for inspection.
+
+        Creates: {main_save_dir}/initial_population/individual_01.json, etc.
+        """
+        pop_dir = os.path.join(self.main_save_dir, "initial_population")
+        os.makedirs(pop_dir, exist_ok=True)
+
+        for i, individual in enumerate(population):
+            filename = f"individual_{i+1:02d}.json"
+            filepath = os.path.join(pop_dir, filename)
+
+            # Convert to readable format
+            data = {
+                "individual_id": i + 1,
+                "num_routes": len(individual),
+                "routes": {
+                    f"route_{j+1}": {
+                        "nodes": [str(n) for n in route],
+                        "length": len(route)
+                    }
+                    for j, route in enumerate(individual)
+                }
+            }
+
+            with open(filepath, "w") as f:
+                json.dump(data, f, indent=2)
+
+        print(f"  Saved {len(population)} individuals to {pop_dir}")
 
     def _individual_to_key(self, individual):
         """Convert individual to hashable key for memoization."""
