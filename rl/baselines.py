@@ -28,6 +28,7 @@ These baselines still need to respect constraints such as:
 
 import os
 import json
+import shutil
 import numpy as np
 import random
 import torch
@@ -113,9 +114,7 @@ def create_main_save_dir(config):
         f"{config.get('baseline_type')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
     os.makedirs(main_save_dir, exist_ok=True)
-    # Baselines have no updates; standardize on (update='baseline', steps=0)
     eval_root = ensure_eval_step_update_dir(main_save_dir, update="baseline", steps=0, folder_name="eval_results")
-    # print(f"Baseline results will be saved to: {eval_root}")
     return main_save_dir, eval_root
 
 def create_initial_network_plot(env, config, img_dir):
@@ -129,7 +128,6 @@ def create_initial_network_plot(env, config, img_dir):
     env.load_demand_for_plotting(temp_world)
     output_path = os.path.join(img_dir, f"00_{config.get('network')}_demand_network.png")
     plot_network_and_demand(temp_world, output_path)
-    # print(f"Initial network plot saved to: {output_path}")
 
 def create_path_visualization(env, config, routes, img_dir):
     """
@@ -741,11 +739,13 @@ class GeneticAlgorithm:
 
     def run(self):
         """
-        Execute GA baseline with multiple evaluation runs.
+        Execute GA baseline. Evolution runs once, then full evaluation
+        on the final best solution.
         """
-        results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
-        write_results_summary(aggregated, self.num_runs, self.eval_root_dir, 'eval_results_summary.json')
-        return results, aggregated
+        state, _ = self.env.reset(seed=self.base_seed)
+        best_solution = self.construct_path(state)
+        self._evaluate_final_best(best_solution)
+        return None, None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Main Evolution Loop
@@ -802,6 +802,7 @@ class GeneticAlgorithm:
             if fitness_scores[gen_best_idx] > best_fitness:
                 best_fitness = fitness_scores[gen_best_idx]
                 best_solution = self._copy_individual(population[gen_best_idx])
+                self._save_best_solution(best_solution, best_fitness, gen + 1)
 
             # Log progress
             print(f"Gen {gen + 1}/{self.generations}: "
@@ -1288,6 +1289,68 @@ class GeneticAlgorithm:
                 json.dump(data, f, indent=2)
 
         print(f"  Saved {len(population)} individuals to {pop_dir}")
+
+    def _save_best_solution(self, solution, fitness, generation):
+        """
+        Save current best solution metadata and routes to disk (lightweight).
+        Full evaluation runs once at the end via _evaluate_final_best.
+
+        Creates: {main_save_dir}/current_best/
+                   - best_metadata.json
+                   - routes.json
+        """
+        best_dir = os.path.join(self.main_save_dir, "current_best")
+        if os.path.exists(best_dir):
+            shutil.rmtree(best_dir)
+        os.makedirs(best_dir)
+
+        # Save metadata
+        with open(os.path.join(best_dir, "best_metadata.json"), "w") as f:
+            json.dump({
+                "generation_found": generation,
+                "fitness": fitness,
+                "num_routes": len(solution)
+            }, f, indent=2)
+
+        # Save routes
+        routes = [[str(n) for n in route] for route in solution]
+        with open(os.path.join(best_dir, "routes.json"), "w") as f:
+            json.dump({
+                f"route_{i+1}": route for i, route in enumerate(routes)
+            }, f, indent=2)
+
+    def _evaluate_final_best(self, solution):
+        """
+        Run full evaluation on final best solution with all seeds.
+        Called once at the end of evolution.
+
+        Creates: {main_save_dir}/current_best/
+                   - eval_results_summary.json
+                   - seed_X/designed_routes.json, etc.
+        """
+        best_dir = os.path.join(self.main_save_dir, "current_best")
+        routes = [[str(n) for n in route] for route in solution]
+        eval_offset = self.config["eval_seed_offset"]
+        results = []
+
+        print(f"\nRunning final evaluation ({self.num_runs} seeds)...")
+
+        for run in range(self.num_runs):
+            current_seed = self.base_seed + (run * eval_offset)
+            set_global_seeds(current_seed)
+            print(f"  Eval run {run+1}/{self.num_runs} (seed={current_seed})")
+
+            seed_dir, img_dir = make_seed_output_dir(best_dir, current_seed)
+
+            self.env.reset(seed=current_seed)
+            result = simulate_baseline_routes(
+                self.env, self.config, routes, img_dir, seed_dir
+            )
+            results.append(result)
+
+        aggregated = aggregate_results(results)
+        write_results_summary(aggregated, self.num_runs, best_dir, 'eval_results_summary.json')
+        print_results(results, aggregated)
 
     def _individual_to_key(self, individual):
         """Convert individual to hashable key for memoization."""
