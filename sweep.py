@@ -44,41 +44,15 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             "goal": "maximize"
         },
 
-        # # Alpha = 0.3
-        # "parameters": {
-        #     "clip_frac": {"values": [0.2]},
-        #     "entropy_coef": {"values": [0.01, 0.02]},
-        #     "lr": {"values": [1e-4]},
-        #     "K_epochs": {"values": [4]},
-        #     "batch_size": {"values": [32]},
-        #     "update_frequency": {"values": [128]},
-            
-        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
-        #     "activation": {"values": ["tanh"]},
-        #     "num_gat_blocks": {"values": [4, 8]},
-
-        #     # Fixed values (Not sweep params)
-        #     # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-        #     # Eval frequency: 7,812 updates / 20 = ~390 eval points
-        #     "alpha": {"value": 0.3}, # ALPHA SETTING.
-        #     "algorithm": {"value": "ppo"},
-        #     "gpu": {"value": True},
-        #     "anneal_lr": {"values": [True, False]},  # Test both: annealing (with min_lr floor) vs constant LR
-        #     "min_lr": {"value": 1e-6},  # LR floor when anneal_lr=True; ignored when False
-        #     "max_steps": {"value": 1_000_000},
-        #     "num_ppo_workers": {"value": 8},
-        #     "ppo_eval_every": {"value": 20},
-        # },
-
-        # Alpha = 1.0
+        # Alpha = 0.3
         "parameters": {
             "clip_frac": {"values": [0.2]},
-            "entropy_coef": {"values": [0.02, 0.05]},
-            "lr": {"values": [1e-5]},
-            "K_epochs": {"values": [2, 4]},
+            "entropy_coef": {"values": [0.01, 0.02]},
+            "lr": {"values": [1e-4]},
+            "K_epochs": {"values": [4]},
             "batch_size": {"values": [32]},
             "update_frequency": {"values": [128]},
-
+            
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh"]},
             "num_gat_blocks": {"values": [4, 8]},
@@ -86,15 +60,41 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
             # Fixed values (Not sweep params)
             # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
             # Eval frequency: 7,812 updates / 20 = ~390 eval points
-            "alpha": {"value": 1.0}, # ALPHA SETTING.
+            "alpha": {"value": 0.3}, # ALPHA SETTING.
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
-            "anneal_lr": {"values": [True, False]},
-            "min_lr": {"value": 1e-6},
+            "anneal_lr": {"values": [True, False]},  # Test both: annealing (with min_lr floor) vs constant LR
+            "min_lr": {"value": 1e-6},  # LR floor when anneal_lr=True; ignored when False
             "max_steps": {"value": 1_000_000},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 20},
         },
+
+        # # Alpha = 1.0
+        # "parameters": {
+        #     "clip_frac": {"values": [0.2]},
+        #     "entropy_coef": {"values": [0.02, 0.05]},
+        #     "lr": {"values": [1e-5]},
+        #     "K_epochs": {"values": [2, 4]},
+        #     "batch_size": {"values": [32]},
+        #     "update_frequency": {"values": [128]},
+
+        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+        #     "activation": {"values": ["tanh"]},
+        #     "num_gat_blocks": {"values": [4, 8]},
+
+        #     # Fixed values (Not sweep params)
+        #     # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
+        #     # Eval frequency: 7,812 updates / 20 = ~390 eval points
+        #     "alpha": {"value": 1.0}, # ALPHA SETTING.
+        #     "algorithm": {"value": "ppo"},
+        #     "gpu": {"value": True},
+        #     "anneal_lr": {"values": [True, False]},
+        #     "min_lr": {"value": 1e-6},
+        #     "max_steps": {"value": 1_000_000},
+        #     "num_ppo_workers": {"value": 8},
+        #     "ppo_eval_every": {"value": 20},
+        # },
 
     }
 

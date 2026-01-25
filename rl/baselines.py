@@ -1,36 +1,29 @@
 """
-Heuristic Baselines: 
+Heuristic Baselines:
 - Neighbourhood search algorithms
-- Baselines mostly setup in a way that "to construct the path" we dont need to simulate. 
+- Baselines mostly setup in a way that "to construct the path" we dont need to simulate.
 - However, to get the performance results on the path, we need to simulate.
 - Repurposing the RL env setup for the baselines as well.
 
-0. Random baseline: 
-    - Random selection of next node.
+0. Random baseline:
+    - Uniform random selection of next node.
 
-1. Greedy Demand Coverage: 
-   - Build route by greedily selecting the nodes that maximize the immediate demand coverage.
+1. Demand Coverage:
+   - Sample next node proportional to incremental demand coverage (z-score normalized, softmax).
 
-2. Greedy Shortest Path: 
-    - Greedily select the node that is closest to the current path.
+2. Shortest Path:
+    - Sample next node proportional to inverse edge length (z-score normalized, softmax).
 
-3. Greedy Reward Maximization: 
+3. Reward Maximization:
     - Greedily select the node that maximizes the immediate reward.
 
 ---------------
 
-These baselines still need to respect constraints such as: 
+These baselines still need to respect constraints such as:
 - MAX_ROUTE_LENGTH
 - SERVICE_FREQUENCY (This will be taken care by the sim bus handler)
-- alpha (facor to determine the % of demand allocated to bus)
+- alpha (factor to determine the % of demand allocated to bus)
 - For each baseline, we need to form a path and then simulate to get results.
-
----------------
-Additional notes (ignore)
-- In case the immediate next node does not add any new demand coverage (because trips are not completed by just adding 1 node)
-- These baselines have the same results across seeds: 
-    - Greedy Shortest Path
-    - Greedy Demand Coverage
 """
 
 import os
@@ -39,6 +32,7 @@ import numpy as np
 import random
 import torch
 from datetime import datetime
+from scipy.special import softmax
 from rl.env_utils import (
     plot_network_and_demand,
     plot_network_demand_and_path,
@@ -360,7 +354,7 @@ class RandomWalk:
 
 class DemandCoverage:
     """
-    Build route by greedily selecting the nodes that maximize the immediate demand coverage.
+    Build route by sampling nodes proportional to their demand coverage contribution.
     """
     def __init__(self, env, config, num_runs, base_seed):
         self.env = env
@@ -380,8 +374,8 @@ class DemandCoverage:
         Algorithm:
         Step 1: Initialization (same initialization as RL), happens in main at reset.
         Step 2: At each step, from valid neighboring nodes
-            - Calculate the incremental demand that would be served by adding that node to the path.
-            - Consider the combined demand (d_out + d_in) for that node and select the one with the highest.
+            - Calculate the incremental demand (d_out + d_in) for each candidate node.
+            - Normalize scores (z-score) and sample via softmax.
         Step 3: Repeat step 2 until reaching the max path length.
         """
         current_route_index = 0
@@ -400,17 +394,14 @@ class DemandCoverage:
                 # Get valid neighbors (adjacent and not already in path)
                 route_set = set(current_route)
                 valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
-                # print(f"Frontier: {frontier}, Valid neighbors: {valid_neighbors}")
                 if not valid_neighbors:
                     break
 
                 # Convert to indices for demand calculation
                 route_indices = np.array([self.env.node_to_idx[node] for node in current_route])
 
-                # For each valid neighbor, compute incremental demand (d_out_path + d_in_path)
-                best_score = -np.inf
-                best_node = None
-
+                # For each valid neighbor, compute incremental demand (d_out + d_in)
+                scores = []
                 for neighbor in valid_neighbors:
                     neigh_idx = self.env.node_to_idx[neighbor]
 
@@ -420,13 +411,15 @@ class DemandCoverage:
                     # Incremental incoming: flows from current path nodes to neighbor
                     d_in_inc = self.env.od_matrix[route_indices, neigh_idx].sum()
 
-                    score = d_out_inc + d_in_inc
+                    scores.append(d_out_inc + d_in_inc)
 
-                    if score > best_score:
-                        best_score = score
-                        best_node = neighbor
+                # Normalize scores (z-score), then sample via softmax
+                scores = np.array(scores)
+                scores = (scores - scores.mean()) / (scores.std() + 1e-8)
+                probs = softmax(scores)
+                next_node = str(np.random.choice(valid_neighbors, p=probs))
 
-                current_route.append(best_node)
+                current_route.append(next_node)
                 print(f"Route {current_route_index + 1} so far: {current_route}")
 
             self.env.all_routes.append(current_route)
@@ -438,7 +431,7 @@ class DemandCoverage:
     
 class ShortestPath:
     """
-    Greedily select the node that is closest to the current path.
+    Sample nodes proportional to inverse edge length (shorter edges more likely).
     """
     def __init__(self, env, config, num_runs, base_seed):
         self.env = env
@@ -458,12 +451,9 @@ class ShortestPath:
         Algorithm:
         Step 1: Initialization (same initialization as RL), happens in main at reset.
         Step 2: At each step, from valid neighboring nodes
-            - Calculate the shortest path between the current path and the valid neighboring nodes.
-            - Select the node with the shortest path.
+            - Calculate the edge length for each candidate node.
+            - Normalize negative edge lengths (z-score) and sample via softmax (shorter = higher prob).
         Step 3: Repeat step 2 until reaching the max path length.
-
-        Note:
-        - This may not result in overall shortest path but is a greedy selection of shortest path.
         """
         current_route_index = 0
         while current_route_index < self.env.NUM_ROUTES:
@@ -484,19 +474,19 @@ class ShortestPath:
                     print(f"No valid neighbors found for frontier: {frontier}")
                     break
 
-                # For each valid neighbor, compute the edge length as score
-                best_score = np.inf
-                best_node = None
-
+                # For each valid neighbor, get the edge length
+                edge_lengths = []
                 for neighbor in valid_neighbors:
-                    # Get the edge length between frontier and neighbor
                     edge_length = self.env.link_lengths.get((frontier, neighbor), np.inf)
+                    edge_lengths.append(edge_length)
 
-                    if edge_length < best_score:
-                        best_score = edge_length
-                        best_node = neighbor
+                # Normalize negative edge lengths (z-score), then sample via softmax (shorter = higher prob)
+                logits = -np.array(edge_lengths)
+                logits = (logits - logits.mean()) / (logits.std() + 1e-8)
+                probs = softmax(logits)
+                next_node = str(np.random.choice(valid_neighbors, p=probs))
 
-                current_route.append(best_node)
+                current_route.append(next_node)
                 print(f"Route {current_route_index + 1} so far: {current_route}")
 
             self.env.all_routes.append(current_route)
@@ -656,11 +646,18 @@ class RewardMaximization:
 
 class GeneticAlgorithm:
     """
-    Genetic Algorithm for transit network design.
-    No training required — pure evolutionary optimization.
+    Route-Set Genetic Algorithm for Transit Route Network Design (TRNDP).
     
-    Uses the same compute_reward() as PPO/MCTS for fair comparison.
-    Budget can be matched to RL training steps via population × generations.
+    This is a TRNDP-specific GA (not a generic bitstring GA):
+    - Chromosome = set of transit routes (sequences of stops on road graph)
+    - Fitness = transit performance via simulation (coverage/service/waiting/operator costs)
+    - Operators = route-set operators (route exchange crossover, path regeneration mutation)
+    
+    Aligned with TRNDP literature: Fan & Machemehl (GA + network analysis),
+    Nayeem et al. (GA + elitism + transit objectives).
+    
+    Uses same compute_reward() as PPO/MCTS for fair comparison.
+    Budget matching: total simulations ≈ population × generations.
     """
     def __init__(self, env, config, num_runs, base_seed):
         self.env = env
@@ -677,6 +674,11 @@ class GeneticAlgorithm:
         self.crossover_rate = config.get("ga_crossover_rate", 0.8)
         self.tournament_size = config.get("ga_tournament_size", 3)
         self.elitism_count = config.get("ga_elitism", 2)
+        
+        # Fitness cache for memoization (avoids redundant simulations)
+        self._fitness_cache = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def run(self):
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
@@ -685,25 +687,34 @@ class GeneticAlgorithm:
 
     def construct_path(self, state):
         """
-        Run genetic algorithm to find optimal route set.
+        Run route-set genetic algorithm to find optimal transit network.
         
-        Algorithm:
-        1. Initialize population with diverse solutions (random + greedy heuristics)
+        TRNDP-aligned algorithm:
+        1. Initialize population with diverse solutions:
+           - Demand-guided construction (TRNDP-style)
+           - Random feasible routes
+           - Warm-start from real-world routes (redesign setting)
         2. For each generation:
-           a. Evaluate fitness of each individual (run simulation, compute_reward)
+           a. Evaluate fitness via simulation + compute_reward (with memoization)
            b. Select parents via tournament selection
-           c. Create offspring via crossover (swap routes between parents)
-           d. Mutate offspring (modify segments within routes)
-           e. Apply elitism (keep best individuals)
+           c. Route exchange crossover (swap routes between parents)
+           d. Path regeneration mutation (cut and regrow route segments)
+           e. Repair step (ensure feasibility constraints)
+           f. Elitism (preserve top individuals)
         3. Return best solution found
         """
-        print(f"\n=== Genetic Algorithm ===")
+        print(f"\n=== Route-Set Genetic Algorithm (TRNDP) ===")
         print(f"Population: {self.population_size}, Generations: {self.generations}")
         print(f"Mutation rate: {self.mutation_rate}, Crossover rate: {self.crossover_rate}")
         
-        # Initialize population
+        # Clear fitness cache for fresh run
+        self._fitness_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        
+        # Initialize population with TRNDP-style diversity
         population = self._initialize_population()
-        print(f"Initialized {len(population)} individuals")
+        print(f"Initialized {len(population)} individuals (including warm-start from real-world routes)")
         
         # Track best solution across all generations
         best_solution = None
@@ -711,7 +722,7 @@ class GeneticAlgorithm:
         
         # Evolution loop
         for gen in range(self.generations):
-            # Evaluate fitness for all individuals
+            # Evaluate fitness for all individuals (with memoization)
             fitness_scores = []
             for i, individual in enumerate(population):
                 fitness = self._evaluate_fitness(individual)
@@ -721,13 +732,14 @@ class GeneticAlgorithm:
                     best_fitness = fitness
                     best_solution = [route.copy() for route in individual]
             
-            print(f"Generation {gen + 1}/{self.generations}: Best fitness = {best_fitness:.2f}, "
-                  f"Avg = {np.mean(fitness_scores):.2f}")
+            print(f"Generation {gen + 1}/{self.generations}: Best = {best_fitness:.2f}, "
+                  f"Avg = {np.mean(fitness_scores):.2f}, "
+                  f"Cache hits = {self._cache_hits}/{self._cache_hits + self._cache_misses}")
             
             # Create next generation
             next_population = []
             
-            # Elitism: keep top individuals
+            # Elitism: keep top individuals unchanged
             sorted_indices = np.argsort(fitness_scores)[::-1]
             for i in range(min(self.elitism_count, len(population))):
                 elite = population[sorted_indices[i]]
@@ -735,22 +747,26 @@ class GeneticAlgorithm:
             
             # Fill rest with offspring
             while len(next_population) < self.population_size:
-                # Selection
+                # Tournament selection
                 parent1 = self._tournament_select(population, fitness_scores)
                 parent2 = self._tournament_select(population, fitness_scores)
                 
-                # Crossover
+                # Route exchange crossover
                 if random.random() < self.crossover_rate:
                     child1, child2 = self._crossover(parent1, parent2)
                 else:
                     child1 = [route.copy() for route in parent1]
                     child2 = [route.copy() for route in parent2]
                 
-                # Mutation
+                # Path regeneration mutation
                 if random.random() < self.mutation_rate:
                     child1 = self._mutate(child1)
                 if random.random() < self.mutation_rate:
                     child2 = self._mutate(child2)
+                
+                # Repair step (ensure feasibility)
+                child1 = self._repair(child1)
+                child2 = self._repair(child2)
                 
                 next_population.append(child1)
                 if len(next_population) < self.population_size:
@@ -759,6 +775,7 @@ class GeneticAlgorithm:
             population = next_population
         
         print(f"\nGA complete. Best fitness: {best_fitness:.2f}")
+        print(f"Total simulations: {self._cache_misses}, Cache hits: {self._cache_hits}")
         print(f"Best solution: {best_solution}")
         
         # Set env state to best solution for final simulation
@@ -767,26 +784,35 @@ class GeneticAlgorithm:
 
     def _initialize_population(self):
         """
-        Create initial population with diverse solutions.
-        Uses mix of random walks and greedy heuristics for diversity.
+        Create initial population with TRNDP-style diversity:
+        (A) Demand-guided construction - greedy OD coverage
+        (B) Random feasible routes - random walks
+        (C) Warm-start seed - from real-world route set (TRNDP redesign setting)
         """
         population = []
         
-        for i in range(self.population_size):
+        # (C) Warm-start: inject one individual from real-world routes if available
+        warm_start = self._build_warm_start_individual()
+        if warm_start is not None:
+            population.append(warm_start)
+            print("  Added warm-start individual from real-world routes")
+        
+        # Fill remaining population with mix of (A) and (B)
+        while len(population) < self.population_size:
             # Reset env for fresh route construction
             self.env.all_routes = []
             self.env.current_route = []
             self.env.current_route_index = 0
             
             individual = []
+            i = len(population)
+            
             for route_idx in range(self.env.NUM_ROUTES):
-                # Alternate between random and greedy initialization
+                # Alternate: 1/3 greedy demand, 2/3 random (more diversity)
                 if i % 3 == 0:
-                    route = self._build_random_route()
-                elif i % 3 == 1:
                     route = self._build_greedy_demand_route()
                 else:
-                    route = self._build_random_route()  # More random for diversity
+                    route = self._build_random_route()
                 
                 individual.append(route)
             
@@ -794,8 +820,58 @@ class GeneticAlgorithm:
         
         return population
 
+    def _build_warm_start_individual(self):
+        """
+        Build one individual from real-world route set (if available).
+        This mirrors TRNDP 'redesign existing network' settings (Fan & Machemehl).
+        """
+        try:
+            routes_file = self.env.network_dir / f"{self.config.get('network')}_existing_routes.json"
+            if not routes_file.exists():
+                return None
+            
+            with open(routes_file, "r") as f:
+                all_routes = json.load(f)
+            
+            # Select top-K routes by coverage (same logic as RealWorld baseline)
+            num_routes = self.env.NUM_ROUTES
+            if len(all_routes) <= num_routes:
+                selected = all_routes
+            else:
+                # Score and select best coverage routes
+                route_scores = []
+                for route in all_routes:
+                    nodes = route['nodes']
+                    if not nodes:
+                        continue
+                    avg_demand = sum(self._get_node_demand(n) for n in nodes) / len(nodes)
+                    score = len(nodes) * avg_demand
+                    route_scores.append((score, route))
+                route_scores.sort(key=lambda x: x[0], reverse=True)
+                selected = [r for _, r in route_scores[:num_routes]]
+            
+            # Convert to individual format
+            individual = [[str(n) for n in route['nodes']] for route in selected]
+            
+            # Pad with random routes if needed
+            while len(individual) < num_routes:
+                individual.append(self._build_random_route())
+            
+            return individual
+            
+        except Exception as e:
+            print(f"  Warning: Could not load warm-start routes: {e}")
+            return None
+
+    def _get_node_demand(self, node_id):
+        """Get total demand (in + out) for a node."""
+        node_idx = self.env.node_to_idx.get(str(node_id))
+        if node_idx is not None:
+            return self.env.demand_out[node_idx] + self.env.demand_in[node_idx]
+        return 0
+
     def _build_random_route(self):
-        """Build a route using random neighbor selection."""
+        """Build a route using random neighbor selection (feasibility enforced)."""
         from rl.env_utils import initialize_route
         route = initialize_route(self.env)
         
@@ -813,7 +889,7 @@ class GeneticAlgorithm:
         return route
 
     def _build_greedy_demand_route(self):
-        """Build a route using greedy demand coverage."""
+        """Build a route using greedy demand coverage (TRNDP-style)."""
         from rl.env_utils import initialize_route
         route = initialize_route(self.env)
         
@@ -825,7 +901,7 @@ class GeneticAlgorithm:
             if not valid_neighbors:
                 break
             
-            # Score by demand coverage
+            # Score by demand coverage (OD interaction with partial route)
             route_indices = np.array([self.env.node_to_idx[node] for node in route])
             best_score = -np.inf
             best_node = None
@@ -844,18 +920,31 @@ class GeneticAlgorithm:
         
         return route
 
+    def _individual_to_key(self, individual):
+        """Convert individual to hashable key for memoization."""
+        return tuple(tuple(str(n) for n in route) for route in individual)
+
     def _evaluate_fitness(self, individual):
         """
         Evaluate fitness by running traffic simulation.
+        Uses memoization to avoid redundant evaluations.
         Uses same compute_reward as PPO/MCTS for fair comparison.
         """
+        # Check cache first
+        key = self._individual_to_key(individual)
+        if key in self._fitness_cache:
+            self._cache_hits += 1
+            return self._fitness_cache[key]
+        
+        self._cache_misses += 1
+        
         # Set env state to this individual
         self.env.all_routes = [[str(n) for n in route] for route in individual]
         self.env.current_route = []
         self.env.current_route_index = len(individual)
         self.env.is_baseline = True
         
-        # Build world and run simulation
+        # Build world and run full simulation
         self.env.world = self.env.build_world(self.config.get("network"))
         self.env._apply_action()
         sim_result = self.env._step_until(self.env.horizon, print_metrics=False)
@@ -864,6 +953,9 @@ class GeneticAlgorithm:
         sim_result['route_completed'] = True
         sim_result['route_forced_end'] = False
         fitness = self.env.compute_reward(sim_result, is_route_end=True, is_forced_end=False)
+        
+        # Cache result
+        self._fitness_cache[key] = fitness
         
         return fitness
 
@@ -874,7 +966,7 @@ class GeneticAlgorithm:
         return [route.copy() for route in population[best_idx]]
 
     def _crossover(self, parent1, parent2):
-        """Route-level crossover: swap routes between parents."""
+        """Route exchange crossover: swap routes between parents (TRNDP-style)."""
         child1 = []
         child2 = []
         
@@ -890,8 +982,8 @@ class GeneticAlgorithm:
 
     def _mutate(self, individual):
         """
-        Mutate a solution by modifying a random segment of a random route.
-        Rebuilds from a random point using random walks.
+        Path regeneration mutation (TRNDP-style):
+        Cut a route at random point and regrow via random walk.
         """
         route_idx = random.randint(0, len(individual) - 1)
         route = individual[route_idx]
@@ -915,6 +1007,34 @@ class GeneticAlgorithm:
             new_route.append(random.choice(valid_neighbors))
         
         individual[route_idx] = new_route
+        return individual
+
+    def _repair(self, individual):
+        """
+        Repair step to ensure feasibility constraints (TRNDP requirement).
+        - Length repair: extend routes shorter than MIN_ROUTE_LENGTH
+        - Connectivity: already enforced by construction
+        - No duplicates: already enforced via route_set checks
+        """
+        min_len = getattr(self.env, 'MIN_ROUTE_LENGTH', 2)
+        
+        for route_idx, route in enumerate(individual):
+            # Length repair: extend if too short
+            if len(route) < min_len:
+                while len(route) < min_len:
+                    frontier = route[-1]
+                    route_set = set(route)
+                    valid_neighbors = [n for n in self.env.adj[frontier] if n not in route_set]
+                    
+                    if not valid_neighbors:
+                        # Cannot extend, rebuild entire route
+                        route = self._build_random_route()
+                        break
+                    
+                    route.append(random.choice(valid_neighbors))
+                
+                individual[route_idx] = route
+        
         return individual
 
 #####################################
