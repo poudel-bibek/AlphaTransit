@@ -925,11 +925,18 @@ class GeneticAlgorithm:
             with open(routes_file, "r") as f:
                 all_routes = json.load(f)
 
-            # Score routes by demand coverage and select top-K
+            # Check if we need to filter by transit center
+            route_init = self.config["route_init"]
+            transit_center = str(self.env.transit_center_node) if route_init == "transit_center" else None
+
+            # Score routes by demand coverage, filter by start node if needed
             scored = []
             for route in all_routes:
                 nodes = route.get('nodes', [])
                 if not nodes:
+                    continue
+                # Filter by transit center start if route_init is "transit_center"
+                if transit_center and str(nodes[0]) != transit_center:
                     continue
                 demand = sum(self._get_node_demand(n) for n in nodes)
                 score = len(nodes) * (demand / len(nodes))
