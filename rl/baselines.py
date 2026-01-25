@@ -759,7 +759,7 @@ class GeneticAlgorithm:
         """
         print(f"\n=== Route-Set Genetic Algorithm (TRNDP) ===")
         print(f"Population: {self.population_size}, Generations: {self.generations}")
-        print(f"Mutation: {self.mutation_rate}, Crossover: {self.crossover_rate}")
+        print(f"Mutation: {self.mutation_rate}, Crossover: {self.crossover_rate}, Elitism: {self.elitism_count}")
         print(f"Route constraints: {self.min_route_len} <= len <= {self.max_route_len}")
         print(f"Parallel workers: {self.num_workers}")
 
@@ -769,7 +769,9 @@ class GeneticAlgorithm:
         self._cache_misses = 0
 
         # Initialize and evolve
+        print(f"\nInitializing population...")
         population = self._initialize_population()
+        print(f"Population initialized. Starting evolution...\n")
         best_solution, best_fitness = self._evolve(population)
 
         # Report results
@@ -868,16 +870,21 @@ class GeneticAlgorithm:
         population = []
 
         # Try to add warm-start from real-world routes
+        print("  Loading warm-start from real-world routes...")
         warm_start = self._load_warm_start()
         if warm_start is not None:
             population.append(warm_start)
-            print("  Added warm-start from real-world routes")
+            print("  [1/{0}] Added warm-start individual".format(self.population_size))
+        else:
+            print("  No warm-start available, using generated routes only")
 
         # Fill with generated individuals
         while len(population) < self.population_size:
             use_demand_guided = (len(population) % 3 == 0)
+            strategy = "demand-guided" if use_demand_guided else "random"
             individual = self._build_individual(demand_guided=use_demand_guided)
             population.append(individual)
+            print(f"  [{len(population)}/{self.population_size}] Built individual ({strategy})")
 
         return population
 
