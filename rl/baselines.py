@@ -32,7 +32,8 @@ import numpy as np
 import random
 import torch
 from datetime import datetime
-from multiprocessing import Pool
+import multiprocessing as mp
+mp_ctx = mp.get_context('spawn')
 from scipy.special import softmax
 from rl.env_utils import (
     plot_network_and_demand,
@@ -1203,8 +1204,8 @@ class GeneticAlgorithm:
         config_dict = dict(self.env.config)
         worker_args = [(ind, config_dict) for _, ind in unique_evals]
 
-        # Run parallel evaluation
-        with Pool(processes=self.num_workers) as pool:
+        # Run parallel evaluation using spawn context (same as PPO)
+        with mp_ctx.Pool(processes=self.num_workers) as pool:
             results = pool.map(_ga_evaluate_individual, worker_args)
 
         # Update cache and assign fitness to all indices sharing each key
