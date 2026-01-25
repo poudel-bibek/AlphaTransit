@@ -716,7 +716,13 @@ class GeneticAlgorithm:
         self.world = env.build_world(config.get("network"))
         self.num_runs = num_runs
         self.base_seed = base_seed
-        self.main_save_dir, self.eval_root_dir = create_main_save_dir(config)
+
+        now = datetime.now()
+        self.main_save_dir = os.path.join(
+            config.get("save_dir"),
+            f"genetic_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
+        )
+        os.makedirs(self.main_save_dir, exist_ok=True)
 
         # GA hyperparameters (from config, defaults defined in config.py)
         self.population_size = config["ga_population"]
