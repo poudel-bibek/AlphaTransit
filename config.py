@@ -61,7 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ga_mutation_rate", type=float, default=0.4, help="GA: Mutation probability")
     parser.add_argument("--ga_crossover_rate", type=float, default=0.8, help="GA: Crossover probability")
     parser.add_argument("--ga_tournament_size", type=int, default=3, help="GA: Tournament selection size")
-    parser.add_argument("--ga_elitism", type=int, default=2, help="GA: Number of elite individuals to preserve")
+    parser.add_argument("--ga_elitism", type=int, default=5, help="GA: Number of elite individuals to preserve")
     parser.add_argument("--ga_num_workers", type=int, default=4, help="GA: Number of parallel workers for fitness evaluation (1=sequential)")
 
     # Learning environment specific:
