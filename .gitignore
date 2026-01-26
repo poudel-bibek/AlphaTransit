@@ -128,3 +128,6 @@ second_last_runs/
 ./second_last_runs/
 new_run/
 ./new_run/
+
+./plots/training_curves.png
+plots/training_curves.png

@@ -182,7 +182,7 @@ class MCTSAgent:
                 mask[a] = True
         return mask
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _network_forward(self, state_dict: Dict[str, Any], valid_actions: List[int]) -> Tuple[Dict[int, float], float]:
         """
         Forward pass through network to get priors and value.

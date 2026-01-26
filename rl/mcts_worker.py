@@ -40,7 +40,7 @@ def get_state_tensor(env: TransitEnv, mcts_state: MCTSState) -> Dict[str, Any]:
     return env._get_state()
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def network_forward(model, state_dict: Dict[str, Any], valid_actions: List[int], device: str = 'cpu') -> Tuple[Dict[int, float], float]:
     """
     Forward pass through network to get priors and value.

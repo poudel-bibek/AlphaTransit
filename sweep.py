@@ -129,29 +129,37 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
 
         #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
         #     "activation": {"values": ["tanh"]},
-        #     "num_gat_blocks": {"values": [4, 8]},
+        #     "num_gat_blocks": {"value": 4},  # 4, 8
 
         #     # How many times to sample batch_size from buffer per iteration.
-        #     "train_steps_per_iter": {"values": [100, 200]},
+        #     "train_steps_per_iter": {"value": 100},  # 100, 200
 
         #     # How many items to sample from buffer per update.
         #     "batch_size": {"values": [256]},
 
         #     # Replay buffer capacity
-        #     "buffer_capacity": {"values": [100000, 50000]},
+        #     "buffer_capacity": {"value": 50000},  # 100000, 50000
 
         #     # How many MCTS simulations to run per decision step
-        #     "n_iter": {"values": [200]},
+        #     "n_iter": {"value": 200},  # 100, 200, 400
+
+        #     # Temperature schedule: "progress:tau,..." pairs
+        #     # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
+        #     # Slower schedules maintain exploration longer
+        #     "temp_schedule": {"values": [
+        #         "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing
+        #         # "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
+        #     ]},
 
         #     # Fixed values (Not sweep params)
-        #     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
-        #     # total_steps = 744 iterations × 1,344 ≈ 1M steps (comparable to PPO)
-        #     # Eval frequency: 744 iterations / 3 = ~248 eval points
+        #     # Training duration: 12 workers × ~224 steps/episode = ~2,688 steps/iteration
+        #     # total_steps = 372 iterations × 2,688 ≈ 1M steps (comparable to PPO)
+        #     # Eval frequency: 372 iterations / 3 = ~124 eval points
         #     "alpha": {"value": 0.3}, # ALPHA SETTING.
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 744},
-        #     "num_mcts_workers": {"value": 6},
+        #     "max_iterations": {"value": 372},
+        #     "num_mcts_workers": {"value": 12},
         #     "mcts_eval_every": {"value": 3},
         # },
 
@@ -172,28 +180,28 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "batch_size": {"values": [256]},
 
             # Replay buffer capacity
-            "buffer_capacity": {"values": [100000, 50000]},
+            "buffer_capacity": {"value": 50000},  # 100000, 50000
 
             # How many MCTS simulations to run per decision step
-            "n_iter": {"values": [200]},
+            "n_iter": {"value": 200},  # 100, 200, 400
 
             # Temperature schedule: "progress:tau,..." pairs
             # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
             # Slower schedules maintain exploration longer
             "temp_schedule": {"values": [
                 "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing 
-                "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
+                # "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
             ]},
 
             # Fixed values (Not sweep params)
-            # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
-            # total_steps = 744 iterations × 1,344 ≈ 1M steps (comparable to PPO)
-            # Eval frequency: 744 iterations / 3 = ~248 eval points
+            # Training duration: 12 workers × ~224 steps/episode = ~2,688 steps/iteration
+            # total_steps = 372 iterations × 2,688 ≈ 1M steps (comparable to PPO)
+            # Eval frequency: 372 iterations / 3 = ~124 eval points
             "alpha": {"value": 1.0}, # ALPHA SETTING.
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 744},
-            "num_mcts_workers": {"value": 6},
+            "max_iterations": {"value": 372},
+            "num_mcts_workers": {"value": 12},
             "mcts_eval_every": {"value": 3},
         },
     }

@@ -53,13 +53,19 @@ class MCTSState:
     def get_valid_actions(self) -> List[int]:
         """
         Get valid action indices from current state.
+        Results are cached since MCTSState is immutable after creation.
         """
+        if hasattr(self, '_valid_actions_cache'):
+            return self._valid_actions_cache
+
         if not self.current_route:
+            self._valid_actions_cache = []
             return []
         frontier = self.current_route[-1]
         route_set = set(self.current_route)
         valid_neighbors = self.adj.get(frontier, set()) - route_set
-        return [self.node_to_idx[n] for n in valid_neighbors]
+        self._valid_actions_cache = [self.node_to_idx[n] for n in valid_neighbors]
+        return self._valid_actions_cache
 
     def apply_action(self, action: int) -> 'MCTSState':
         """
