@@ -121,49 +121,7 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "goal": "maximize"
         },
 
-        # # Alpha = 0.3
-        # "parameters": {
-        #     "lr": {"values": [1e-4]},
-        #     "c_puct": {"values": [1.0, 1.5]},
-        #     "dirichlet_alpha": {"values": [0.3]},
-
-        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
-        #     "activation": {"values": ["tanh"]},
-        #     "num_gat_blocks": {"value": 4},  # 4, 8
-
-        #     # How many times to sample batch_size from buffer per iteration.
-        #     "train_steps_per_iter": {"value": 100},  # 100, 200
-
-        #     # How many items to sample from buffer per update.
-        #     "batch_size": {"values": [256]},
-
-        #     # Replay buffer capacity
-        #     "buffer_capacity": {"value": 50000},  # 100000, 50000
-
-        #     # How many MCTS simulations to run per decision step
-        #     "n_iter": {"value": 200},  # 100, 200, 400
-
-        #     # Temperature schedule: "progress:tau,..." pairs
-        #     # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
-        #     # Slower schedules maintain exploration longer
-        #     "temp_schedule": {"values": [
-        #         "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing
-        #         # "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
-        #     ]},
-
-        #     # Fixed values (Not sweep params)
-        #     # Training duration: 12 workers × ~224 steps/episode = ~2,688 steps/iteration
-        #     # total_steps = 372 iterations × 2,688 ≈ 1M steps (comparable to PPO)
-        #     # Eval frequency: 372 iterations / 3 = ~124 eval points
-        #     "alpha": {"value": 0.3}, # ALPHA SETTING.
-        #     "algorithm": {"value": "mcts"},
-        #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 372},
-        #     "num_mcts_workers": {"value": 12},
-        #     "mcts_eval_every": {"value": 3},
-        # },
-
-        # Alpha = 1.0
+        # Alpha = 0.3
         "parameters": {
             "lr": {"values": [1e-4]},
             "c_puct": {"values": [1.0, 1.5]},
@@ -171,10 +129,10 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
 
             # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
             "activation": {"values": ["tanh"]},
-            "num_gat_blocks": {"values": [4]},
+            "num_gat_blocks": {"value": 4},  # 4, 8
 
             # How many times to sample batch_size from buffer per iteration.
-            "train_steps_per_iter": {"values": [100, 200]},
+            "train_steps_per_iter": {"value": 100},  # 100, 200
 
             # How many items to sample from buffer per update.
             "batch_size": {"values": [256]},
@@ -189,7 +147,7 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
             # Slower schedules maintain exploration longer
             "temp_schedule": {"values": [
-                "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing 
+                "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing
                 # "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
             ]},
 
@@ -197,13 +155,55 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             # Training duration: 12 workers × ~224 steps/episode = ~2,688 steps/iteration
             # total_steps = 372 iterations × 2,688 ≈ 1M steps (comparable to PPO)
             # Eval frequency: 372 iterations / 3 = ~124 eval points
-            "alpha": {"value": 1.0}, # ALPHA SETTING.
+            "alpha": {"value": 0.3}, # ALPHA SETTING.
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "max_iterations": {"value": 372},
             "num_mcts_workers": {"value": 12},
-            "mcts_eval_every": {"value": 3},
+            "mcts_eval_every": {"value": 5}, # 5 is a bit too much.
         },
+
+        # # Alpha = 1.0
+        # "parameters": {
+        #     "lr": {"values": [1e-4]},
+        #     "c_puct": {"values": [1.0, 1.5]},
+        #     "dirichlet_alpha": {"values": [0.3]},
+
+        #     # Model architecture (gat_channels/num_heads auto-generated from num_gat_blocks)
+        #     "activation": {"values": ["tanh"]},
+        #     "num_gat_blocks": {"values": [4]},
+
+        #     # How many times to sample batch_size from buffer per iteration.
+        #     "train_steps_per_iter": {"values": [100, 200]},
+
+        #     # How many items to sample from buffer per update.
+        #     "batch_size": {"values": [256]},
+
+        #     # Replay buffer capacity
+        #     "buffer_capacity": {"value": 50000},  # 100000, 50000
+
+        #     # How many MCTS simulations to run per decision step
+        #     "n_iter": {"value": 200},  # 100, 200, 400
+
+        #     # Temperature schedule: "progress:tau,..." pairs
+        #     # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
+        #     # Slower schedules maintain exploration longer
+        #     "temp_schedule": {"values": [
+        #         "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing 
+        #         # "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
+        #     ]},
+
+        #     # Fixed values (Not sweep params)
+        #     # Training duration: 12 workers × ~224 steps/episode = ~2,688 steps/iteration
+        #     # total_steps = 372 iterations × 2,688 ≈ 1M steps (comparable to PPO)
+        #     # Eval frequency: 372 iterations / 3 = ~124 eval points
+        #     "alpha": {"value": 1.0}, # ALPHA SETTING.
+        #     "algorithm": {"value": "mcts"},
+        #     "gpu": {"value": True},
+        #     "max_iterations": {"value": 372},
+        #     "num_mcts_workers": {"value": 12},
+        #     "mcts_eval_every": {"value": 3},
+        # },
     }
 
 
