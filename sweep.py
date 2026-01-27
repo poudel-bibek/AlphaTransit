@@ -141,7 +141,7 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
             "buffer_capacity": {"value": 50000},  # 100000, 50000
 
             # How many MCTS simulations to run per decision step
-            "n_iter": {"value": 200},  # 100, 200, 400
+            "n_iter": {"value": 100},  # 100, 200, 400
 
             # Temperature schedule: "progress:tau,..." pairs
             # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
