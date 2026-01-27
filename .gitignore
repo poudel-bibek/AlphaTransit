@@ -131,3 +131,9 @@ new_run/
 
 ./plots/training_curves.png
 plots/training_curves.png
+
+# Plotted route files (generated outputs)
+plots/routes_*.pdf
+plots/routes_*.png
+./plots/routes_*.pdf
+./plots/routes_*.png
