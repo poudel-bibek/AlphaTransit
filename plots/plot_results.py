@@ -79,7 +79,7 @@ def plot_training_curves(
 ):
     """
     Plot training curves comparing PPO and MCTS across different alpha values.
-    Single plot with all curves. X-axis: Training steps, Y-axis: Validation Reward
+    Single plot with all curves. X-axis: Training steps, Y-axis: Evaluation Reward
     """
     api = wandb.Api()
     fs = 14
@@ -93,14 +93,15 @@ def plot_training_curves(
     ax.spines['bottom'].set_linewidth(1)
 
     ax.set_xlabel('Training Steps', fontsize=fs+4)
-    ax.set_ylabel('Validation Reward', fontsize=fs+4)
+    ax.set_ylabel('Evaluation Reward', fontsize=fs+4)
 
     # Colors and line styles for each combination
+    # alpha=0.3: original colors, alpha=1.0: more distinct/darker
     styles = {
-        ('ppo', '0.3'): {'color': '#CD5C5C', 'linestyle': '-', 'label': r'End-to-End RL ($\alpha=0.3$)'},
-        ('ppo', '1.0'): {'color': '#DC143C', 'linestyle': '-', 'label': r'End-to-End RL ($\alpha=1.0$)'},
-        ('mcts', '0.3'): {'color': '#90EE90', 'linestyle': '-', 'label': r'AlphaTransit ($\alpha=0.3$)'},
-        ('mcts', '1.0'): {'color': '#228B22', 'linestyle': '-', 'label': r'AlphaTransit ($\alpha=1.0$)'},
+        ('ppo', '0.3'): {'color': '#CD5C5C', 'linestyle': '-', 'label': r'End-to-End RL ($\alpha=0.3$)'},  # Indian Red
+        ('ppo', '1.0'): {'color': '#800000', 'linestyle': '-', 'label': r'End-to-End RL ($\alpha=1.0$)'},  # Maroon (darker)
+        ('mcts', '0.3'): {'color': '#90EE90', 'linestyle': '-', 'label': r'AlphaTransit ($\alpha=0.3$)'},  # Light Green
+        ('mcts', '1.0'): {'color': '#006400', 'linestyle': '-', 'label': r'AlphaTransit ($\alpha=1.0$)'},  # Dark Green
     }
 
     # Extrapolate incomplete runs to max_steps with tapering noise
@@ -168,7 +169,10 @@ def plot_training_curves(
     ax.tick_params(axis='both', labelsize=fs+3)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M' if x >= 1e6 else f'{x/1e3:.0f}K'))
 
-    ax.legend(fontsize=fs+1, frameon=True, fancybox=False)
+    legend = ax.legend(fontsize=fs+1, frameon=True, fancybox=False)
+    # Make legend lines thicker
+    for legobj in legend.legend_handles:
+        legobj.set_linewidth(4.0)
 
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
