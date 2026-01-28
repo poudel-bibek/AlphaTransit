@@ -62,7 +62,7 @@ source $HOME/.local/bin/env
 
 # Clone and setup
 git clone <repository-url>
-cd Transit_Design
+cd AlphaTransit
 uv sync
 source .venv/bin/activate
 ```
@@ -158,7 +158,7 @@ python sweep.py --algorithm ppo
 ## Project Structure
 
 ```
-Transit_Design/
+AlphaTransit/
 ├── main.py                 # CLI entry point
 ├── config.py               # Configuration and argument parsing
 ├── mcts.py                 # AlphaTransit training/evaluation
