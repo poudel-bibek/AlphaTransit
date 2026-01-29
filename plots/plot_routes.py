@@ -6,7 +6,8 @@ Best checkpoints used by default:
   - alpha 0.3: sweep glamorous-sweep-1, eval_up_7700_step_992642
   - alpha 1.0: sweep lyric-sweep-1, eval_up_280_step_37348
 - MCTS (AlphaTransit)
-  - alpha 0.3: sweep glad-sweep-1, eval_up_345_step_378717
+  - For this route plot and training curves: alpha 0.3: sweep glad-sweep-1, eval_up_345_step_378717
+  - For Table: sweep peach-sweep-1, eval_up_243_step_359104 (INCOMPLETE_MCTS_JAN_26)
   - alpha 1.0: sweep glorious-sweep-1, eval_up_408_step_469476
 - Genetic Algorithm
   - alpha 0.3: current_best (Gen 94/100)
@@ -31,7 +32,7 @@ RESULTS_DIR = REPO_ROOT / "training_data" / "ICML_results"
 DEFAULT_OUTPUT = REPO_ROOT / "plots" / "routes_composite.png"
 
 METHODS = (
-    ("Real-world", "real_world", "#374151"),
+    ("Real-World", "real_world", "#374151"),
     ("Genetic Algorithm", "genetic", "#fb7185"),
     ("End-to-End RL", "PPO", "#1d4ed8"),
     ("AlphaTransit", "INCOMPLETE_MCTS", "#22c55e"),

@@ -189,9 +189,9 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
         #     # Old schedule (fast annealing): "0.3:1.0,0.6:0.5,1.0:0.1"
         #     # Slower schedules maintain exploration longer
         #     "temp_schedule": {"values": [
-        #         "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing 
-        #         # "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower
-        #     ]},
+                # "0.5:1.0,0.8:0.5,1.0:0.1",  # Slower annealing 
+            #     "0.6:1.0,0.85:0.5,1.0:0.1", # Even slower. NOTE: USE THIS FOR ALPHA = 1.0
+            # ]},
 
         #     # Fixed values (Not sweep params)
         #     # Training duration: 12 workers × ~224 steps/episode = ~2,688 steps/iteration
