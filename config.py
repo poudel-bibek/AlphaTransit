@@ -100,7 +100,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=0.00005, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
-    parser.add_argument("--min_lr", type=float, default=1e-6, help="PPO: Minimum learning rate floor when annealing")
+    parser.add_argument("--min_lr", type=float, default=1e-5, help="PPO: Minimum learning rate floor when annealing")
 
     # MCTS hyperparameters:
     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
@@ -114,7 +114,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_mcts_workers", type=int, default=8, help="MCTS: Number of parallel workers")
     parser.add_argument("--train_steps_per_iter", type=int, default=500, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=744, help="MCTS: Max iterations (744 × 6 workers × ~224 steps ≈ 1M steps)")
-    parser.add_argument("--mcts_eval_every", type=int, default=3, help="MCTS: Evaluate every N iterations (~248 eval points for 744 iterations)")
+    parser.add_argument("--mcts_eval_every", type=int, default=5, help="MCTS: Evaluate every N iterations")
     parser.add_argument("--temp_schedule", type=str, default="0.3:1.0,0.6:0.5,1.0:0.1", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.3:1.0,0.6:0.5,1.0:0.1')")
 
     # Model:
