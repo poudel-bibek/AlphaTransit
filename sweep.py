@@ -57,7 +57,7 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
             "alpha": {"value": 0.3}, # ALPHA SETTING.
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
-            "max_steps": {"value": 1_000_000},
+            "max_steps": {"value": 750_000},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 20},
         },
@@ -116,7 +116,7 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
             "alpha": {"value": 1.0}, # ALPHA SETTING.
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
-            "max_steps": {"value": 1_000_000},
+            "max_steps": {"value": 750_000},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 20},
         },
@@ -179,7 +179,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "alpha": {"value": 0.3},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 372},
+            "max_iterations": {"value": 558},
             "num_mcts_workers": {"value": 8},
             "mcts_eval_every": {"value": 5},
         },
@@ -208,7 +208,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
         #     "alpha": {"value": 0.3},
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 372},
+        #     "max_iterations": {"value": 558},
         #     "num_mcts_workers": {"value": 8},
         #     "mcts_eval_every": {"value": 5},
         # },
@@ -261,7 +261,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "alpha": {"value": 1.0},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 372},
+            "max_iterations": {"value": 558},
             "num_mcts_workers": {"value": 8},
             "mcts_eval_every": {"value": 5},
         },
@@ -290,7 +290,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
         #     "alpha": {"value": 1.0},
         #     "algorithm": {"value": "mcts"},
         #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 372},
+        #     "max_iterations": {"value": 558},
         #     "num_mcts_workers": {"value": 8},
         #     "mcts_eval_every": {"value": 5},
         # },
@@ -302,8 +302,8 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
     MCTS hyperparameter sweep - parent function that selects alpha config.
     Currently calls both 0.3 and 1.0 configs (comment out as needed).
     """
-    # return build_sweep_config_mcts_0_3()
-    return build_sweep_config_mcts_1_0()
+    return build_sweep_config_mcts_0_3()
+    # return build_sweep_config_mcts_1_0()
 
 
 def get_sweep_config(algorithm: str) -> Dict[str, Any]:
