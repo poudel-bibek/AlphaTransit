@@ -156,8 +156,10 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     # model = torch.compile(model)
 
     ppo = PPOAgent(model, **config)
+    save_policy = config.get("save_policy_ppo", False)
     policy_dir = os.path.join(training_save_dir, "ppo_policies")
-    os.makedirs(policy_dir, exist_ok=True)
+    if save_policy:
+        os.makedirs(policy_dir, exist_ok=True)
 
     max_steps = config["max_steps"]
     update_frequency = config["update_frequency"]
@@ -261,9 +263,10 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
             # There may be an overshoot of up to (steps_per_worker - 1) transitions.
             update_count += 1
             perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
-            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
-            torch.save(model.state_dict(), policy_path)
-            
+            if save_policy:
+                policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
+                torch.save(model.state_dict(), policy_path)
+
             env_manager.update_shared_weights(model)
             
             # 4. Log aggregated episode metrics (mean of recent episodes in buffer)
@@ -296,16 +299,17 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
             # Evaluate the policy after a certain number of updates
             if config.get("ppo_eval_every") > 0 and update_count % config["ppo_eval_every"] == 0:
                 # print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
-                eval(config, policy_path, update_count, steps_elapsed, training_save_dir, env_manager)
+                eval(config, update_count, steps_elapsed, training_save_dir, env_manager, policy_path=policy_path, model=model)
                 
         
         # Final update if any transitions remain
         if len(ppo.memory) > 0:
             update_count += 1
             perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
-            policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
-            torch.save(model.state_dict(), policy_path)
-        
+            if save_policy:
+                policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
+                torch.save(model.state_dict(), policy_path)
+
     finally:
         # Always stop workers, even if an exception occurred
         env_manager.stop()
@@ -317,27 +321,29 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         wandb.finish()
 
 
-def eval(config: Dict[str, Any], policy_path: str, update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager) -> Dict[str, float]:
+def eval(config: Dict[str, Any], update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager, policy_path: str = None, model: torch.nn.Module = None) -> Dict[str, float]:
     """
     Evaluate a trained policy using parallel workers.
-    
+
     Args:
         config: Configuration dict
-        policy_path: Path to saved policy
         update_count: Policy update number (or 'final' for standalone eval)
         steps_elapsed: Global steps elapsed at the time of evaluation
         save_dir: Directory to save results
         env_manager: ParallelEnvManager for parallel eval
+        policy_path: Path to saved policy (used when save_policy_ppo is on)
+        model: Model to evaluate (used when save_policy_ppo is off)
     """
     num_runs = config["num_eval_runs"]
     episode_dir = ensure_eval_step_update_dir(save_dir, update=update_count, steps=steps_elapsed, folder_name="eval_results")
 
-    # Run parallel evaluations (weight loading handled by run_parallel_eval)
+    # Run parallel evaluations
     eval_results = env_manager.run_parallel_eval(
         num_runs=num_runs,
         base_seed=config["seed"],
         seed_offset=config["eval_seed_offset"],
         policy_path=policy_path,
+        state_dict=model.state_dict() if model is not None and policy_path is None else None,
     )
     
     # Process results: save routes and convert to dict format
@@ -455,7 +461,7 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     env_manager.start(model, policy_kwargs)
     
     # Use new step/update-keyed saving. For standalone eval, mark update='final' and steps=0.
-    eval(config, policy_path, update_count="final", steps_elapsed=0, save_dir=config["save_dir"], env_manager=env_manager)
+    eval(config, update_count="final", steps_elapsed=0, save_dir=config["save_dir"], env_manager=env_manager, policy_path=policy_path)
     env_manager.stop()
     
     # print(f"Evaluation completed. Results saved to: {config['save_dir']}")

@@ -102,12 +102,12 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
             "anneal_lr": {"values": [True, False]},
             "K_epochs": {"values": [2, 4]},
             "num_gat_blocks": {"values": [4, 8]},
-            "batch_size": {"values": [32, 64]},
+            "batch_size": {"values": [32, 64, 128]},
+            "clip_frac": {"values": [0.1, 0.2]},
 
             # Fixed params
-            "clip_frac": {"value": 0.2},
             "entropy_coef": {"value": 0.02},
-            "update_frequency": {"value": 128},
+            "update_frequency": {"value": [128, 256]},
             "activation": {"value": "tanh"},
 
             # Fixed values (Not sweep params)

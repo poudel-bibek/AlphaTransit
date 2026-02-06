@@ -100,6 +100,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
     parser.add_argument("--lr", type=float, default=0.00005, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
+    parser.add_argument("--save_policy_ppo", action="store_true", help="PPO: Save policy checkpoints to disk")
     parser.add_argument("--min_lr", type=float, default=1e-5, help="PPO: Minimum learning rate floor when annealing")
 
     # MCTS hyperparameters:

@@ -521,25 +521,27 @@ class ParallelEnvManager:
             self.shared_reward_scale.value = new_scale
             # print(f"[DEBUG] Learner: Updated shared reward_scale {old_scale:.4f} -> {new_scale:.4f}")
     
-    def run_parallel_eval(self, num_runs, base_seed, seed_offset, policy_path):
+    def run_parallel_eval(self, num_runs, base_seed, seed_offset, policy_path=None, state_dict=None):
         """
         Run multiple evaluation episodes in parallel.
-        
+
         Each worker runs one evaluation with a specific seed.
         All workers share the same policy weights.
-        
+
         Args:
             num_runs: Number of evaluation runs
             base_seed: Starting seed
             seed_offset: Offset between consecutive seeds
-            policy_path: Optional path to policy weights to load before eval
-            
+            policy_path: Path to policy weights to load before eval
+            state_dict: Model state_dict to use directly (when policy is not saved to disk)
+
         Returns:
             List of EvalResult objects (one per run)
         """
 
-        # load weights from path
-        state_dict = torch.load(policy_path, map_location="cpu")
+        # Load weights from path or use provided state_dict
+        if policy_path is not None:
+            state_dict = torch.load(policy_path, map_location="cpu")
         for name, param in state_dict.items():
             self.shared_model_state[name].copy_(param)
         
