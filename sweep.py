@@ -97,17 +97,17 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         # 2. General Sweep for PPO Alpha 1.0
         # =====================================================================
         "parameters": {
-            # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations, Bayesian samples 32)
+            # Sweep params (3 × 2 × 2 × 2 × 3 × 2 × 2 = 288 combinations)
             "lr": {"values": [5e-6, 1e-5, 3e-5]},
             "anneal_lr": {"values": [True, False]},
             "K_epochs": {"values": [2, 4]},
             "num_gat_blocks": {"values": [4, 8]},
             "batch_size": {"values": [32, 64, 128]},
             "clip_frac": {"values": [0.1, 0.2]},
+            "update_frequency": {"values": [128, 256]},
 
             # Fixed params
             "entropy_coef": {"value": 0.02},
-            "update_frequency": {"value": [128, 256]},
             "activation": {"value": "tanh"},
 
             # Fixed values (Not sweep params)
@@ -168,7 +168,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "num_gat_blocks": {"values": [4, 8]},
 
             # Fixed params
-            "n_iter": {"value": 400},
+            "n_iter": {"value": 100},
             "lr": {"value": 1e-4},
             "batch_size": {"value": 256},
             "buffer_capacity": {"value": 50000},
@@ -250,7 +250,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "num_gat_blocks": {"values": [4, 8]},
 
             # Fixed params
-            "n_iter": {"value": 400},
+            "n_iter": {"value": 100},
             "lr": {"value": 1e-4},
             "batch_size": {"value": 256},
             "buffer_capacity": {"value": 50000},
