@@ -160,8 +160,8 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
         "parameters": {
             # Sweep params (2 × 2 × 2 × 2 = 16 combinations)
             "temp_schedule": {"values": [
-                "0.6:1.0,0.85:0.5,1.0:0.1",   # Slower annealing
-                "0.7:1.0,0.9:0.5,1.0:0.2",    # Even slower + higher floor
+                "1.0:1.0",                       # No annealing (constant temp=1.0)
+                "0.7:1.0,0.9:0.7,1.0:0.5",      # Very slow anneal, high floor
             ]},
             "c_puct": {"values": [1.0, 1.5]},
             "train_steps_per_iter": {"values": [100, 200]},
@@ -242,8 +242,8 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
         "parameters": {
             # Sweep params (2 × 2 × 2 × 2 = 16 combinations)
             "temp_schedule": {"values": [
-                "0.6:1.0,0.85:0.5,1.0:0.1",   # Slower annealing
-                "0.7:1.0,0.9:0.5,1.0:0.2",    # Even slower + higher floor
+                "1.0:1.0",                       # No annealing (constant temp=1.0)
+                "0.7:1.0,0.9:0.7,1.0:0.5",      # Very slow anneal, high floor
             ]},
             "c_puct": {"values": [1.0, 1.5]},
             "train_steps_per_iter": {"values": [100, 200]},
