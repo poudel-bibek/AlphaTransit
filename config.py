@@ -74,21 +74,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end")
     parser.add_argument("--route_init", type=str, default="transit_center", help="Route initialization scheme")
     parser.add_argument("--transit_center_node", type=str, default="96", help="Transit center node identifier")
-    parser.add_argument(
-        "--reward_mode",
-        type=str,
-        default="terminal_intermediate_delta_early_stop",
-        choices=[
-            "terminal_only",
-            "terminal_intermediate_raw_early_stop",
-            "terminal_intermediate_delta_early_stop",
-            "terminal_intermediate_delta_no_early_stop",
-        ],
-        help=(
-            "Reward shaping mode. "
-            "Default = terminal_intermediate_delta_early_stop."
-        ),
-    )
+    parser.add_argument("--reward_mode", type=str, default="terminal_intermediate_delta_early_stop",
+        choices=["terminal_only", "terminal_intermediate_raw_early_stop", "terminal_intermediate_delta_early_stop", "terminal_intermediate_delta_no_early_stop"],
+        help="Reward shaping mode")
 
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
@@ -98,27 +86,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # PPO hyperparameters:
     # Training duration: max_steps = 1M env steps (comparable to MCTS with max_iterations=744)
     # Eval frequency is update-count based and depends on episode lengths × num_ppo_workers.
-    parser.add_argument(
-        "--update_frequency",
-        type=int,
-        default=0,
-        help="PPO: Legacy dummy arg (unused in full-episode synchronized collection).",
-    )
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
     parser.add_argument("--ppo_eval_every", type=int, default=5, help="PPO: Evaluate every N updates")
     parser.add_argument("--num_ppo_workers", type=int, default=8, help="PPO: Number of parallel workers")
-    parser.add_argument("--steps_per_worker", type=int, default=32, help="PPO: Legacy arg (unused).")
-    parser.add_argument("--weight_refresh_interval", type=int, default=4, help="PPO: Legacy arg (unused).")
     parser.add_argument("--K_epochs", type=int, default=4, help="PPO: Number of epochs per update")
     parser.add_argument("--batch_size", type=int, default=256, help="Mini-batch size")
-    parser.add_argument("--clip_frac", type=float, default=0.1, help="PPO: Clipping ratio for policy loss")
+    parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO: Clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO: Clipping ratio for value loss")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO: Discount factor")
     parser.add_argument("--gae_lambda", type=float, default=0.95, help="PPO: GAE lambda")
     parser.add_argument("--entropy_coef", type=float, default=0.01, help="PPO: Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="PPO: Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
-    parser.add_argument("--lr", type=float, default=0.00005, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
     parser.add_argument("--save_policy_ppo", action="store_true", help="PPO: Save policy checkpoints to disk")
     parser.add_argument("--min_lr", type=float, default=1e-5, help="PPO: Minimum learning rate floor when annealing")

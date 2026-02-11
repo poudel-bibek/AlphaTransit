@@ -25,12 +25,12 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         # 1. General Sweep for PPO Alpha 0.3
         # =====================================================================
         "parameters": {
-            # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations, Bayesian samples 32)
+            # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations)
             "lr": {"values": [5e-5, 1e-4, 3e-4]},
             "anneal_lr": {"values": [True, False]},
             "K_epochs": {"values": [4, 8]},
             "num_gat_blocks": {"values": [4, 8]},
-            "batch_size": {"values": [32, 64]},
+            "batch_size": {"values": [128, 256]},
 
             # Fixed params
             "clip_frac": {"value": 0.2},
@@ -47,6 +47,21 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
         },
+
+        # =====================================================================
+        # 5. Reward Ablation Sweep for PPO Alpha 0.3
+        # =====================================================================
+        # "parameters": {
+        #     "reward_mode": {"values": [
+        #         "terminal_only",
+        #         "terminal_intermediate_raw_early_stop",
+        #         "terminal_intermediate_delta_early_stop",
+        #         "terminal_intermediate_delta_no_early_stop",
+        #     ]},
+        #     "alpha": {"value": 0.3},
+        #     "algorithm": {"value": "ppo"},
+        #     "gpu": {"value": True},
+        # },
     }
 
 
@@ -67,12 +82,12 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         # 2. General Sweep for PPO Alpha 1.0
         # =====================================================================
         "parameters": {
-            # Sweep params (3 × 2 × 2 × 2 × 3 × 2 = 144 combinations)
+            # Sweep params (3 × 2 × 2 × 2 × 2 × 2 = 96 combinations)
             "lr": {"values": [5e-6, 1e-5, 3e-5]},
             "anneal_lr": {"values": [True, False]},
             "K_epochs": {"values": [2, 4]},
             "num_gat_blocks": {"values": [4, 8]},
-            "batch_size": {"values": [32, 64, 128]},
+            "batch_size": {"values": [128, 256]},
             "clip_frac": {"values": [0.1, 0.2]},
 
             # Fixed params
@@ -89,6 +104,21 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
         },
+
+        # =====================================================================
+        # 6. Reward Ablation Sweep for PPO Alpha 1.0
+        # =====================================================================
+        # "parameters": {
+        #     "reward_mode": {"values": [
+        #         "terminal_only",
+        #         "terminal_intermediate_raw_early_stop",
+        #         "terminal_intermediate_delta_early_stop",
+        #         "terminal_intermediate_delta_no_early_stop",
+        #     ]},
+        #     "alpha": {"value": 1.0},
+        #     "algorithm": {"value": "ppo"},
+        #     "gpu": {"value": True},
+        # },
     }
 
 
@@ -154,7 +184,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
         },
 
         # =====================================================================
-        # 5. n_iter Sweep for MCTS Alpha 0.3
+        # 7. n_iter Sweep for MCTS Alpha 0.3
         # =====================================================================
         # "parameters": {
         #     # Sweep param
@@ -236,7 +266,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
         },
 
         # =====================================================================
-        # 6. n_iter Sweep for MCTS Alpha 1.0
+        # 8. n_iter Sweep for MCTS Alpha 1.0
         # =====================================================================
         # "parameters": {
         #     # Sweep param
