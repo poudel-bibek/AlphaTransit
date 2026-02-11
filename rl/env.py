@@ -38,6 +38,7 @@ class TransitEnv(gym.Env):
         self.radius = self.config.get("radius")
         self.route_init = self.config.get("route_init")
         self.transit_center_node = str(self.config.get("transit_center_node"))
+        self.reward_mode = self.config.get("reward_mode", "terminal_intermediate_delta_early_stop")
         
         # Constraints:
         self.NUM_ROUTES = self.config.get("num_routes")
@@ -1284,275 +1285,138 @@ class TransitEnv(gym.Env):
 
     def compute_reward(self, sim_result: Dict[str, Any], is_route_end: bool, is_forced_end: bool, prev_coverage: float = 0.0) -> float:
         """
-        HIGH-LEVEL OBJECTIVES
+        Reward function with mode-controlled shaping.
 
-        1. PASSENGER EFFICIENCY:
-           - Low average travel time (wait time + in-vehicle time)
-           - Good service coverage (routes serve high-demand O-D pairs)
-           - High service rate (passengers who want to board can actually board)
-
-        2. OPERATOR CONSTRAINTS:
-           - Avoid excessive fleet size (cost control)
-           - Avoid extreme utilization (service quality and reliability)
-           - Avoid excessive duplication/overlap (resource efficiency)
-        ------------------
-
-        This reward uses a two-phase structure: partial rewards during route construction
-        (shaping signal) and final rewards after simulation (primary learning signal).
-
-        PARTIAL ROUTES (during construction, is_route_end=False)
-        ------------------------------------------------------------------------------------------
-
-        Formula:
-            reward_partial = β₀ × Δcoverage
-                           + β₁ × overlap_ratio
-                           + β₂ × forced_end_penalty  (if is_forced_end=True)
-
-        Components:
-          - Δcoverage = coverage_t - coverage_{t-1} ∈ [0, ~0.15] per step
-          - overlap_ratio ∈ [0, 1]
-          - forced_end_penalty = 1 - (route_length / MAX_ROUTE_LENGTH) ∈ [0, 1]
-
-        Design Rationale - Delta-Based Rewards:
-          - Rewards the improvement in coverage, not accumulated state
-          - Directly measures the value of each action (adding a node)
-          - Zero-improvement actions → zero delta → clear signal to avoid such actions
-          - After Welford normalization: mean μ > 0, so zero-deltas become negative,
-            which is desirable (penalizes no-improvement actions relative to average)
-          - Research validation: arXiv:2404.05894 (Transit Network Design with DRL) uses
-            delta-based rewards R_t = C(t) - C(t+1) for "richer learning signals"
-
-        Design Rationale - Magnitude Balance:
-          - When designing a route with 14 stops, there will be 13 partial steps per route vs 1 final step, partial rewards must be
-            small enough that final rewards dominate the episode return
-          - Delta-based rewards are naturally smaller than cumulative (~0.02-0.05 per step)
-          - This ensures the primary learning signal comes from simulation-validated metrics
-          - Target episode ratio: ~1:9 partial:final (final rewards dominate)
-
-        COMPLETED ROUTES (after simulation, is_route_end=True)
-        ------------------------------------------------------------------------------------------
-
-        Formula:
-            reward_final = β₃ × demand_coverage_potential
-                         + β₄ × service_rate
-                         + β₅ × avg_wait_time_norm
-                         + β₆ × avg_movement_time_norm
-                         + β₇ × overlap_ratio
-                         + β₈ × fleet_size_penalty
-                         + β₉ × utilization_penalty
-
-        Components:
-          - demand_coverage_potential ∈ [0, 1]: fraction of total demand served by routes
-          - service_rate ∈ [0, 1]: passengers boarded / passengers wanting to board
-          - avg_wait_time_norm = min(avg_wait / 1800, 1) ∈ [0, 1], capped at 30 min
-          - avg_movement_time_norm = min(avg_movement / 2400, 1) ∈ [0, 1], capped at 40 min
-          - overlap_ratio ∈ [0, 1]: average segment overlap across routes
-          - fleet_per_route = fleet_size / NUM_ROUTES: average buses per route
-          - utilization_norm = utilization / 100 ∈ [0, 1]: bus capacity utilization
-
-        Design Rationale - Separate Wait and Movement Time:
-          - Research shows passengers perceive wait time as ~1.5-2× more burdensome
-            than in-vehicle time (Wardman 2004, transit utility studies)
-          - Wait time is more controllable via route design (coverage) and frequency
-          - Movement time depends more on network topology (less controllable)
-          - Separate penalties with higher weight on wait time reflect this asymmetry
-
-        Design Rationale - Operator-Side Metrics:
-          - Fleet size penalty: Penalizes high bus counts per route (cost control)
-          - Utilization bonus: Rewards high bus utilization (efficient resource use)
-          - These prevent "gaming" via many low-demand routes and ensure efficient operations
-
-        COEFFICIENT VALUES AND RATIONALE
-        ---------------------------------
-
-        PARTIAL REWARDS (shaping signal - guide but don't dominate):
-
-          β₀ = +20.0  (delta coverage bonus)
-              - Scaled for typical deltas ~0.02-0.05 → reward ~0.4-1.0 per step
-              - Provides directional guidance toward coverage-improving actions
-
-          β₁ = -8.0   (overlap penalty)
-              - Discourages redundant segment additions during construction
-              - Not too harsh: some overlap enables transfers
-
-          β₂ = -15.0  (forced end penalty)
-              - Kept strong: forced termination is a real failure mode
-              - Encourages completing routes to full length
-              - Penalty scales with how early the termination occurs
-
-        FINAL REWARDS (primary learning signal - simulation-validated):
-
-          β₃ = +60.0  (demand coverage potential)
-              - High weight ensures final rewards dominate episode return
-              - Core objective: serve as much demand as possible
-
-          β₄ = +45.0  (service rate)
-              - Core objective: passengers actually boarding
-              - High weight ensures policy optimizes for real service quality
-
-          β₅ = -20.0  (wait time penalty)
-              - Higher than movement time (passengers hate waiting)
-              - Incentivizes routes that reduce wait times
-              - Normalized to 30-minute cap
-
-          β₆ = -10.0  (movement time penalty)
-              - Lower than wait time (less burdensome to passengers)
-              - Still important for overall travel efficiency
-              - Normalized to 40-minute cap
-
-          β₇ = -10.0  (overlap penalty)
-              - Moderate penalty for route duplication
-              - Prevents wasteful resource allocation
-              - Allows some overlap for transfer connectivity
-
-          β₈ = -2.0   (fleet size penalty)
-              - Penalizes high fleet size relative to number of routes
-              - Uses fleet_size / NUM_ROUTES (average buses per route)
-              - Encourages efficient route design that doesn't require excessive buses
-
-          β₉ = +12.0  (utilization bonus)
-              - Rewards high bus utilization (0-100% normalized to 0-1)
-              - Higher utilization means buses are well-used
-              - Encourages routes that attract sufficient ridership
-
-        REWARD RANGES
-        -------------
-
-        Partial rewards (per step, not forced):
-          Best case:  +20 × 0.10 - 8 × 0.0 = +2.0  (10% coverage improvement, no overlap)
-          Typical:    +20 × 0.03 - 8 × 0.05 = +0.2 (3% improvement, 5% overlap)
-          Worst case: +20 × 0.00 - 8 × 0.20 = -1.6 (no improvement, 20% overlap)
-
-        Partial rewards (forced end at 50% completion):
-          Additional: -15 × 0.50 = -7.5
-
-        Final rewards (per route completion):
-          Best case:  +60×0.8 + 45×0.95 - 20×0.1 - 10×0.2 - 10×0.0 - 2×1.5 + 12×0.8
-                    = 48 + 42.75 - 2 - 2 - 0 - 3 + 9.6 = +93.35
-          Typical:    +60×0.5 + 45×0.7 - 20×0.25 - 10×0.3 - 10×0.1 - 2×2.0 + 12×0.5
-                    = 30 + 31.5 - 5 - 3 - 1 - 4 + 6 = +54.5
-          Worst case: +60×0.2 + 45×0.3 - 20×0.8 - 10×0.6 - 10×0.5 - 2×4.0 + 12×0.1
-                    = 12 + 13.5 - 16 - 6 - 5 - 8 + 1.2 = -8.3
-
-        Episode totals (16 routes × 13 partial + 1 final each):
-          Partial: 208 steps × ~0.3 avg = ~62
-          Final:   16 routes × ~55 avg = ~880
-          Ratio: ~1:14 in favor of final (DESIRED: final rewards dominate)
-
-        USAGE NOTES
-        -----------
-
-        1. The caller must track and pass `prev_coverage` from the previous step:
-
-           # In step() method:
-           prev_cov = self._get_partial_route_metrics()['demand_coverage_potential']
-           # ... apply action ...
-           reward = self.compute_reward(sim_result, is_route_end, is_forced_end,
-                                            prev_coverage=prev_cov)
-
-        2. For the first step of each route, prev_coverage should be the coverage
-           BEFORE adding the first node (typically from completed routes only).
-
-        3. This reward function is designed to work with Welford normalization in PPO.
-           The delta-based structure produces non-negative values that normalize well.
-
-        4. Coefficient tuning: The β values may need adjustment based on:
-           - Network size (larger networks may have smaller per-step deltas)
-           - Typical wait/movement times in your simulation
-           - Desired fleet size constraints
-
+        Supported reward modes:
+        - terminal_only
+        - terminal_intermediate_raw_early_stop
+        - terminal_intermediate_delta_early_stop
+        - terminal_intermediate_delta_no_early_stop
         """
+        valid_modes = {
+            "terminal_only",
+            "terminal_intermediate_raw_early_stop",
+            "terminal_intermediate_delta_early_stop",
+            "terminal_intermediate_delta_no_early_stop",
+        }
+        if self.reward_mode not in valid_modes:
+            raise ValueError(f"Unknown reward_mode: {self.reward_mode}")
 
-        # PARTIAL REWARD COEFFICIENTS (shaping signal)
-        BETA_0 = 20.0     # Delta coverage bonus (rewards improvement)
-        BETA_1 = -8.0     # Overlap penalty (discourages redundancy)
-        BETA_2 = -15.0    # Forced end penalty (encourages route completion)
+        # ---------------------------------------------------------------------
+        # Reward intent
+        # ---------------------------------------------------------------------
+        # Encourage:
+        # - broader reachable demand coverage
+        # - higher passenger service rate
+        # - higher bus utilization
+        #
+        # Discourage:
+        # - long passenger wait/movement times
+        # - redundant route overlap
+        # - excessive fleet size
+        # - premature forced route endings
+        #
+        # Final reward (b0..b6) captures passenger/operator outcomes after simulation.
+        # Partial reward (b7..b9) shapes route construction before terminal simulation.
+        # ---------------------------------------------------------------------
 
-        # FINAL REWARD COEFFICIENTS (primary learning signal)
-        BETA_3 = 60.0     # Demand coverage potential
-        BETA_4 = 45.0     # Service rate (core objective, high weight)
-        BETA_5 = -20.0    # Wait time penalty (passengers hate waiting)
-        BETA_6 = -10.0    # Movement time penalty (less annoying than waiting)
-        BETA_7 = -10.0    # Route overlap penalty
-        BETA_8 = -2.0     # Fleet size penalty (per bus per route)
-        BETA_9 = 12.0     # Utilization bonus (reward high utilization)
+        # ---------------------------------------------------------------------
+        # Coefficients
+        # ---------------------------------------------------------------------
+        BETA_0 = 60.0   # Final: demand coverage potential (Psi)
+        BETA_1 = 45.0   # Final: service rate (sigma)
+        BETA_2 = 20.0   # Final: average wait time penalty
+        BETA_3 = 10.0   # Final: average movement time penalty
+        BETA_4 = 10.0   # Final: route overlap penalty (omega)
+        BETA_5 = 2.0    # Final: fleet size penalty (F/K)
+        BETA_6 = 12.0   # Final: bus utilization bonus (u)
 
-        # NORMALIZATION CONSTANTS
-        WAIT_TIME_CAP = 1800.0       # 30 minutes in seconds
-        MOVEMENT_TIME_CAP = 2400.0   # 40 minutes in seconds
+        BETA_7 = 20.0   # Partial: coverage term (raw or delta)
+        BETA_8 = 8.0    # Partial: overlap term (omega) magnitude
+        BETA_9 = 15.0   # Partial: forced-end penalty term magnitude
 
-        # COMPUTE PARTIAL REWARD (during route construction)
+        WAIT_TIME_CAP = 1800.0
+        MOVEMENT_TIME_CAP = 2400.0
+
+        # Episode terminal condition: last route is ending right now.
+        # Used only for terminal_only mode.
+        is_episode_terminal = is_route_end and (self.current_route_index == self.NUM_ROUTES - 1)
+
+        # ---------------------------------------------------------------------
+        # Intermediate reward branch (during route construction)
+        # ---------------------------------------------------------------------
         if not is_route_end:
-            # Delta-based coverage reward
+            # terminal_only: no shaping signal during construction.
+            if self.reward_mode == "terminal_only":
+                return 0.0
+
             current_coverage = sim_result['demand_coverage_potential']
-            delta_coverage = max(0.0, current_coverage - prev_coverage)  # Non-negative
-
-            # Overlap penalty
             overlap_ratio = sim_result['route_overlap_ratio']
 
-            # Compute partial reward
-            partial_reward = (BETA_0 * delta_coverage) + (BETA_1 * overlap_ratio)
+            if self.reward_mode == "terminal_intermediate_raw_early_stop":
+                # Raw shaping: reward absolute coverage at this step.
+                coverage_term = current_coverage
+                use_early_stop_penalty = True
 
-            # Forced end penalty (if route terminated early due to no valid actions)
-            if is_forced_end:
+            elif self.reward_mode == "terminal_intermediate_delta_early_stop":
+                # Delta shaping: reward only incremental coverage gain.
+                coverage_term = max(0.0, current_coverage - prev_coverage)
+                use_early_stop_penalty = True
+                
+            else:
+                # terminal_intermediate_delta_no_early_stop:
+                # same delta shaping, but remove forced-end penalty.
+                coverage_term = max(0.0, current_coverage - prev_coverage)
+                use_early_stop_penalty = False
+
+            # Shared shaping terms for non-terminal route-building steps.
+            # Encourages coverage growth and discourages redundant overlap.
+            reward = (BETA_7 * coverage_term) - (BETA_8 * overlap_ratio)
+
+            # Apply early-stop penalty only in modes that enable it.
+            # Discourages getting stuck before reaching max route length.
+            if is_forced_end and use_early_stop_penalty:
                 completion_ratio = len(self.current_route) / self.MAX_ROUTE_LENGTH
-                forced_penalty = 1.0 - completion_ratio  # Higher penalty for earlier termination
-                partial_reward += BETA_2 * forced_penalty
+                forced_penalty = 1.0 - completion_ratio
+                reward -= BETA_9 * forced_penalty
 
-            return partial_reward
+            return reward
 
-        # COMPUTE FINAL REWARD (after simulation, route completed)
-        else:
-            # Passenger-side metrics
-            # -----------------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # Final reward branch (route-end simulation metrics)
+        # ---------------------------------------------------------------------
+        # terminal_only pays out only once at episode terminal.
+        if self.reward_mode == "terminal_only" and not is_episode_terminal:
+            return 0.0
 
-            # Coverage and service (core objectives)
-            coverage = sim_result['demand_coverage_potential']
-            service_rate = sim_result['service_rate']
+        # All other modes use the same final simulation-based reward.
+        # This is the primary objective that balances rider outcomes and operator costs.
+        coverage = sim_result['demand_coverage_potential']
+        service_rate = sim_result['service_rate']
 
-            # Separate wait and movement time
-            total_wait = (sim_result['total_wait_completed'] +
-                          sim_result['total_wait_ongoing'])
-            total_movement = (sim_result['total_movement_completed'] +
-                              sim_result['total_movement_ongoing'])
-            served = (sim_result['completed_passengers'] +
-                      sim_result['ongoing_passengers'])
+        total_wait = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
+        total_movement = sim_result['total_movement_completed'] + sim_result['total_movement_ongoing']
+        served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
 
-            # Compute averages (guard against division by zero)
-            avg_wait = total_wait / served if served > 0 else 0.0
-            avg_movement = total_movement / served if served > 0 else 0.0
+        avg_wait = total_wait / served if served > 0 else 0.0
+        avg_movement = total_movement / served if served > 0 else 0.0
+        avg_wait_norm = min(avg_wait / WAIT_TIME_CAP, 1.0)
+        avg_movement_norm = min(avg_movement / MOVEMENT_TIME_CAP, 1.0)
 
-            # Normalize to [0, 1] with caps
-            avg_wait_norm = min(avg_wait / WAIT_TIME_CAP, 1.0)
-            avg_movement_norm = min(avg_movement / MOVEMENT_TIME_CAP, 1.0)
+        overlap_ratio = sim_result['route_overlap_ratio']
+        fleet_per_route = sim_result['fleet_size'] / self.NUM_ROUTES
+        utilization_norm = sim_result['bus_utilization'] / 100.0
 
-            # Operator-side metrics
-            # -----------------------------------------------------------------
-
-            # Overlap (resource duplication)
-            overlap_ratio = sim_result['route_overlap_ratio']
-
-            # Fleet size per route (cost control)
-            fleet_size = sim_result['fleet_size']
-            fleet_per_route = fleet_size / self.NUM_ROUTES  # Average buses per route
-
-            # Utilization (reward high utilization)
-            utilization = sim_result['bus_utilization']
-            utilization_norm = utilization / 100.0  # Normalize percentage to [0, 1]
-
-            # Combine all components
-            # -----------------------------------------------------------------
-            final_reward = (
-                BETA_3 * coverage +
-                BETA_4 * service_rate +
-                BETA_5 * avg_wait_norm +
-                BETA_6 * avg_movement_norm +
-                BETA_7 * overlap_ratio +
-                BETA_8 * fleet_per_route +
-                BETA_9 * utilization_norm
-            )
-
-            return final_reward
+        final_reward = (
+            BETA_0 * coverage +
+            BETA_1 * service_rate -
+            BETA_2 * avg_wait_norm -
+            BETA_3 * avg_movement_norm -
+            BETA_4 * overlap_ratio -
+            BETA_5 * fleet_per_route +
+            BETA_6 * utilization_norm
+        )
+        return final_reward
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         """

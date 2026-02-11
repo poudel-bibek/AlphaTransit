@@ -74,6 +74,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end")
     parser.add_argument("--route_init", type=str, default="transit_center", help="Route initialization scheme")
     parser.add_argument("--transit_center_node", type=str, default="96", help="Transit center node identifier")
+    parser.add_argument(
+        "--reward_mode",
+        type=str,
+        default="terminal_intermediate_delta_early_stop",
+        choices=[
+            "terminal_only",
+            "terminal_intermediate_raw_early_stop",
+            "terminal_intermediate_delta_early_stop",
+            "terminal_intermediate_delta_no_early_stop",
+        ],
+        help=(
+            "Reward shaping mode. "
+            "Default = terminal_intermediate_delta_early_stop."
+        ),
+    )
 
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
@@ -82,13 +97,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # PPO hyperparameters:
     # Training duration: max_steps = 1M env steps (comparable to MCTS with max_iterations=744)
-    # Eval frequency: 1M steps / 128 = 7,812 updates; eval_every=20 → ~390 eval points
-    parser.add_argument("--update_frequency", type=int, default=128, help="PPO: Update when memory has N samples")
+    # Eval frequency is update-count based and depends on episode lengths × num_ppo_workers.
+    parser.add_argument(
+        "--update_frequency",
+        type=int,
+        default=0,
+        help="PPO: Legacy dummy arg (unused in full-episode synchronized collection).",
+    )
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
-    parser.add_argument("--ppo_eval_every", type=int, default=20, help="PPO: Evaluate every N updates (~390 eval points for 1M steps)")
+    parser.add_argument("--ppo_eval_every", type=int, default=5, help="PPO: Evaluate every N updates")
     parser.add_argument("--num_ppo_workers", type=int, default=8, help="PPO: Number of parallel workers")
-    parser.add_argument("--steps_per_worker", type=int, default=32, help="PPO: Steps per worker before sync")
-    parser.add_argument("--weight_refresh_interval", type=int, default=4, help="PPO: Refresh weights every N updates")
+    parser.add_argument("--steps_per_worker", type=int, default=32, help="PPO: Legacy arg (unused).")
+    parser.add_argument("--weight_refresh_interval", type=int, default=4, help="PPO: Legacy arg (unused).")
     parser.add_argument("--K_epochs", type=int, default=4, help="PPO: Number of epochs per update")
     parser.add_argument("--batch_size", type=int, default=256, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.1, help="PPO: Clipping ratio for policy loss")

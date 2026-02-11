@@ -64,25 +64,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-"""
-Scripts: 
-python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=transit_center --alpha=0.3
-python main.py --mode=baseline --baseline_type=real_world --save_animations --route_init=transit_center --alpha=0.3
-
-python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=random --alpha=0.3
-python main.py --mode=baseline --baseline_type=demand_cover --save_animations --route_init=random --alpha=0.3
-python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=0.3
-python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=0.3
-
-python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=transit_center --alpha=1.0
-python main.py --mode=baseline --baseline_type=real_world --save_animations --route_init=transit_center --alpha=1.0
-
-python main.py --mode=baseline --baseline_type=random_walk --save_animations --route_init=random --alpha=1.0
-python main.py --mode=baseline --baseline_type=demand_cover --save_animations --route_init=random --alpha=1.0
-python main.py --mode=baseline --baseline_type=shortest_path --save_animations --route_init=random --alpha=1.0
-python main.py --mode=baseline --baseline_type=reward_max --save_animations --route_init=random --alpha=1.0
-
-python main.py --algorithm ppo --gpu --anneal_lr
-python main.py --algorithm mcts --gpu
-"""

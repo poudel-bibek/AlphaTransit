@@ -64,20 +64,21 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     Main Process (Learner):
     - Owns the model and optimizer
     - Creates shared memory tensors for model weights 
-    - Collects rollout chunks from workers
+    - Dispatches one episode-collection command to each worker per PPO round
+    - Collects one full-episode trajectory from each worker (barrier sync)
     - Processes transitions (with precomputed advantages/returns) into PPO memory
-    - Performs PPO update when update_frequency transitions collected
+    - Performs exactly one PPO update per collection round
     - Copies updated weights to shared memory
 
     Worker Processes (Actors):
     - Each has its own TransitEnv instance
     - Load weights from shared memory at episode start
-    - Run episodes and return fixed-length RolloutChunk objects (or shorter on terminal)
-    - Automatically see updated weights on next episode
+    - Run one full episode and return one terminal RolloutChunk
+    - Receive next collect command only after learner update
 
     Note:
-    - Chunks are interleaved across workers, but each chunk carries its own GAE/returns.
-    - PPO updates do not rely on cross-chunk ordering.
+    - Each PPO update uses one complete trajectory per worker from the same policy version.
+    - This removes cross-round staleness caused by asynchronous worker restarts.
 
     ------------------------------------------------------------------------------------------------
     Per-Step Rewards (Routes run a simulation only on completion):
@@ -89,9 +90,8 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
     ------------------------------------------------------------------------------------------------
     Value bootstrapping:
-    - Required when a rollout chunk ends before the environment terminates.
-    - If terminated naturally, bootstrap value = 0 (no more rewards coming).
-    - If truncated at chunk boundary, bootstrap value = V(s_last) from the critic.
+    - Rollouts are full episodes, so bootstrap value is always 0 at trajectory end.
+    - GAE credit assignment spans the full episode within each worker trajectory.
     """
     # Initialize wandb for standalone runs (sweep handles its own init)
     if not is_sweep and not config.get("wandb_off"):
@@ -162,7 +162,6 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         os.makedirs(policy_dir, exist_ok=True)
 
     max_steps = config["max_steps"]
-    update_frequency = config["update_frequency"]
     env_manager = ParallelEnvManager(config=config, num_workers=num_workers)
     episode_count, steps_elapsed, update_count, policy_path = 0, 0, 0, None
     
@@ -195,14 +194,15 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         
         # Main Training Loop:
         while steps_elapsed < max_steps:
-            # 1. Collect exactly update_frequency transitions (streaming from all workers)
-            chunks = env_manager.collect_rollouts(update_frequency)
+            # 1. Barrier collect: one complete episode from each worker for this PPO round.
+            chunks = env_manager.collect_rollouts(expected_workers=num_workers)
             if not chunks:
                 break
             
-            # 2. Process chunks and add to memory
+            # 2. Process trajectories and add to memory.
             # Advantages/returns are computed in workers using scaled rewards (worker-side normalization).
             batch_steps = 0
+            episode_lengths_this_update = []
             # print(f"[DEBUG] Learner: Processing {len(chunks)} chunks into PPO memory...")
             
             # Recover RAW returns from scaled returns to update running stats in raw units.
@@ -218,11 +218,17 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
             return_rms.update(all_raw_returns_arr)
             # print(f"[DEBUG] Return normalization: std {old_std:.4f} -> {return_rms.std:.4f}, raw_returns range=[{all_raw_returns_arr.min():.2f}, {all_raw_returns_arr.max():.2f}]")
             
-            # Update shared reward scale for workers (they'll use it on next episode/weight refresh)
+            # Update shared reward scale for workers.
+            # Workers consume this at episode start (full-episode collection mode),
+            # so reward normalization remains constant within an episode trajectory.
             env_manager.update_reward_scale(return_rms.std)
             
             # Add transitions to memory (advantages/returns already normalized by workers)
             for chunk in chunks:
+                if not chunk.is_terminal:
+                    raise RuntimeError("Expected terminal full-episode chunk in PPO barrier collection.")
+
+                episode_lengths_this_update.append(int(chunk.episode_length))
                 for idx, transition in enumerate(chunk.transitions):
                     obs_data = Data(
                         x=torch.from_numpy(transition.obs_x).float(),
@@ -242,25 +248,30 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
                     ppo.memory.returns.append(chunk.returns[idx])
                 
                 batch_steps += len(chunk.transitions)
-                
-                if chunk.is_terminal:
-                    episode_count += 1
-                    
-                    # Buffer episode metrics for aggregated logging at PPO update time
-                    recent_episode_rewards.append(chunk.episode_reward)
-                    recent_episode_lengths.append(chunk.episode_length)
-                    sim_result = chunk.final_sim_result
-                    if sim_result:
-                        recent_episode_metrics.append(sim_result)
 
+                # Full-episode barrier collection guarantees terminal chunks here.
+                episode_count += 1
+
+                # Buffer episode metrics for aggregated logging at PPO update time
+                recent_episode_rewards.append(chunk.episode_reward)
+                recent_episode_lengths.append(chunk.episode_length)
+                sim_result = chunk.final_sim_result
+                if sim_result:
+                    recent_episode_metrics.append(sim_result)
+
+            effective_update_frequency = int(np.sum(episode_lengths_this_update))
+            mean_episode_len_this_update = float(np.mean(episode_lengths_this_update)) if episode_lengths_this_update else 0.0
             steps_elapsed = min(steps_elapsed + batch_steps, max_steps)
             
             # Progress logging: show update number, steps, episodes at each PPO update
             progress_pct = 100.0 * steps_elapsed / max_steps
-            print(f"Update {update_count + 1:4d} | Steps: {steps_elapsed:7,}/{max_steps:,} ({progress_pct:5.1f}%) | Episodes: {episode_count:4d} | return_std: {return_rms.std:.2f}")
+            print(
+                f"Update {update_count + 1:4d} | Steps: {steps_elapsed:7,}/{max_steps:,} ({progress_pct:5.1f}%) "
+                f"| Episodes: {episode_count:4d} | round_steps: {effective_update_frequency:4d} "
+                f"| mean_ep_len: {mean_episode_len_this_update:5.1f} | return_std: {return_rms.std:.2f}"
+            )
             
-            # 3. Perform PPO update (we collected exactly update_frequency transitions)
-            # There may be an overshoot of up to (steps_per_worker - 1) transitions.
+            # 3. Perform one PPO update for this synchronized collection round.
             update_count += 1
             perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
             if save_policy:
@@ -268,12 +279,18 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
                 torch.save(model.state_dict(), policy_path)
 
             env_manager.update_shared_weights(model)
+
+            # 4. Start next round only after updated weights are published.
+            if steps_elapsed < max_steps:
+                env_manager.start_collection()
             
-            # 4. Log aggregated episode metrics (mean of recent episodes in buffer)
+            # 5. Log aggregated episode metrics (mean of recent episodes in buffer)
             if not config.get("wandb_off"):
                 episode_log = {
                     "episode/episode_count": episode_count, 
                     "ppo/return_rms_std": return_rms.std,
+                    "ppo/effective_update_frequency": effective_update_frequency,
+                    "ppo/mean_episode_length_per_update": mean_episode_len_this_update,
                 }
                 if recent_episode_rewards:
                     episode_log["episode/mean_reward"] = float(np.mean(recent_episode_rewards))
@@ -301,15 +318,6 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
                 # print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
                 eval(config, update_count, steps_elapsed, training_save_dir, env_manager, policy_path=policy_path, model=model)
                 
-        
-        # Final update if any transitions remain
-        if len(ppo.memory) > 0:
-            update_count += 1
-            perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
-            if save_policy:
-                policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
-                torch.save(model.state_dict(), policy_path)
-
     finally:
         # Always stop workers, even if an exception occurred
         env_manager.stop()

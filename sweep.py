@@ -12,20 +12,7 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
     """
     PPO hyperparameter sweep search space for Alpha = 0.3.
 
-    Key takeaways from PPO sweep in Jan 5:
-    Alpha = 0.3 (10 runs)
-    1. K_epochs: Tried 2 and 4. Higher is better — optimizer chose 4 in 60% of runs. Impact: +55 reward.
-    2. batch_size: Tried 16 and 32. Higher is better — optimizer chose 32 in 80% of runs. Impact: +55 reward.
-    3. lr: Tried 1e-05 and 1e-04. Higher is better — optimizer chose 1e-04 in 90% of runs. Impact: +52 reward.
-
-    # Further insights from Jan 10 (27 runs):
-    1. activation: Tried leaky_relu and tanh. tanh is better — appears in 54% of top runs. Impact: 4.67 return_std improvement.
-    2. update_frequency: Tried 128 and 256. Lower is better — 128 appears in 38% of top runs (but avg is clearly better). Impact: 4.14 return_std improvement.
-    3. clip_frac: Tried 0.1 and 0.2. Higher is better — 0.2 appears in 69% of top runs. Impact: 2.22 return_std improvement.
-
-    # Insights from Jan 29 (API analysis):
-    1. LR annealing to 1e-6 kills learning — approx_kl drops to 0.00017 (policy barely updates), no clipping occurs.
-    2. Need higher LR or anneal=False or higher min_lr floor. Learning is starved with current settings.
+    Key takeaways from PPO sweep:
     """
     return {
         "method": "bayes",
@@ -48,18 +35,17 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
             # Fixed params
             "clip_frac": {"value": 0.2},
             "entropy_coef": {"value": 0.01},
-            "update_frequency": {"value": 128},
             "activation": {"value": "tanh"},
 
             # Fixed values (Not sweep params)
             # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-            # Eval frequency: 7,812 updates / 20 = ~390 eval points
+            # Eval frequency: update-count based (depends on episode length and num_ppo_workers)
             "alpha": {"value": 0.3}, # ALPHA SETTING.
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
             "max_steps": {"value": 750_000},
             "num_ppo_workers": {"value": 8},
-            "ppo_eval_every": {"value": 20},
+            "ppo_eval_every": {"value": 5},
         },
     }
 
@@ -68,23 +54,7 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
     """
     PPO hyperparameter sweep search space for Alpha = 1.0.
 
-    Key takeaways from PPO sweep in Jan 5:
-    Alpha = 1.0 (39 runs)
-    1. lr: Tried 1e-05 and 1e-04. Lower is better — optimizer chose 1e-05 in 95% of runs. Impact: +119 reward.
-    2. batch_size: Tried 16 and 32. Higher is better — optimizer chose 32 in 95% of runs. Impact: +84 reward.
-    3. update_frequency: Tried 128 and 256. Lower is better — optimizer chose 128 in 90% of runs. Impact: +81 reward.
-
-    # Further insights from Jan 10 (124 runs):
-    1. Reward function is most strongly driven by coverage metrics. Node and demand coverage are the strongest predictor of reward. Demand Coverage (correlation = 0.822), Node Coverage (correlation = 0.775)
-    2. K_epochs: Tried 2 and 4. Lower is better — optimizer chose 2 in 87% of runs. Impact: +47.7 reward
-    3. num_gat_blocks: Tried 4 and 8. Lower is better — optimizer chose 4 in 52% of runs. Impact: +39.5 reward
-    4. activation: Tried tanh and leaky_relu. tanh is better — optimizer chose tanh in 81% of runs. Impact: +32.6 reward
-    5. clip_frac: Tried 0.1 and 0.2. Higher is better — optimizer chose 0.2 in 88% of runs. Impact: +23.4 reward
-    6. entropy_coef: Tried 0.01 and 0.02. Negligible difference — optimizer slightly preferred 0.02 (76%). Impact: +2.0 reward
-
-    # Insights from Jan 29 (API analysis):
-    1. anneal_lr=False wins — maintains LR at 1e-5, gets 7-10% clipping, higher entropy (0.57-0.66), +20-50 reward over annealed.
-    2. anneal_lr=True drops LR to 1e-6 causing KL~0.002, no clipping, lower entropy — policy stops updating effectively.
+    Key takeaways from PPO sweep:
     """
     return {
         "method": "bayes",
@@ -97,14 +67,13 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         # 2. General Sweep for PPO Alpha 1.0
         # =====================================================================
         "parameters": {
-            # Sweep params (3 × 2 × 2 × 2 × 3 × 2 × 2 = 288 combinations)
+            # Sweep params (3 × 2 × 2 × 2 × 3 × 2 = 144 combinations)
             "lr": {"values": [5e-6, 1e-5, 3e-5]},
             "anneal_lr": {"values": [True, False]},
             "K_epochs": {"values": [2, 4]},
             "num_gat_blocks": {"values": [4, 8]},
             "batch_size": {"values": [32, 64, 128]},
             "clip_frac": {"values": [0.1, 0.2]},
-            "update_frequency": {"values": [128, 256]},
 
             # Fixed params
             "entropy_coef": {"value": 0.02},
@@ -112,13 +81,13 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
 
             # Fixed values (Not sweep params)
             # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-            # Eval frequency: 7,812 updates / 20 = ~390 eval points
+            # Eval frequency: update-count based (depends on episode length and num_ppo_workers)
             "alpha": {"value": 1.0}, # ALPHA SETTING.
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
             "max_steps": {"value": 750_000},
             "num_ppo_workers": {"value": 8},
-            "ppo_eval_every": {"value": 20},
+            "ppo_eval_every": {"value": 5},
         },
     }
 

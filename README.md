@@ -134,7 +134,7 @@ python sweep.py --algorithm ppo
 | `--K_epochs` | 4 | PPO epochs per update |
 | `--batch_size` | 256 | Mini-batch size |
 | `--clip_frac` | 0.1 | PPO clipping ratio |
-| `--ppo_eval_every` | 20 | Evaluate every N updates |
+| `--ppo_eval_every` | 5 | Evaluate every N updates |
 
 ### Genetic Algorithm
 

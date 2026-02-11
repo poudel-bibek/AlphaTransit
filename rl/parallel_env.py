@@ -57,9 +57,16 @@ class Transition:
 @dataclass
 class RolloutChunk:
     """
-    A chunk of transitions from a worker.
-    episode_reward/episode_length are 0 for partial chunks, only populated on terminal.
-    advantages/returns are computed per-chunk inside the worker (GAE with bootstrap).
+    A trajectory payload produced by a worker and consumed by the learner.
+
+    Current training mode uses full-episode trajectories:
+    - `transitions` contains the complete episode sequence for one worker.
+    - `is_terminal` is True for training payloads (kept for compatibility with
+      learner-side handling that may branch on terminal/non-terminal chunks).
+    - `episode_reward` and `episode_length` are always populated.
+    - `advantages` and `returns` are computed in the worker over the full episode
+      using GAE with terminal bootstrap=0.
+
     reward_scale_used: the scale used to normalize rewards for this chunk's GAE computation.
                        Learner uses this to recover raw returns: raw_return = return * scale.
     """
@@ -110,8 +117,12 @@ class PyGConverter:
 
 def _compute_gae_chunk(rewards, values, dones, gamma, gae_lambda, bootstrap_value):
     """
-    Compute GAE advantages/returns for a single contiguous rollout chunk.
-    The chunk end is treated as a truncation unless the episode terminated.
+    Compute GAE advantages/returns for a contiguous trajectory segment.
+
+    Notes:
+    - For full episodes, pass bootstrap_value=0.0 on terminal trajectory end.
+    - For truncated segments (generic use), pass bootstrap_value=V(s_last).
+    - `dones` masks recursion across terminal boundaries.
     """
     rewards = np.asarray(rewards, dtype=np.float32)
     values = np.asarray(values, dtype=np.float32)
@@ -130,14 +141,6 @@ def _compute_gae_chunk(rewards, values, dones, gamma, gae_lambda, bootstrap_valu
     returns = advantages + values
     # print(f"[DEBUG] GAE chunk: len={len(rewards)}, bootstrap={bootstrap_value:.4f}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}], reward_sum={rewards.sum():.2f}")
     return advantages.tolist(), returns.tolist()
-
-def _bootstrap_value(model, converter, state, device):
-    """
-    Get V(s) for a single state using the critic head.
-    """
-    data = converter.convert(state)
-    batch = Batch.from_data_list([data]).to(device)
-    return model.get_bootstrap_value(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
 
 def run_single_eval(env, model, seed, device):
     """
@@ -228,25 +231,28 @@ def run_single_eval(env, model, seed, device):
 
 def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_counter, shared_reward_scale, cmd_queue, shared_res_queue, eval_res_queue):
     """
-    Asynchronous streaming worker that sends data in chunks during episode execution.
+    Persistent PPO worker process.
+
+    Training behavior:
+    - One `collect` command -> run one full episode -> send one trajectory payload.
+    - No mid-episode streaming/chunking; GAE is computed once at episode end.
+    - Terminal bootstrap is fixed at 0.0, so credit assignment spans the entire episode.
     
     Commands (via cmd_queue):
         {"type": "stop"}      - Terminate worker
         {"type": "eval"}      - Run one eval episode (deterministic)
-        {"type": "collect"}   - Run training, streaming chunks of steps_per_worker
+        {"type": "collect"}   - Run one training episode and return full trajectory
     
     Notes:
         - Runs on CPU to avoid CUDA + multiprocessing issues
-        - Streaming: sends chunks to shared_res_queue when buffer reaches steps_per_worker OR episode ends
+        - Sends one terminal trajectory per collect command
         - Eval results go to eval_res_queue (per-worker) for ordered collection
         - Rewards are scaled by shared_reward_scale before GAE computation for consistent units
     """
     _cap_worker_threads()
     device = torch.device("cpu")
-    buffer_size = config.get("steps_per_worker")
     gamma = float(config.get("gamma"))
     gae_lambda = float(config.get("gae_lambda"))
-    weight_refresh_interval = config.get("weight_refresh_interval")
     
     # Distinct seeding per worker. Without explicit seeding, workers may lead to correlated experiences.
     base_seed = int(config["seed"]) + (worker_id + 1) * 100003
@@ -280,14 +286,13 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
         elif cmd_type == "collect":
             model.load_state_dict(shared_model_state)
             model.eval()
-            last_reload_update = shared_update_counter.value  # Track when we last reloaded
 
             # Minimum clamp for reward_scale to prevent blow-up when std is very small
             # (e.g., early training or near-constant rewards). Without this, division
             # by near-zero scales produces huge advantages that destabilize learning.
             reward_scale = max(shared_reward_scale.value, 1e-4)  
             
-            # print(f"[DEBUG] Worker {worker_id}: Loaded weights at update_counter={last_reload_update}, reward_scale={reward_scale:.4f}, starting new episode")
+            # print(f"[DEBUG] Worker {worker_id}: Loaded weights, reward_scale={reward_scale:.4f}, starting new episode")
             state, _ = env.reset()
             terminated = False
             transitions = []
@@ -340,50 +345,9 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
                 state = next_state
                 episode_steps += 1
 
-                # Stream chunk when buffer is full (mid-episode)
-                if len(transitions) >= buffer_size and not terminated:
-                    with torch.no_grad():
-                        # Bootstrap at chunk boundary to handle rollout truncation.
-                        bootstrap_value = _bootstrap_value(model, converter, state, device)
-
-                    # Scale rewards before GAE so advantages/returns are in same units as critic values
-                    scaled_rewards = [t.raw_reward / reward_scale for t in transitions]
-                    advantages, returns = _compute_gae_chunk( rewards=scaled_rewards,
-                                                              values=[t.value for t in transitions],
-                                                              dones=[t.terminated for t in transitions],
-                                                              gamma=gamma,
-                                                              gae_lambda=gae_lambda,
-                                                              bootstrap_value=bootstrap_value)
-
-                    chunk = RolloutChunk( worker_id = worker_id,
-                                          transitions = list(transitions),
-                                          is_terminal = False,
-                                          episode_reward = 0.0,   # Partial chunk - not meaningful
-                                          episode_length = 0,     # Partial chunk - not meaningful
-                                          final_sim_result = {},
-                                          advantages = advantages,
-                                          returns = returns,
-                                          reward_scale_used = reward_scale)
-
-                    # print(f"[DEBUG] Worker {worker_id}: Sending MID-EPISODE chunk with {len(chunk.transitions)} transitions, bootstrap_value={bootstrap_value:.4f}, reward_scale={reward_scale:.4f}")
-                    shared_res_queue.put(chunk)
-                    transitions.clear()
-                    
-                    # Policy Lag Mitigation: Workers load weights at episode start, but long episodes
-                    # (e.g., 224 steps) can span many PPO updates (~35 with update_freq=64). This causes
-                    # workers to collect experience with stale policies, violating PPO's on-policy assumption.
-                    # Solution: Refresh weights and reward_scale mid-episode every N updates to keep policy lag bounded.
-                    current_update = shared_update_counter.value
-                    if current_update - last_reload_update >= weight_refresh_interval:
-                        reward_scale = max(shared_reward_scale.value, 1e-4)  # Clamp to prevent blow-up
-                        print(f"  Worker {worker_id}: weight refresh @ update {current_update}")
-                        model.load_state_dict(shared_model_state)
-                        model.eval()
-                        last_reload_update = current_update
-
-            # Episode done - send remaining transitions with episode totals
+            # Episode done - compute GAE over full trajectory and send one payload.
             if transitions:
-                # Terminal chunk: bootstrap is zero by definition.
+                # Full-episode terminal trajectory: bootstrap is zero by definition.
                 # Scale rewards before GAE so advantages/returns are in same units as critic values
                 scaled_rewards = [t.raw_reward / reward_scale for t in transitions]
                 advantages, returns = _compute_gae_chunk( rewards=scaled_rewards,
@@ -417,9 +381,9 @@ class ParallelEnvManager:
     Weight distribution model:
     - The learner creates shared memory tensors for model weights
     - Workers load weights from shared memory at the start of each episode
-    - Workers stream RolloutChunks continuously to a shared queue
+    - Workers send one full-episode RolloutChunk to a shared queue per collect command
     - After PPO updates, the learner copies new weights to shared memory
-    - Workers naturally pick up new weights on their next episode start
+    - Workers naturally pick up new weights at the next episode boundary
     """
     
     def __init__(self, config, num_workers):
@@ -428,7 +392,7 @@ class ParallelEnvManager:
 
         # These are set in start()       
         self.shared_model_state = None
-        self.shared_update_counter = None  # Tracks PPO updates for mid-episode weight refresh
+        self.shared_update_counter = None  # Tracks learner updates (shared state version)
         self.shared_reward_scale = None    # Shared reward scale for worker-side normalization
 
         # Queues
@@ -456,15 +420,13 @@ class ParallelEnvManager:
             shared_tensor.share_memory_()
             self.shared_model_state[name] = shared_tensor
         
-        # Shared counter for tracking PPO updates (workers reload weights every weight_refresh_interval updates)
+        # Shared counter for tracking PPO updates (state versioning / diagnostics).
         self.shared_update_counter = mp_ctx.Value('i', 0)
         
         # Shared reward scale for worker-side normalization (initialized to 1.0, updated by learner)
         self.shared_reward_scale = mp_ctx.Value('d', 1.0)
 
         # Create shared result queue for training rollouts (unbounded).
-        # Pontentially this queue could have been made bounded to control policy staleness. 
-        # But another mechanism is used to control staleness - weight_refresh_interval - workers reload weights every N updates.
         self._shared_res_queue = mp_ctx.Queue()
 
         print(f"Starting {self.num_workers} parallel workers...")
@@ -574,43 +536,46 @@ class ParallelEnvManager:
     
     def start_collection(self):
         """
-        Send collect command to all workers to start/continue episode collection.
-        Workers will run one episode each and stream chunks to the shared queue.
+        Dispatch one collect command to every worker for the next PPO round.
+        Each worker will run exactly one full episode and send one terminal chunk.
         """
+        if self._active_workers:
+            raise RuntimeError("Cannot start a new collection round while workers are still active.")
+
         for wid in range(self.num_workers):
             self._actor_cmd_queues[wid].put({"type": "collect"})
             self._active_workers.add(wid)
     
-    def collect_rollouts(self, target_transitions):
+    def collect_rollouts(self, expected_workers=None):
         """
-        Collect rollout chunks from the shared queue until target_transitions reached.
-        
-        Workers stream chunks continuously. This method drains the queue until we have
-        enough transitions for a PPO update. Workers that finish their episodes are
-        automatically restarted.
+        Collect one terminal trajectory from each active worker in the current round.
+        This is a barrier synchronization: PPO updates run only after all dispatched
+        workers complete their full episodes under the same policy weights.
         
         Args:
-            target_transitions: Number of transitions to collect before returning
+            expected_workers: Number of workers expected in this round.
+                              Defaults to current active worker count.
             
         Returns:
-            List of RolloutChunk objects, total transitions >= target_transitions
+            List of RolloutChunk objects, one per worker in the round.
         """
+        if expected_workers is None:
+            expected_workers = len(self._active_workers)
+        if expected_workers <= 0:
+            return []
+
         chunks = []
-        total_steps = 0
+        seen_workers = set()
         
-        while total_steps < target_transitions:
-            # Block until we get a chunk
+        while len(chunks) < expected_workers:
             chunk = self._shared_res_queue.get(timeout=None)
-            
-            steps = len(chunk.transitions)
-            total_steps += steps
+            if chunk.worker_id in seen_workers:
+                raise RuntimeError(f"Duplicate rollout received from worker {chunk.worker_id} in the same round.")
+
+            seen_workers.add(chunk.worker_id)
+            self._active_workers.discard(chunk.worker_id)
             chunks.append(chunk)
-            
-            # If this worker finished its episode, restart it
-            if chunk.is_terminal:
-                self._actor_cmd_queues[chunk.worker_id].put({"type": "collect"})
-        
-        # print(f"[DEBUG] Learner: Collected {total_steps} transitions from {len(chunks)} chunks (target was {target_transitions})")
+
         return chunks
     
     def stop(self):
@@ -634,5 +599,3 @@ class ParallelEnvManager:
         self.shared_model_state = None
         self.shared_update_counter = None
         self.shared_reward_scale = None
-
-
