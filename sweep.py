@@ -38,12 +38,9 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
             "activation": {"value": "tanh"},
 
             # Fixed values (Not sweep params)
-            # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-            # Eval frequency: update-count based (depends on episode length and num_ppo_workers)
-            "alpha": {"value": 0.3}, # ALPHA SETTING.
+            "alpha": {"value": 0.3},
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
-            "max_steps": {"value": 750_000},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
         },
@@ -95,12 +92,9 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
             "activation": {"value": "tanh"},
 
             # Fixed values (Not sweep params)
-            # Training duration: 1M env steps (comparable to MCTS with max_iterations=744)
-            # Eval frequency: update-count based (depends on episode length and num_ppo_workers)
-            "alpha": {"value": 1.0}, # ALPHA SETTING.
+            "alpha": {"value": 1.0},
             "algorithm": {"value": "ppo"},
             "gpu": {"value": True},
-            "max_steps": {"value": 750_000},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
         },
@@ -178,7 +172,6 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "alpha": {"value": 0.3},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 558},
             "num_mcts_workers": {"value": 8},
             "mcts_eval_every": {"value": 5},
         },
@@ -260,7 +253,6 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "alpha": {"value": 1.0},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
-            "max_iterations": {"value": 558},
             "num_mcts_workers": {"value": 8},
             "mcts_eval_every": {"value": 5},
         },
