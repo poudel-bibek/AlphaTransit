@@ -152,7 +152,6 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         critic_final_gain=1.0,
     )
     model.count_params()
-    model = torch.compile(model)
 
     ppo = PPOAgent(model, **config)
     save_policy = config.get("save_policy_ppo", False)
@@ -278,8 +277,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
             perform_ppo_update(ppo, episode_count, steps_elapsed, update_count, config["anneal_lr"], config)
             if save_policy:
                 policy_path = os.path.join(policy_dir, f"policy_up_{update_count}_step_{steps_elapsed}.pth")
-                clean_sd = {k.replace("_orig_mod.", ""): v for k, v in model.state_dict().items()}
-                torch.save(clean_sd, policy_path)
+                torch.save(model.state_dict(), policy_path)
 
             env_manager.update_shared_weights(model)
 
@@ -354,7 +352,7 @@ def eval(config: Dict[str, Any], update_count: int | str, steps_elapsed: int, sa
         base_seed=config["seed"],
         seed_offset=config["eval_seed_offset"],
         policy_path=policy_path,
-        state_dict={k.replace("_orig_mod.", ""): v for k, v in model.state_dict().items()} if model is not None and policy_path is None else None,
+        state_dict=model.state_dict() if model is not None and policy_path is None else None,
     )
     
     # Process results: save routes and convert to dict format
@@ -463,8 +461,6 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     model = GATV2ActorCritic(**policy_kwargs).to(device)
     state_dict = torch.load(policy_path, map_location=device)
     model.load_state_dict(state_dict)
-    model = torch.compile(model)
-
     # Create and start env_manager
     num_workers = config.get("num_ppo_workers")
     env_manager = ParallelEnvManager(config=config, num_workers=num_workers)

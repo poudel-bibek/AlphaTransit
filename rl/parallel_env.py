@@ -264,8 +264,9 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
     env = TransitEnv(dict(config))
 
     # Although each worker gets their own policy model, the weights come from a shared memory.
+    # No torch.compile here — workers refresh weights from shared memory each round,
+    # and compiled models expect _orig_mod. prefixed keys.
     model = GATV2ActorCritic(**policy_kwargs).to(device)
-    model = torch.compile(model)
     converter = PyGConverter(device)
 
     while True:
@@ -412,14 +413,12 @@ class ParallelEnvManager:
 
         # print(f"Setting up shared memory for model weights...")
         
-        # Create shared memory copy of model state.
-        # Strip "_orig_mod." prefix added by torch.compile so workers can load into uncompiled models.
+        # Create shared memory copy of model state
         self.shared_model_state = {}
         for name, param in model.state_dict().items():
-            clean_name = name.replace("_orig_mod.", "")
             shared_tensor = param.cpu().clone()
             shared_tensor.share_memory_()
-            self.shared_model_state[clean_name] = shared_tensor
+            self.shared_model_state[name] = shared_tensor
         
         # Shared counter for tracking PPO updates (state versioning / diagnostics).
         self.shared_update_counter = mp_ctx.Value('i', 0)
@@ -464,8 +463,7 @@ class ParallelEnvManager:
         
         with torch.no_grad():
             for name, param in model.state_dict().items():
-                clean_name = name.replace("_orig_mod.", "")
-                self.shared_model_state[clean_name].copy_(param.cpu())
+                self.shared_model_state[name].copy_(param.cpu())
         
         # Increment update counter so workers know to refresh weights
         with self.shared_update_counter.get_lock():
