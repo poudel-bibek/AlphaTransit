@@ -1283,6 +1283,26 @@ class TransitEnv(gym.Env):
         
         pass
 
+    def simulate_routes_mcts(self, all_routes: List[List[str]]) -> Tuple[float, Dict[str, Any]]:
+        """Run a single terminal simulation for the given route set.
+
+        Sets up the routes, builds a fresh UXsim world, runs the simulation,
+        and computes the terminal reward. Used by MCTS to evaluate a completed
+        route set without replaying the full action sequence.
+
+        Returns:
+            (reward, sim_result) tuple.
+        """
+        self.all_routes = [list(r) for r in all_routes]
+        self.current_route_index = self.NUM_ROUTES - 1
+        self.current_route = list(all_routes[-1])
+
+        self.world = self.build_world(self.config.get("network"))
+        self._apply_action()
+        sim_result = self._step_until(self.horizon)
+        reward = self.compute_reward(sim_result, is_route_end=True, is_forced_end=False, prev_coverage=0.0)
+        return reward, sim_result
+
     def compute_reward(self, sim_result: Dict[str, Any], is_route_end: bool, is_forced_end: bool, prev_coverage: float = 0.0) -> float:
         """
         Reward function with mode-controlled shaping.
@@ -1441,22 +1461,21 @@ class TransitEnv(gym.Env):
             self.all_routes.append(self.current_route)
             # print(f"Added forced-end route {self.current_route_index} to completed routes")
 
-            # Skip the route extension and call the simulation directly.
-            self.world = self.build_world(self.config.get("network"))
-            self._apply_action()
-
-            # Run the sim so sim_result has the usual metrics for logging.
-            sim_result = self._step_until(self.horizon)
-
-            # Set flags
-            sim_result['route_forced_end'] = True
-            sim_result['route_completed'] = False
-
-            # Reward (route didnt end gracefully, forced end)
-            # If the last route of an episode happens to force-end, use is_route_end=True to get
-            # the final network reward; otherwise partial shaping rewards would leak into terminal transitions.
             is_last_route = (self.current_route_index == self.NUM_ROUTES - 1)
-            reward = self.compute_reward(sim_result, is_route_end=is_last_route, is_forced_end=True, prev_coverage=prev_coverage)
+
+            if self.ppo_reward_mode == "terminal_only" and not is_last_route:
+                # Skip simulation — reward is 0.0 for non-terminal route ends in terminal_only mode
+                sim_result = self._get_partial_route_metrics()
+                sim_result['route_forced_end'] = True
+                sim_result['route_completed'] = False
+                reward = 0.0
+            else:
+                self.world = self.build_world(self.config.get("network"))
+                self._apply_action()
+                sim_result = self._step_until(self.horizon)
+                sim_result['route_forced_end'] = True
+                sim_result['route_completed'] = False
+                reward = self.compute_reward(sim_result, is_route_end=is_last_route, is_forced_end=True, prev_coverage=prev_coverage)
 
             # Advance to next route of finish episode
             terminated = False
@@ -1492,18 +1511,18 @@ class TransitEnv(gym.Env):
 
             self.all_routes.append(self.current_route)
             # print(f"Added completed route {self.current_route_index} to completed routes")
-            
-            # 2. Build world needs to happen every step.
-            self.world = self.build_world(self.config.get("network"))
-            
-            # 3. spawn necessary buses, set routes, and handle route completion
-            self._apply_action()
-            
-            # 4. Run the full simulation upto horizon end.
-            sim_result = self._step_until(self.horizon)
-            
-            # 5. Extract route completion signals 
-            sim_result['route_completed'] = True  # Route completed gracefully 
+
+            is_last_route = (self.current_route_index == self.NUM_ROUTES - 1)
+
+            if self.ppo_reward_mode == "terminal_only" and not is_last_route:
+                # Skip simulation — reward is 0.0, partial metrics already in sim_result
+                pass
+            else:
+                self.world = self.build_world(self.config.get("network"))
+                self._apply_action()
+                sim_result = self._step_until(self.horizon)
+
+            sim_result['route_completed'] = True
             sim_result['route_forced_end'] = False
             
         # 6. Compute reward with termination signals

@@ -1,4 +1,5 @@
 import os
+import time
 import warnings
 import wandb
 import torch
@@ -195,6 +196,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         # Main Training Loop:
         while steps_elapsed < max_steps:
             # 1. Barrier collect: one complete episode from each worker for this PPO round.
+            round_start = time.time()
             chunks = env_manager.collect_rollouts(expected_workers=num_workers)
             if not chunks:
                 break
@@ -264,11 +266,13 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
             steps_elapsed = min(steps_elapsed + batch_steps, max_steps)
             
             # Progress logging: show update number, steps, episodes at each PPO update
+            round_time = time.time() - round_start
             progress_pct = 100.0 * steps_elapsed / max_steps
             print(
                 f"Update {update_count + 1:4d} | Steps: {steps_elapsed:7,}/{max_steps:,} ({progress_pct:5.1f}%) "
                 f"| Episodes: {episode_count:4d} | round_steps: {effective_update_frequency:4d} "
-                f"| mean_ep_len: {mean_episode_len_this_update:5.1f} | return_std: {return_rms.std:.2f}"
+                f"| mean_ep_len: {mean_episode_len_this_update:5.1f} | return_std: {return_rms.std:.2f} "
+                f"| Time: {round_time:.1f}s"
             )
             
             # 3. Perform one PPO update for this synchronized collection round.

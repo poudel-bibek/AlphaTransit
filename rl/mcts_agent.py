@@ -624,17 +624,7 @@ class MCTSAgent:
             tree.advance(action)
 
         # Compute terminal reward directly from final route set (single simulation).
-        # mcts_state.all_routes has all completed routes from the tree search.
-        # Skip the old replay loop which ran NUM_ROUTES full UXsim simulations
-        # but only used the last one's reward and metrics.
-        self.env.all_routes = [list(r) for r in mcts_state.all_routes]
-        self.env.current_route_index = self.env.NUM_ROUTES - 1
-        self.env.current_route = list(mcts_state.all_routes[-1])
-
-        self.env.world = self.env.build_world(self.env.config.get("network"))
-        self.env._apply_action()
-        sim_result = self.env._step_until(self.env.horizon)
-        reward = self.env.compute_reward(sim_result, is_route_end=True, is_forced_end=False, prev_coverage=0.0)
+        reward, sim_result = self.env.simulate_routes_mcts(mcts_state.all_routes)
         metrics = {
             'episode_terminal_reward': reward,
             'episode_total_reward': reward,  # Same as terminal for MCTS; needed for aggregate_results
