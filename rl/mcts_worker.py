@@ -218,6 +218,7 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
     model.load_state_dict(model_state_dict)
     model.eval()
     model.to(device)
+    model = torch.compile(model)
 
     # 4. Run episode
     state_dict, _ = env.reset(seed=seed)

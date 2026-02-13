@@ -24,7 +24,7 @@ dependencies = [
     "dill>=0.3.8",
     "networkx>=3.3",
     # RL core dependencies
-    "torch>=2.7",
+    "torch>=2.10",
     "torch-geometric>=2.6",
     "gymnasium>=1.0",
     # ML experiment tracking

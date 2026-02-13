@@ -88,9 +88,7 @@ class MCTSAgent:
         # Initialize model
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
         self.model.apply_orthogonal_init()
-
-        # TODO: Uncomment when PyTorch 2.10 is released (adds Python 3.14 support)
-        # self.model = torch.compile(self.model)
+        self.model = torch.compile(self.model)
 
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
@@ -340,8 +338,9 @@ class MCTSAgent:
         # Generate unique seeds for each worker
         base_seed = self.seed + iteration * self.num_workers
 
-        # Serialize model weights to CPU for workers
-        cpu_state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
+        # Serialize model weights to CPU for workers.
+        # Strip "_orig_mod." prefix added by torch.compile so workers can load into uncompiled models.
+        cpu_state_dict = {k.replace("_orig_mod.", ""): v.cpu() for k, v in self.model.state_dict().items()}
 
         # Prepare worker inputs
         worker_inputs = [
@@ -554,7 +553,7 @@ class MCTSAgent:
                     best_reward = avg_reward
                     # Save best policy separately
                     best_path = self.policy_dir / "policy_best.pth"
-                    torch.save(self.model.state_dict(), best_path)
+                    torch.save(self._get_clean_state_dict(), best_path)
 
                 # Periodic evaluation (like PPO)
                 if self.eval_every > 0 and iteration % self.eval_every == 0:
@@ -562,12 +561,16 @@ class MCTSAgent:
 
             # Final save
             final_path = self.policy_dir / "policy_final.pth"
-            torch.save(self.model.state_dict(), final_path)
+            torch.save(self._get_clean_state_dict(), final_path)
             print(f"Training complete. Best reward: {best_reward:.2f}")
             print(f"Results saved to: {self.training_save_dir}")
 
         finally:
             self._cleanup()  # Always clean up pool
+
+    def _get_clean_state_dict(self) -> Dict[str, Any]:
+        """Get state_dict with _orig_mod. prefix stripped (added by torch.compile)."""
+        return {k.replace("_orig_mod.", ""): v for k, v in self.model.state_dict().items()}
 
     def _save_policy(self, update: int, steps: int) -> str:
         """
@@ -576,7 +579,7 @@ class MCTSAgent:
         """
         filename = f"policy_up_{update}_step_{steps}.pth"
         path = self.policy_dir / filename
-        torch.save(self.model.state_dict(), path)
+        torch.save(self._get_clean_state_dict(), path)
         return str(path)
 
     def _load_policy(self, path: str) -> None:
