@@ -74,9 +74,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end")
     parser.add_argument("--route_init", type=str, default="transit_center", help="Route initialization scheme")
     parser.add_argument("--transit_center_node", type=str, default="96", help="Transit center node identifier")
-    parser.add_argument("--reward_mode", type=str, default="terminal_intermediate_delta_early_stop",
+    parser.add_argument("--ppo_reward_mode", type=str, default="terminal_only",
         choices=["terminal_only", "terminal_intermediate_raw_early_stop", "terminal_intermediate_delta_early_stop", "terminal_intermediate_delta_no_early_stop"],
-        help="Reward shaping mode")
+        help="Reward shaping mode (PPO only; MCTS uses terminal reward targets)")
 
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")

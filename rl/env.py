@@ -38,7 +38,7 @@ class TransitEnv(gym.Env):
         self.radius = self.config.get("radius")
         self.route_init = self.config.get("route_init")
         self.transit_center_node = str(self.config.get("transit_center_node"))
-        self.reward_mode = self.config.get("reward_mode", "terminal_intermediate_delta_early_stop")
+        self.ppo_reward_mode = self.config.get("ppo_reward_mode", "terminal_only")
         
         # Constraints:
         self.NUM_ROUTES = self.config.get("num_routes")
@@ -1299,8 +1299,8 @@ class TransitEnv(gym.Env):
             "terminal_intermediate_delta_early_stop",
             "terminal_intermediate_delta_no_early_stop",
         }
-        if self.reward_mode not in valid_modes:
-            raise ValueError(f"Unknown reward_mode: {self.reward_mode}")
+        if self.ppo_reward_mode not in valid_modes:
+            raise ValueError(f"Unknown ppo_reward_mode: {self.ppo_reward_mode}")
 
         # ---------------------------------------------------------------------
         # Reward intent
@@ -1347,18 +1347,18 @@ class TransitEnv(gym.Env):
         # ---------------------------------------------------------------------
         if not is_route_end:
             # terminal_only: no shaping signal during construction.
-            if self.reward_mode == "terminal_only":
+            if self.ppo_reward_mode == "terminal_only":
                 return 0.0
 
             current_coverage = sim_result['demand_coverage_potential']
             overlap_ratio = sim_result['route_overlap_ratio']
 
-            if self.reward_mode == "terminal_intermediate_raw_early_stop":
+            if self.ppo_reward_mode == "terminal_intermediate_raw_early_stop":
                 # Raw shaping: reward absolute coverage at this step.
                 coverage_term = current_coverage
                 use_early_stop_penalty = True
 
-            elif self.reward_mode == "terminal_intermediate_delta_early_stop":
+            elif self.ppo_reward_mode == "terminal_intermediate_delta_early_stop":
                 # Delta shaping: reward only incremental coverage gain.
                 coverage_term = max(0.0, current_coverage - prev_coverage)
                 use_early_stop_penalty = True
@@ -1386,7 +1386,7 @@ class TransitEnv(gym.Env):
         # Final reward branch (route-end simulation metrics)
         # ---------------------------------------------------------------------
         # terminal_only pays out only once at episode terminal.
-        if self.reward_mode == "terminal_only" and not is_episode_terminal:
+        if self.ppo_reward_mode == "terminal_only" and not is_episode_terminal:
             return 0.0
 
         # All other modes use the same final simulation-based reward.

@@ -262,16 +262,18 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
         mcts_state = mcts_state.apply_action(action)
         tree.advance(action)
 
-    # 5. Replay actions to get terminal reward
-    state_dict, _ = env.reset(seed=seed)
-    terminal_reward = 0.0
+    # 5. Compute terminal reward directly from final route set.
+    #    The tree search already built all routes in mcts_state.all_routes.
+    #    Skip the old replay loop (which ran NUM_ROUTES full UXsim simulations
+    #    but only kept the last reward) and run a single simulation instead.
+    env.all_routes = [list(r) for r in mcts_state.all_routes]
+    env.current_route_index = env.NUM_ROUTES - 1
+    env.current_route = list(mcts_state.all_routes[-1])
 
-    for action in actions_taken:
-        state_dict, reward, terminated, _, info = env.step(action)
-        terminal_reward = reward  # Keep updating - final one is terminal reward
-
-        if terminated:
-            break
+    env.world = env.build_world(env.config.get("network"))
+    env._apply_action()
+    sim_result = env._step_until(env.horizon)
+    terminal_reward = env.compute_reward(sim_result, is_route_end=True, is_forced_end=False, prev_coverage=0.0)
 
     # 6. Return results (as tuple for pickling simplicity)
     return (

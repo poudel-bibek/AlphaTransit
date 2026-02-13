@@ -17,6 +17,7 @@ import gc
 import os
 import json
 import math
+import time
 import random
 import numpy as np
 import torch
@@ -478,6 +479,8 @@ class MCTSAgent:
 
         try:
             for iteration in range(1, self.max_iterations + 1):
+                iter_start = time.time()
+
                 # Temperature is computed once per iteration from iteration-based progress,
                 # ensuring consistency between self-play action selection and logging.
                 progress = iteration / self.max_iterations
@@ -522,12 +525,14 @@ class MCTSAgent:
                 else:
                     avg_policy_loss = avg_value_loss = 0.0
 
+                iter_time = time.time() - iter_start
                 print(f"Iter {iteration:4d} | "
                       f"Reward: {avg_reward:8.2f} | "
                       f"Policy Loss: {avg_policy_loss:.4f} | "
                       f"Value Loss: {avg_value_loss:.4f} | "
                       f"Buffer: {len(self.replay_buffer):6d} | "
-                      f"Tau: {tau:.2f}")
+                      f"Tau: {tau:.2f} | "
+                      f"Time: {iter_time:.1f}s")
 
                 # WandB logging
                 if not self.config.get("wandb_off"):
@@ -618,14 +623,18 @@ class MCTSAgent:
             mcts_state = mcts_state.apply_action(action)
             tree.advance(action)
 
-        # Replay to get actual reward and metrics
-        state_dict, _ = self.env.reset(seed=seed)
-        for action in actions:
-            state_dict, reward, terminated, _, info = self.env.step(action)
-            if terminated:
-                break
+        # Compute terminal reward directly from final route set (single simulation).
+        # mcts_state.all_routes has all completed routes from the tree search.
+        # Skip the old replay loop which ran NUM_ROUTES full UXsim simulations
+        # but only used the last one's reward and metrics.
+        self.env.all_routes = [list(r) for r in mcts_state.all_routes]
+        self.env.current_route_index = self.env.NUM_ROUTES - 1
+        self.env.current_route = list(mcts_state.all_routes[-1])
 
-        sim_result = info
+        self.env.world = self.env.build_world(self.env.config.get("network"))
+        self.env._apply_action()
+        sim_result = self.env._step_until(self.env.horizon)
+        reward = self.env.compute_reward(sim_result, is_route_end=True, is_forced_end=False, prev_coverage=0.0)
         metrics = {
             'episode_terminal_reward': reward,
             'episode_total_reward': reward,  # Same as terminal for MCTS; needed for aggregate_results

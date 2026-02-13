@@ -82,13 +82,13 @@ python sweep.py --algorithm mcts
 # =============================================================================
 
 # --- Alpha 0.3 ---
-python main.py --algorithm ppo --gpu --alpha=0.3 --reward_mode=terminal_only
-python main.py --algorithm ppo --gpu --alpha=0.3 --reward_mode=terminal_intermediate_raw_early_stop
-python main.py --algorithm ppo --gpu --alpha=0.3 --reward_mode=terminal_intermediate_delta_early_stop
-python main.py --algorithm ppo --gpu --alpha=0.3 --reward_mode=terminal_intermediate_delta_no_early_stop
+python main.py --algorithm ppo --gpu --alpha=0.3 --ppo_reward_mode=terminal_only
+python main.py --algorithm ppo --gpu --alpha=0.3 --ppo_reward_mode=terminal_intermediate_raw_early_stop
+python main.py --algorithm ppo --gpu --alpha=0.3 --ppo_reward_mode=terminal_intermediate_delta_early_stop
+python main.py --algorithm ppo --gpu --alpha=0.3 --ppo_reward_mode=terminal_intermediate_delta_no_early_stop
 
 # --- Alpha 1.0 ---
-python main.py --algorithm ppo --gpu --alpha=1.0 --reward_mode=terminal_only
-python main.py --algorithm ppo --gpu --alpha=1.0 --reward_mode=terminal_intermediate_raw_early_stop
-python main.py --algorithm ppo --gpu --alpha=1.0 --reward_mode=terminal_intermediate_delta_early_stop
-python main.py --algorithm ppo --gpu --alpha=1.0 --reward_mode=terminal_intermediate_delta_no_early_stop
+python main.py --algorithm ppo --gpu --alpha=1.0 --ppo_reward_mode=terminal_only
+python main.py --algorithm ppo --gpu --alpha=1.0 --ppo_reward_mode=terminal_intermediate_raw_early_stop
+python main.py --algorithm ppo --gpu --alpha=1.0 --ppo_reward_mode=terminal_intermediate_delta_early_stop
+python main.py --algorithm ppo --gpu --alpha=1.0 --ppo_reward_mode=terminal_intermediate_delta_no_early_stop

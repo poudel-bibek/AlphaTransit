@@ -52,7 +52,7 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         # 5. Reward Ablation Sweep for PPO Alpha 0.3
         # =====================================================================
         # "parameters": {
-        #     "reward_mode": {"values": [
+        #     "ppo_reward_mode": {"values": [
         #         "terminal_only",
         #         "terminal_intermediate_raw_early_stop",
         #         "terminal_intermediate_delta_early_stop",
@@ -109,7 +109,7 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         # 6. Reward Ablation Sweep for PPO Alpha 1.0
         # =====================================================================
         # "parameters": {
-        #     "reward_mode": {"values": [
+        #     "ppo_reward_mode": {"values": [
         #         "terminal_only",
         #         "terminal_intermediate_raw_early_stop",
         #         "terminal_intermediate_delta_early_stop",
