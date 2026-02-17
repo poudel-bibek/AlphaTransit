@@ -220,7 +220,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
         # =====================================================================
         # "parameters": {
         #     # Sweep param
-        #     "n_iter": {"values": [100, 200, 300, 400, 500]},
+        #     "n_iter": {"values": [100, 200, 300, 400, 500, 600]},
         #
         #     # TODO: Set after sweeps 1-4 finish
         #     # "temp_schedule": {"value": "..."},
@@ -301,7 +301,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
         # =====================================================================
         # "parameters": {
         #     # Sweep param
-        #     "n_iter": {"values": [100, 200, 300, 400, 500]},
+        #     "n_iter": {"values": [100, 200, 300, 400, 500, 600]},
         #
         #     # TODO: Set after sweeps 1-4 finish
         #     # "temp_schedule": {"value": "..."},
