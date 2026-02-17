@@ -1373,6 +1373,9 @@ class TransitEnv(gym.Env):
             if self.ppo_reward_mode == "terminal_only":
                 return 0.0
 
+            # Intermediate PPO modes only use partial metrics available from
+            # _get_partial_route_metrics(), so non-terminal steps can be scored
+            # without running a full UXsim simulation.
             current_coverage = sim_result['demand_coverage_potential']
             overlap_ratio = sim_result['route_overlap_ratio']
 
@@ -1466,19 +1469,19 @@ class TransitEnv(gym.Env):
 
             is_last_route = (self.current_route_index == self.NUM_ROUTES - 1)
 
-            if self.ppo_reward_mode == "terminal_only" and not is_last_route:
-                # Skip simulation — reward is 0.0 for non-terminal route ends in terminal_only mode
+            if not is_last_route:
+                # Non-terminal forced end: skip UXsim, use partial-metric shaping reward.
                 sim_result = self._get_partial_route_metrics()
                 sim_result['route_forced_end'] = True
                 sim_result['route_completed'] = False
-                reward = 0.0
+                reward = self.compute_reward(sim_result, is_route_end=False, is_forced_end=True, prev_coverage=prev_coverage)
             else:
                 self.world = self.build_world(self.config.get("network"))
                 self._apply_action()
                 sim_result = self._step_until(self.horizon)
                 sim_result['route_forced_end'] = True
                 sim_result['route_completed'] = False
-                reward = self.compute_reward(sim_result, is_route_end=is_last_route, is_forced_end=True, prev_coverage=prev_coverage)
+                reward = self.compute_reward(sim_result, is_route_end=True, is_forced_end=True, prev_coverage=prev_coverage)
 
             # Advance to next route of finish episode
             terminated = False
@@ -1517,8 +1520,8 @@ class TransitEnv(gym.Env):
 
             is_last_route = (self.current_route_index == self.NUM_ROUTES - 1)
 
-            if self.ppo_reward_mode == "terminal_only" and not is_last_route:
-                # Skip simulation — reward is 0.0, partial metrics already in sim_result
+            if not is_last_route:
+                # Non-terminal route end uses partial-metric reward; skip UXsim.
                 pass
             else:
                 self.world = self.build_world(self.config.get("network"))
@@ -1530,7 +1533,7 @@ class TransitEnv(gym.Env):
             
         # 6. Compute reward with termination signals
         # reward = self.compute_reward(sim_result, is_route_end=is_route_end, is_forced_end=False)
-        reward = self.compute_reward(sim_result, is_route_end=is_route_end, is_forced_end=False, prev_coverage=prev_coverage)
+        reward = self.compute_reward(sim_result, is_route_end=(is_last_route if is_route_end else False), is_forced_end=False, prev_coverage=prev_coverage)
             
         # 7. If route completed this step, init next route NOW (after sim/ reward)
         terminated = False  # Default to continue episode

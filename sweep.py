@@ -201,8 +201,8 @@ def build_ppo_sweep_config() -> Dict[str, Any]:
     PPO hyperparameter sweep - parent function that selects alpha config.
     Currently calls both 0.3 and 1.0 configs (comment out as needed).
     """
-    # return build_sweep_config_ppo_0_3()
-    return build_sweep_config_ppo_1_0()
+    return build_sweep_config_ppo_0_3()
+    # return build_sweep_config_ppo_1_0()
 
 
 def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
