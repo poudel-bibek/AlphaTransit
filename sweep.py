@@ -12,7 +12,13 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
     """
     PPO hyperparameter sweep search space for Alpha = 0.3.
 
-    Key takeaways from PPO sweep:
+    Key takeaways from PPO sweep (18 runs, by peak eval/episode_terminal_reward):
+    - lr 5e-5 (18.4) >> 1e-4 (17.1) >> 3e-4 (15.1) — lower LR better at alpha=0.3
+    - K_epochs 8 (18.5) > 4 (16.8)
+    - num_gat_blocks 4 (18.6) > 8 (17.2)
+    - anneal_lr False (18.7) > True (17.2)
+    - batch_size 256 ≈ 128 — minimal differentiation
+    - All runs degrade from peak (mean drop 3.7 pts)
     """
     return {
         "method": "bayes",
@@ -24,15 +30,37 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         # =====================================================================
         # 1. General Sweep for PPO Alpha 0.3
         # =====================================================================
-        "parameters": {
-            # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations)
-            "lr": {"values": [5e-5, 1e-4, 3e-4]},
-            "anneal_lr": {"values": [True, False]},
-            "K_epochs": {"values": [4, 8]},
-            "num_gat_blocks": {"values": [4, 8]},
-            "batch_size": {"values": [128, 256]},
+        # "parameters": {
+        #     # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations)
+        #     "lr": {"values": [5e-5, 1e-4, 3e-4]},
+        #     "anneal_lr": {"values": [True, False]},
+        #     "K_epochs": {"values": [4, 8]},
+        #     "num_gat_blocks": {"values": [4, 8]},
+        #     "batch_size": {"values": [128, 256]},
+        #     "clip_frac": {"value": 0.2},
+        #     "entropy_coef": {"value": 0.01},
+        #     "activation": {"value": "tanh"},
+        #
+        #     # Fixed values (Not sweep params)
+        #     "alpha": {"value": 0.3},
+        #     "algorithm": {"value": "ppo"},
+        #     "gpu": {"value": True},
+        #     "num_ppo_workers": {"value": 8},
+        #     "ppo_eval_every": {"value": 5},
+        # },
 
-            # Fixed params
+        # =====================================================================
+        # Best params from General Sweep for PPO Alpha 0.3
+        # =====================================================================
+        "parameters": {
+            "seed": {"values": [42, 123, 456, 789, 1024]},
+            "lr": {"value": 5e-5},
+            "anneal_lr": {"value": False},
+            "K_epochs": {"value": 8},
+            "num_gat_blocks": {"value": 4},
+            "batch_size": {"value": 256},
+
+            # Not sweeped
             "clip_frac": {"value": 0.2},
             "entropy_coef": {"value": 0.01},
             "activation": {"value": "tanh"},
@@ -49,15 +77,28 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         # 5. Reward Ablation Sweep for PPO Alpha 0.3
         # =====================================================================
         # "parameters": {
+        #     "seed": {"values": [42, 123]},
         #     "ppo_reward_mode": {"values": [
         #         "terminal_only",
         #         "terminal_intermediate_raw_early_stop",
         #         "terminal_intermediate_delta_early_stop",
         #         "terminal_intermediate_delta_no_early_stop",
         #     ]},
+        #     "lr": {"value": 5e-5},
+        #     "anneal_lr": {"value": False},
+        #     "K_epochs": {"value": 8},
+        #     "num_gat_blocks": {"value": 4},
+        #     "batch_size": {"value": 256},
+        #     "clip_frac": {"value": 0.2},
+        #     "entropy_coef": {"value": 0.01},
+        #     "activation": {"value": "tanh"},
+        #
+        #     # Fixed values (Not sweep params)
         #     "alpha": {"value": 0.3},
         #     "algorithm": {"value": "ppo"},
         #     "gpu": {"value": True},
+        #     "num_ppo_workers": {"value": 8},
+        #     "ppo_eval_every": {"value": 5},
         # },
     }
 
@@ -332,8 +373,8 @@ def build_mcts_sweep_config() -> Dict[str, Any]:
     MCTS hyperparameter sweep - parent function that selects alpha config.
     Currently calls both 0.3 and 1.0 configs (comment out as needed).
     """
-    return build_sweep_config_mcts_0_3()
-    # return build_sweep_config_mcts_1_0()
+    # return build_sweep_config_mcts_0_3()
+    return build_sweep_config_mcts_1_0()
 
 
 def get_sweep_config(algorithm: str) -> Dict[str, Any]:
