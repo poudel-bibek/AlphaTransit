@@ -137,3 +137,5 @@ plots/routes_*.pdf
 plots/routes_*.png
 ./plots/routes_*.pdf
 ./plots/routes_*.png
+
+CLAUDE.md

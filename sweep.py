@@ -66,7 +66,13 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
     """
     PPO hyperparameter sweep search space for Alpha = 1.0.
 
-    Key takeaways from PPO sweep:
+    Key takeaways from PPO sweep (Feb 13-17, 32 runs, by peak eval/episode_terminal_reward):
+    - batch_size 128 (38.2) >> 256 (36.7) — strongest differentiator
+    - K_epochs 4 (38.0) > 2 (37.1)
+    - lr 1e-5 (38.1) ≈ 3e-5 (38.1) > 5e-6 (36.6) — too low hurts
+    - num_gat_blocks 4 (38.1) > 8 (37.6) — mild advantage
+    - clip_frac and anneal_lr showed minimal differentiation
+    - All runs degrade from peak (mean drop 9 pts) — training unstable late
     """
     return {
         "method": "bayes",
@@ -78,16 +84,36 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         # =====================================================================
         # 2. General Sweep for PPO Alpha 1.0
         # =====================================================================
-        "parameters": {
-            # Sweep params (3 × 2 × 2 × 2 × 2 × 2 = 96 combinations)
-            "lr": {"values": [5e-6, 1e-5, 3e-5]},
-            "anneal_lr": {"values": [True, False]},
-            "K_epochs": {"values": [2, 4]},
-            "num_gat_blocks": {"values": [4, 8]},
-            "batch_size": {"values": [128, 256]},
-            "clip_frac": {"values": [0.1, 0.2]},
+        # "parameters": {
+        #     # Sweep params (3 × 2 × 2 × 2 × 2 × 2 = 96 combinations)
+        #     "lr": {"values": [5e-6, 1e-5, 3e-5]},
+        #     "anneal_lr": {"values": [True, False]},
+        #     "K_epochs": {"values": [2, 4]},
+        #     "num_gat_blocks": {"values": [4, 8]},
+        #     "batch_size": {"values": [128, 256]},
+        #     "clip_frac": {"values": [0.1, 0.2]},
+        #     "entropy_coef": {"value": 0.02},
+        #     "activation": {"value": "tanh"},
+        #
+        #     # Fixed values (Not sweep params)
+        #     "alpha": {"value": 1.0},
+        #     "algorithm": {"value": "ppo"},
+        #     "gpu": {"value": True},
+        #     "num_ppo_workers": {"value": 8},
+        #     "ppo_eval_every": {"value": 5},
+        # },
 
-            # Fixed params
+        # =====================================================================
+        # Best params from General Sweep for PPO Alpha 1.0
+        # =====================================================================
+        "parameters": {
+            "seed": {"values": [42, 123, 456, 789, 1024]},
+            "lr": {"value": 1e-5},
+            "anneal_lr": {"value": True},
+            "K_epochs": {"value": 4},
+            "num_gat_blocks": {"value": 4},
+            "batch_size": {"value": 128},
+            "clip_frac": {"value": 0.1},
             "entropy_coef": {"value": 0.02},
             "activation": {"value": "tanh"},
 
@@ -103,15 +129,28 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         # 6. Reward Ablation Sweep for PPO Alpha 1.0
         # =====================================================================
         # "parameters": {
+        #     "seed": {"values": [42, 123]},
         #     "ppo_reward_mode": {"values": [
         #         "terminal_only",
         #         "terminal_intermediate_raw_early_stop",
         #         "terminal_intermediate_delta_early_stop",
         #         "terminal_intermediate_delta_no_early_stop",
         #     ]},
+        #     "lr": {"value": 1e-5},
+        #     "anneal_lr": {"value": True},
+        #     "K_epochs": {"value": 4},
+        #     "num_gat_blocks": {"value": 4},
+        #     "batch_size": {"value": 128},
+        #     "clip_frac": {"value": 0.1},
+        #     "entropy_coef": {"value": 0.02},
+        #     "activation": {"value": "tanh"},
+        #
+        #     # Fixed values (Not sweep params)
         #     "alpha": {"value": 1.0},
         #     "algorithm": {"value": "ppo"},
         #     "gpu": {"value": True},
+        #     "num_ppo_workers": {"value": 8},
+        #     "ppo_eval_every": {"value": 5},
         # },
     }
 
