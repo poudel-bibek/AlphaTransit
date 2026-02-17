@@ -29,8 +29,8 @@ def state_to_pyg_data(state_dict: Dict[str, Any]) -> Data:
 
 def sync_env_from_mcts_state(env: TransitEnv, mcts_state: MCTSState) -> None:
     """Sync environment internal state from MCTSState."""
-    env.current_route = list(mcts_state.current_route)
-    env.all_routes = [list(r) for r in mcts_state.all_routes]
+    env.current_route = mcts_state.current_route
+    env.all_routes = mcts_state.all_routes
     env.current_route_index = mcts_state.current_route_index
 
 

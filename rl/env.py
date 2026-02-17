@@ -165,7 +165,15 @@ class TransitEnv(gym.Env):
             degree = len(self.adj.get(node_name, [])) # If not found in adj, return empty list
             self.node_degrees_norm[node_idx] = (degree - self.min_degree) / (self.max_degree - self.min_degree)
 
-        
+        # Pre-compute static node features (0-4) once; reused in _get_state()
+        self._static_node_features = np.zeros((self.n_nodes, 5), dtype=np.float32)
+        self._static_node_features[:, 0] = self.node_coordinates_norm[:, 0]
+        self._static_node_features[:, 1] = self.node_coordinates_norm[:, 1]
+        self._static_node_features[:, 2] = self.node_degrees_norm
+        self._static_node_features[:, 3] = self.demand_out / self.max_demand
+        self._static_node_features[:, 4] = self.demand_in / self.max_demand
+
+
     @property
     def observation_space(self) -> gym.Space:
         """
@@ -470,14 +478,10 @@ class TransitEnv(gym.Env):
         """
         
         # Nodes and node features:
-        node_features = np.zeros((self.n_nodes, self.N_NODE_FEATURES), dtype=np.float32)  # +1 for is_valid_next
+        node_features = np.zeros((self.n_nodes, self.N_NODE_FEATURES), dtype=np.float32)
 
-        # Static node features (0-4):
-        node_features[:, 0] = self.node_coordinates_norm[:, 0] # x
-        node_features[:, 1] = self.node_coordinates_norm[:, 1] # y
-        node_features[:, 2] = self.node_degrees_norm # degree
-        node_features[:, 3] = self.demand_out / self.max_demand # d_out
-        node_features[:, 4] = self.demand_in / self.max_demand # d_in
+        # Static node features (0-4): pre-computed in __init__
+        node_features[:, :5] = self._static_node_features
         
         # Calculations for dynamic node features:
         # Terminal states (all routes complete) have current_route=[]. For these states:
@@ -521,10 +525,9 @@ class TransitEnv(gym.Env):
             node_features[completed_and_current_route_indices, 8] = d_in_completed_routes_local[completed_and_current_route_indices] / self.max_demand # d_in_completed_routes_local
 
         # Dynamic node features (9-10, global route-aware demands from nodes in current route to all nodes in the network)
-        d_out_current_route_global = self.od_matrix[:, current_route_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the current route
-        d_in_current_route_global = self.od_matrix[current_route_indices, :].sum(axis=0) # Sum of all O-D flows arriving at node i from nodes within the current route
-        node_features[:, 9] = d_out_current_route_global / self.max_demand # d_out_current_route_global
-        node_features[:, 10] = d_in_current_route_global / self.max_demand # d_in_current_route_global
+        # Reuse d_out/d_in_current_route_local (lines 508-509) — identical computation
+        node_features[:, 9] = d_out_current_route_local / self.max_demand # d_out_current_route_global
+        node_features[:, 10] = d_in_current_route_local / self.max_demand # d_in_current_route_global
 
         # Dynamic node features (11-12, global route-aware demands from nodes in completed  routes to all nodes in the network)
         d_out_completed_routes_global = self.od_matrix[:, completed_routes_indices].sum(axis=1) # Sum of all O-D flows emanating from node i to nodes within the completed routes
