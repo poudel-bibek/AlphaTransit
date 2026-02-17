@@ -52,47 +52,19 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         # =====================================================================
         # Best params from General Sweep for PPO Alpha 0.3
         # =====================================================================
-        "parameters": {
-            "seed": {"values": [42, 123, 456, 789, 1024]},
-            "lr": {"value": 5e-5},
-            "anneal_lr": {"value": False},
-            "K_epochs": {"value": 8},
-            "num_gat_blocks": {"value": 4},
-            "batch_size": {"value": 256},
-
-            # Not sweeped
-            "clip_frac": {"value": 0.2},
-            "entropy_coef": {"value": 0.01},
-            "activation": {"value": "tanh"},
-
-            # Fixed values (Not sweep params)
-            "alpha": {"value": 0.3},
-            "algorithm": {"value": "ppo"},
-            "gpu": {"value": True},
-            "num_ppo_workers": {"value": 8},
-            "ppo_eval_every": {"value": 5},
-        },
-
-        # =====================================================================
-        # 5. Reward Ablation Sweep for PPO Alpha 0.3
-        # =====================================================================
         # "parameters": {
-        #     "seed": {"values": [42, 123]},
-        #     "ppo_reward_mode": {"values": [
-        #         "terminal_only",
-        #         "terminal_intermediate_raw_early_stop",
-        #         "terminal_intermediate_delta_early_stop",
-        #         "terminal_intermediate_delta_no_early_stop",
-        #     ]},
+        #     "seed": {"values": [42, 123, 456, 789, 1024]},
         #     "lr": {"value": 5e-5},
         #     "anneal_lr": {"value": False},
         #     "K_epochs": {"value": 8},
         #     "num_gat_blocks": {"value": 4},
         #     "batch_size": {"value": 256},
+
+        #     # Not sweeped
         #     "clip_frac": {"value": 0.2},
         #     "entropy_coef": {"value": 0.01},
         #     "activation": {"value": "tanh"},
-        #
+
         #     # Fixed values (Not sweep params)
         #     "alpha": {"value": 0.3},
         #     "algorithm": {"value": "ppo"},
@@ -100,6 +72,34 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         #     "num_ppo_workers": {"value": 8},
         #     "ppo_eval_every": {"value": 5},
         # },
+
+        # =====================================================================
+        # 5. Reward Ablation Sweep for PPO Alpha 0.3
+        # =====================================================================
+        "parameters": {
+            "seed": {"values": [42, 123]},
+            "ppo_reward_mode": {"values": [
+                "terminal_only",
+                "terminal_intermediate_raw_early_stop",
+                "terminal_intermediate_delta_early_stop",
+                "terminal_intermediate_delta_no_early_stop",
+            ]},
+            "lr": {"value": 5e-5},
+            "anneal_lr": {"value": False},
+            "K_epochs": {"value": 8},
+            "num_gat_blocks": {"value": 4},
+            "batch_size": {"value": 256},
+            "clip_frac": {"value": 0.2},
+            "entropy_coef": {"value": 0.01},
+            "activation": {"value": "tanh"},
+        
+            # Fixed values (Not sweep params)
+            "alpha": {"value": 0.3},
+            "algorithm": {"value": "ppo"},
+            "gpu": {"value": True},
+            "num_ppo_workers": {"value": 8},
+            "ppo_eval_every": {"value": 5},
+        },
     }
 
 
