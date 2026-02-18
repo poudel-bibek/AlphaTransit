@@ -20,62 +20,76 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
     - batch_size 256 ≈ 128 — minimal differentiation
     - All runs degrade from peak (mean drop 3.7 pts)
     """
+
+    # =====================================================================
+    # 1. General Sweep for PPO Alpha 0.3
+    # =====================================================================
+    # return {
+    #     "method": "bayes",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations)
+    #         "lr": {"values": [5e-5, 1e-4, 3e-4]},
+    #         "anneal_lr": {"values": [True, False]},
+    #         "K_epochs": {"values": [4, 8]},
+    #         "num_gat_blocks": {"values": [4, 8]},
+    #         "batch_size": {"values": [128, 256]},
+    #         "clip_frac": {"value": 0.2},
+    #         "entropy_coef": {"value": 0.01},
+    #         "activation": {"value": "tanh"},
+    #
+    #         # Fixed values (Not sweep params)
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "ppo"},
+    #         "gpu": {"value": True},
+    #         "num_ppo_workers": {"value": 8},
+    #         "ppo_eval_every": {"value": 5},
+    #     },
+    # }
+
+    # =====================================================================
+    # Best params from General Sweep for PPO Alpha 0.3
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "seed": {"values": [42, 123, 456, 789, 1024]},
+    #         "lr": {"value": 5e-5},
+    #         "anneal_lr": {"value": False},
+    #         "K_epochs": {"value": 8},
+    #         "num_gat_blocks": {"value": 4},
+    #         "batch_size": {"value": 256},
+    #
+    #         # Not sweeped
+    #         "clip_frac": {"value": 0.2},
+    #         "entropy_coef": {"value": 0.01},
+    #         "activation": {"value": "tanh"},
+    #
+    #         # Fixed values (Not sweep params)
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "ppo"},
+    #         "gpu": {"value": True},
+    #         "num_ppo_workers": {"value": 8},
+    #         "ppo_eval_every": {"value": 5},
+    #     },
+    # }
+
+    # =====================================================================
+    # 5. Reward Ablation Sweep for PPO Alpha 0.3
+    # =====================================================================
     return {
-        "method": "bayes",
+        "method": "grid",
         "metric": {
             "name": "eval/episode_terminal_reward",
             "goal": "maximize"
         },
-
-        # =====================================================================
-        # 1. General Sweep for PPO Alpha 0.3
-        # =====================================================================
-        # "parameters": {
-        #     # Sweep params (3 × 2 × 2 × 2 × 2 = 48 combinations)
-        #     "lr": {"values": [5e-5, 1e-4, 3e-4]},
-        #     "anneal_lr": {"values": [True, False]},
-        #     "K_epochs": {"values": [4, 8]},
-        #     "num_gat_blocks": {"values": [4, 8]},
-        #     "batch_size": {"values": [128, 256]},
-        #     "clip_frac": {"value": 0.2},
-        #     "entropy_coef": {"value": 0.01},
-        #     "activation": {"value": "tanh"},
-        #
-        #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 0.3},
-        #     "algorithm": {"value": "ppo"},
-        #     "gpu": {"value": True},
-        #     "num_ppo_workers": {"value": 8},
-        #     "ppo_eval_every": {"value": 5},
-        # },
-
-        # =====================================================================
-        # Best params from General Sweep for PPO Alpha 0.3
-        # =====================================================================
-        # "parameters": {
-        #     "seed": {"values": [42, 123, 456, 789, 1024]},
-        #     "lr": {"value": 5e-5},
-        #     "anneal_lr": {"value": False},
-        #     "K_epochs": {"value": 8},
-        #     "num_gat_blocks": {"value": 4},
-        #     "batch_size": {"value": 256},
-
-        #     # Not sweeped
-        #     "clip_frac": {"value": 0.2},
-        #     "entropy_coef": {"value": 0.01},
-        #     "activation": {"value": "tanh"},
-
-        #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 0.3},
-        #     "algorithm": {"value": "ppo"},
-        #     "gpu": {"value": True},
-        #     "num_ppo_workers": {"value": 8},
-        #     "ppo_eval_every": {"value": 5},
-        # },
-
-        # =====================================================================
-        # 5. Reward Ablation Sweep for PPO Alpha 0.3
-        # =====================================================================
         "parameters": {
             "seed": {"values": [42, 123]},
             "ppo_reward_mode": {"values": [
@@ -92,7 +106,7 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
             "clip_frac": {"value": 0.2},
             "entropy_coef": {"value": 0.01},
             "activation": {"value": "tanh"},
-        
+
             # Fixed values (Not sweep params)
             "alpha": {"value": 0.3},
             "algorithm": {"value": "ppo"},
@@ -115,40 +129,82 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
     - clip_frac and anneal_lr showed minimal differentiation
     - All runs degrade from peak (mean drop 9 pts) — training unstable late
     """
+
+    # =====================================================================
+    # 2. General Sweep for PPO Alpha 1.0
+    # =====================================================================
+    # return {
+    #     "method": "bayes",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         # Sweep params (3 × 2 × 2 × 2 × 2 × 2 = 96 combinations)
+    #         "lr": {"values": [5e-6, 1e-5, 3e-5]},
+    #         "anneal_lr": {"values": [True, False]},
+    #         "K_epochs": {"values": [2, 4]},
+    #         "num_gat_blocks": {"values": [4, 8]},
+    #         "batch_size": {"values": [128, 256]},
+    #         "clip_frac": {"values": [0.1, 0.2]},
+    #         "entropy_coef": {"value": 0.02},
+    #         "activation": {"value": "tanh"},
+    #
+    #         # Fixed values (Not sweep params)
+    #         "alpha": {"value": 1.0},
+    #         "algorithm": {"value": "ppo"},
+    #         "gpu": {"value": True},
+    #         "num_ppo_workers": {"value": 8},
+    #         "ppo_eval_every": {"value": 5},
+    #     },
+    # }
+
+    # =====================================================================
+    # Best params from General Sweep for PPO Alpha 1.0
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "seed": {"values": [42, 123, 456, 789, 1024]},
+    #         "lr": {"value": 1e-5},
+    #         "anneal_lr": {"value": True},
+    #         "K_epochs": {"value": 4},
+    #         "num_gat_blocks": {"value": 4},
+    #         "batch_size": {"value": 128},
+    #         "clip_frac": {"value": 0.1},
+    #         "entropy_coef": {"value": 0.02},
+    #         "activation": {"value": "tanh"},
+    #
+    #         # Fixed values (Not sweep params)
+    #         "alpha": {"value": 1.0},
+    #         "algorithm": {"value": "ppo"},
+    #         "gpu": {"value": True},
+    #         "num_ppo_workers": {"value": 8},
+    #         "ppo_eval_every": {"value": 5},
+    #     },
+    # }
+
+    # =====================================================================
+    # 6. Reward Ablation Sweep for PPO Alpha 1.0
+    # =====================================================================
     return {
-        "method": "bayes",
+        "method": "grid",
         "metric": {
             "name": "eval/episode_terminal_reward",
             "goal": "maximize"
         },
-
-        # =====================================================================
-        # 2. General Sweep for PPO Alpha 1.0
-        # =====================================================================
-        # "parameters": {
-        #     # Sweep params (3 × 2 × 2 × 2 × 2 × 2 = 96 combinations)
-        #     "lr": {"values": [5e-6, 1e-5, 3e-5]},
-        #     "anneal_lr": {"values": [True, False]},
-        #     "K_epochs": {"values": [2, 4]},
-        #     "num_gat_blocks": {"values": [4, 8]},
-        #     "batch_size": {"values": [128, 256]},
-        #     "clip_frac": {"values": [0.1, 0.2]},
-        #     "entropy_coef": {"value": 0.02},
-        #     "activation": {"value": "tanh"},
-        #
-        #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 1.0},
-        #     "algorithm": {"value": "ppo"},
-        #     "gpu": {"value": True},
-        #     "num_ppo_workers": {"value": 8},
-        #     "ppo_eval_every": {"value": 5},
-        # },
-
-        # =====================================================================
-        # Best params from General Sweep for PPO Alpha 1.0
-        # =====================================================================
         "parameters": {
-            "seed": {"values": [42, 123, 456, 789, 1024]},
+            "seed": {"values": [42, 123]},
+            "ppo_reward_mode": {"values": [
+                "terminal_only",
+                "terminal_intermediate_raw_early_stop",
+                "terminal_intermediate_delta_early_stop",
+                "terminal_intermediate_delta_no_early_stop",
+            ]},
             "lr": {"value": 1e-5},
             "anneal_lr": {"value": True},
             "K_epochs": {"value": 4},
@@ -165,34 +221,6 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
         },
-
-        # =====================================================================
-        # 6. Reward Ablation Sweep for PPO Alpha 1.0
-        # =====================================================================
-        # "parameters": {
-        #     "seed": {"values": [42, 123]},
-        #     "ppo_reward_mode": {"values": [
-        #         "terminal_only",
-        #         "terminal_intermediate_raw_early_stop",
-        #         "terminal_intermediate_delta_early_stop",
-        #         "terminal_intermediate_delta_no_early_stop",
-        #     ]},
-        #     "lr": {"value": 1e-5},
-        #     "anneal_lr": {"value": True},
-        #     "K_epochs": {"value": 4},
-        #     "num_gat_blocks": {"value": 4},
-        #     "batch_size": {"value": 128},
-        #     "clip_frac": {"value": 0.1},
-        #     "entropy_coef": {"value": 0.02},
-        #     "activation": {"value": "tanh"},
-        #
-        #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 1.0},
-        #     "algorithm": {"value": "ppo"},
-        #     "gpu": {"value": True},
-        #     "num_ppo_workers": {"value": 8},
-        #     "ppo_eval_every": {"value": 5},
-        # },
     }
 
 
@@ -220,16 +248,16 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     2. peach-sweep-1 peaked at 39.5% progress (temp=1.0), then flat for remaining 60% of training.
     3. Slower schedules (0.6:1.0,0.85:0.5,1.0:0.1) maintain policy_loss ~0.2-0.3, enabling continued learning.
     """
+
+    # =====================================================================
+    # 3. General Sweep for MCTS Alpha 0.3
+    # =====================================================================
     return {
         "method": "bayes",
         "metric": {
             "name": "eval/episode_terminal_reward",
             "goal": "maximize"
         },
-
-        # =====================================================================
-        # 3. General Sweep for MCTS Alpha 0.3
-        # =====================================================================
         "parameters": {
             # Sweep params (2 × 2 × 2 × 2 = 16 combinations)
             "temp_schedule": {"values": [
@@ -255,36 +283,43 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "num_mcts_workers": {"value": 8},
             "mcts_eval_every": {"value": 5},
         },
-
-        # =====================================================================
-        # 7. n_iter Sweep for MCTS Alpha 0.3
-        # =====================================================================
-        # "parameters": {
-        #     # Sweep param
-        #     "n_iter": {"values": [100, 200, 300, 400, 500, 600]},
-        #
-        #     # TODO: Set after sweeps 1-4 finish
-        #     # "temp_schedule": {"value": "..."},
-        #     # "c_puct": {"value": ...},
-        #     # "train_steps_per_iter": {"value": ...},
-        #     # "num_gat_blocks": {"value": ...},
-        #
-        #     # Fixed params
-        #     "lr": {"value": 1e-4},
-        #     "batch_size": {"value": 256},
-        #     "buffer_capacity": {"value": 50000},
-        #     "activation": {"value": "tanh"},
-        #     "dirichlet_alpha": {"value": 0.3},
-        #
-        #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 0.3},
-        #     "algorithm": {"value": "mcts"},
-        #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 558},
-        #     "num_mcts_workers": {"value": 8},
-        #     "mcts_eval_every": {"value": 5},
-        # },
     }
+
+    # =====================================================================
+    # 7. n_iter Sweep for MCTS Alpha 0.3
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         # Sweep param
+    #         "n_iter": {"values": [100, 200, 300, 400, 500, 600]},
+    #
+    #         # TODO: Set after sweeps 1-4 finish
+    #         # "temp_schedule": {"value": "..."},
+    #         # "c_puct": {"value": ...},
+    #         # "train_steps_per_iter": {"value": ...},
+    #         # "num_gat_blocks": {"value": ...},
+    #
+    #         # Fixed params
+    #         "lr": {"value": 1e-4},
+    #         "batch_size": {"value": 256},
+    #         "buffer_capacity": {"value": 50000},
+    #         "activation": {"value": "tanh"},
+    #         "dirichlet_alpha": {"value": 0.3},
+    #
+    #         # Fixed values (Not sweep params)
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "mcts"},
+    #         "gpu": {"value": True},
+    #         "max_iterations": {"value": 558},
+    #         "num_mcts_workers": {"value": 8},
+    #         "mcts_eval_every": {"value": 5},
+    #     },
+    # }
 
 
 def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
@@ -301,16 +336,16 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     2. zany-sweep-1: policy_loss=0.79→0.02→0.0 as temp dropped 1.0→0.5→0.1. Reward plateaued at 35.68.
     3. glorious-sweep-1 (slower schedule 0.6:1.0,0.85:0.5,1.0:0.1): policy_loss stayed ~0.2-0.3, got better peak (36.91).
     """
+
+    # =====================================================================
+    # 4. General Sweep for MCTS Alpha 1.0
+    # =====================================================================
     return {
         "method": "bayes",
         "metric": {
             "name": "eval/episode_terminal_reward",
             "goal": "maximize"
         },
-
-        # =====================================================================
-        # 4. General Sweep for MCTS Alpha 1.0
-        # =====================================================================
         "parameters": {
             # Sweep params (2 × 2 × 2 × 2 = 16 combinations)
             "temp_schedule": {"values": [
@@ -336,36 +371,43 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "num_mcts_workers": {"value": 8},
             "mcts_eval_every": {"value": 5},
         },
-
-        # =====================================================================
-        # 8. n_iter Sweep for MCTS Alpha 1.0
-        # =====================================================================
-        # "parameters": {
-        #     # Sweep param
-        #     "n_iter": {"values": [100, 200, 300, 400, 500, 600]},
-        #
-        #     # TODO: Set after sweeps 1-4 finish
-        #     # "temp_schedule": {"value": "..."},
-        #     # "c_puct": {"value": ...},
-        #     # "train_steps_per_iter": {"value": ...},
-        #     # "num_gat_blocks": {"value": ...},
-        #
-        #     # Fixed params
-        #     "lr": {"value": 1e-4},
-        #     "batch_size": {"value": 256},
-        #     "buffer_capacity": {"value": 50000},
-        #     "activation": {"value": "tanh"},
-        #     "dirichlet_alpha": {"value": 0.3},
-        #
-        #     # Fixed values (Not sweep params)
-        #     "alpha": {"value": 1.0},
-        #     "algorithm": {"value": "mcts"},
-        #     "gpu": {"value": True},
-        #     "max_iterations": {"value": 558},
-        #     "num_mcts_workers": {"value": 8},
-        #     "mcts_eval_every": {"value": 5},
-        # },
     }
+
+    # =====================================================================
+    # 8. n_iter Sweep for MCTS Alpha 1.0
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         # Sweep param
+    #         "n_iter": {"values": [100, 200, 300, 400, 500, 600]},
+    #
+    #         # TODO: Set after sweeps 1-4 finish
+    #         # "temp_schedule": {"value": "..."},
+    #         # "c_puct": {"value": ...},
+    #         # "train_steps_per_iter": {"value": ...},
+    #         # "num_gat_blocks": {"value": ...},
+    #
+    #         # Fixed params
+    #         "lr": {"value": 1e-4},
+    #         "batch_size": {"value": 256},
+    #         "buffer_capacity": {"value": 50000},
+    #         "activation": {"value": "tanh"},
+    #         "dirichlet_alpha": {"value": 0.3},
+    #
+    #         # Fixed values (Not sweep params)
+    #         "alpha": {"value": 1.0},
+    #         "algorithm": {"value": "mcts"},
+    #         "gpu": {"value": True},
+    #         "max_iterations": {"value": 558},
+    #         "num_mcts_workers": {"value": 8},
+    #         "mcts_eval_every": {"value": 5},
+    #     },
+    # }
 
 
 def build_mcts_sweep_config() -> Dict[str, Any]:
@@ -448,7 +490,7 @@ def main() -> None:
     sweep_config = get_sweep_config(args.algorithm)
     base_config = get_config()
 
-    print(f"Starting {args.algorithm.upper()} Bayesian sweep (Ctrl+C to stop)...")
+    print(f"Starting {args.algorithm.upper()} {sweep_config['method']} sweep (Ctrl+C to stop)...")
 
     # Create and run sweep
     sweep_id = wandb.sweep(
