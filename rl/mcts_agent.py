@@ -15,20 +15,17 @@ Key components:
 
 import gc
 import os
-import json
-import math
 import time
 import random
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.multiprocessing as mp
 import wandb
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from torch_geometric.data import Data, Batch
 
 # Use get_context (not set_start_method) - can be called multiple times safely
@@ -228,14 +225,6 @@ class MCTSAgent:
             edge_index=torch.from_numpy(state_dict['edge_index']).long(),
             edge_attr=torch.from_numpy(state_dict['edge_features']).float(),
         )
-
-    def _get_valid_mask(self, valid_actions: List[int]) -> torch.Tensor:
-        """Create valid action mask tensor."""
-        mask = torch.zeros(self.n_nodes, dtype=torch.bool)
-        for a in valid_actions:
-            if a < self.n_nodes:
-                mask[a] = True
-        return mask
 
     @torch.inference_mode()
     def _network_forward(self, state_dict: Dict[str, Any], valid_actions: List[int]) -> Tuple[Dict[int, float], float]:
@@ -707,7 +696,7 @@ class MCTSAgent:
             print(f"Results saved to: {self.training_save_dir}")
 
         finally:
-            self._cleanup()  # Always clean up pool
+            self._cleanup()  # Always shut down persistent workers
 
     def _get_clean_state_dict(self) -> Dict[str, Any]:
         """Get state_dict with _orig_mod. prefix stripped (added by torch.compile)."""
@@ -750,7 +739,6 @@ class MCTSAgent:
             valid_actions = mcts_state.get_valid_actions()
             if not valid_actions:
                 # Record NO_VALID_ACTION to keep MCTSState and real env in sync
-                # (see run_mcts_episode in mcts_worker.py for detailed explanation)
                 actions.append(self.env.NO_VALID_ACTION)
                 mcts_state = mcts_state.force_route_end()
                 tree = MCTSTree(mcts_state)

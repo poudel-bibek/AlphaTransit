@@ -369,101 +369,12 @@ def _create_mcts_state(env: TransitEnv) -> MCTSState:
     )
 
 
-def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, Any], config: Dict[str, Any], seed: int, tau: float) -> Tuple[List[Tuple], float, int, List[List[str]]]:
-    """
-    Run a single MCTS episode in a worker process.
-
-    This function is self-contained and creates all necessary
-    objects (env, model, tree) from scratch.
-
-    Args:
-        model_state_dict: Serialized model weights
-        policy_kwargs: Kwargs for model construction
-        config: Full configuration dict
-        seed: Random seed for this worker
-        tau: Temperature for action selection
-
-    Returns:
-        Tuple of (episode_data, raw_reward, episode_length, routes)
-    """
-    # 1. Set seeds for reproducibility
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    # 2. Create environment
-    env = TransitEnv(config)
-
-    # 3. Create model and load weights
-    device = 'cuda' if (config.get('gpu', False) and torch.cuda.is_available()) else 'cpu'
-    model = GATV2ActorCritic(**policy_kwargs)
-    model.load_state_dict(model_state_dict)
-    model.eval()
-    model.to(device)
-    model = torch.compile(model)
-
-    # 4. Run episode
-    state_dict, _ = env.reset(seed=seed)
-    mcts_state = _create_mcts_state(env)
-    tree = MCTSTree(mcts_state)
-
-    episode_data = []
-    actions_taken = []
-
-    while not mcts_state.is_terminal():
-        valid_actions = mcts_state.get_valid_actions()
-
-        if not valid_actions:
-            # No valid actions - force route end
-            actions_taken.append(env.NO_VALID_ACTION)
-            mcts_state = mcts_state.force_route_end()
-            tree = MCTSTree(mcts_state)
-            continue
-
-        # Get current state observation (need to sync mcts_state → env)
-        current_state_dict = get_state_tensor(env, mcts_state)
-
-        # Run MCTS and get policy
-        policy = run_mcts_simulations(model, env, tree, tau, config, add_noise=True, device=device)
-
-        # Record state and policy
-        episode_data.append((
-            {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in current_state_dict.items()},
-            policy.copy(),
-            list(valid_actions)
-        ))
-
-        # Sample action from policy
-        valid_policy = policy[valid_actions]
-        if valid_policy.sum() > 0:
-            valid_policy = valid_policy / valid_policy.sum()
-            action = np.random.choice(valid_actions, p=valid_policy)
-        else:
-            action = np.random.choice(valid_actions)
-
-        actions_taken.append(action)
-        mcts_state = mcts_state.apply_action(action)
-        tree.advance(action)
-
-    # 5. Compute terminal reward directly from final route set (single simulation).
-    terminal_reward, _ = env.simulate_routes_mcts(mcts_state.all_routes)
-
-    # 6. Return results (as tuple for pickling simplicity)
-    return (
-        episode_data,
-        terminal_reward,
-        len(actions_taken),
-        [list(r) for r in env.all_routes],
-    )
-
-
 def _run_episode_on_env(env, model, config, seed, tau, device):
     """
     Run a single MCTS episode using an already-initialized env and model.
 
-    Shared logic for both the persistent worker loop and the standalone
-    run_mcts_episode function. The env and model must already exist and
-    have the correct weights loaded.
+    Called by mcts_worker_loop for each "collect" command. The env and model
+    must already exist and have the correct weights loaded.
     """
     random.seed(seed)
     np.random.seed(seed)
