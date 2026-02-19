@@ -108,13 +108,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     #                    max_iterations=744 × 1,344 ≈ 1M steps (comparable to PPO)
     # Eval frequency: 744 iterations / eval_every=3 → ~248 eval points
     parser.add_argument("--n_iter", type=int, default=400, help="MCTS: Simulations per move")
+    parser.add_argument("--mcts_batch_size", type=int, default=8, help="MCTS: Leaves to batch per NN forward pass (virtual loss)")
     parser.add_argument("--c_puct", type=float, default=1.5, help="MCTS: PUCT exploration constant")
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
     parser.add_argument("--buffer_capacity", type=int, default=100000, help="MCTS: Replay buffer capacity")
     parser.add_argument("--num_mcts_workers", type=int, default=8, help="MCTS: Number of parallel workers")
     parser.add_argument("--train_steps_per_iter", type=int, default=200, help="MCTS: Training steps per iteration")
-    parser.add_argument("--max_iterations", type=int, default=700, help="MCTS: Max iterations (700 × 8 workers × ~203 steps ≈ 1.14M steps)")
+    parser.add_argument("--max_iterations", type=int, default=680, help="MCTS: Max iterations (680 × 8 workers × ~203 steps ≈ 1.1M steps)")
     parser.add_argument("--mcts_eval_every", type=int, default=5, help="MCTS: Evaluate every N iterations")
     parser.add_argument("--temp_schedule", type=str, default="0.7:1.0,0.9:0.7,1.0:0.5", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
 

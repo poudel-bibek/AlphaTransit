@@ -3,9 +3,18 @@ MCTS Worker for Parallel Episode Collection
 
 This module provides standalone functions for running MCTS episodes in worker
 processes. All functions are self-contained with no dependency on MCTSAgent
-instance state, enabling multiprocessing via starmap.
+instance state, enabling multiprocessing.
+
+Key optimizations:
+1. Persistent workers (mcts_worker_loop): env and model created once per worker
+   process, not per episode. Weights updated via shared memory each iteration.
+2. Batched leaf evaluation (run_mcts_simulations): collects K leaves per batch
+   using virtual loss to diversify PUCT selections, evaluates all K in a single
+   NN forward pass, then rolls back virtual loss and backpropagates real values.
+   Reduces NN calls from n_iter to ~n_iter/K per move.
 """
 
+import os
 import random
 import numpy as np
 import torch
@@ -16,6 +25,17 @@ from torch_geometric.data import Data, Batch
 from rl.env import TransitEnv
 from rl.models import GATV2ActorCritic
 from rl.mcts_utils import MCTSTree, MCTSState, MCTSNode, add_dirichlet_noise
+
+
+def _cap_worker_threads():
+    """Limit BLAS/OpenMP and PyTorch threads to 1 per worker process."""
+    for var in [
+        "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "BLIS_NUM_THREADS",
+    ]:
+        os.environ[var] = os.environ.get(var, "1") or "1"
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
 
 
 def state_to_pyg_data(state_dict: Dict[str, Any]) -> Data:
@@ -43,29 +63,19 @@ def get_state_tensor(env: TransitEnv, mcts_state: MCTSState) -> Dict[str, Any]:
 @torch.inference_mode()
 def network_forward(model, state_dict: Dict[str, Any], valid_actions: List[int], device: str = 'cpu') -> Tuple[Dict[int, float], float]:
     """
-    Forward pass through network to get priors and value.
-
-    Standalone version of MCTSAgent._network_forward for worker processes.
+    Single-state forward pass through network to get priors and value.
+    Used for root expansion and standalone evaluation.
     """
     model.eval()
 
-    # Convert to PyG data and batch
     data = state_to_pyg_data(state_dict).to(device)
     batch = Batch.from_data_list([data])
 
-    # Get node embeddings
-    z = model._get_node_embeddings(
-        batch.x, batch.edge_index, batch.edge_attr
-    )
-
-    # Actor: get logits per node
-    logits = model.actor_head(z).squeeze(-1)  # [n_nodes]
-
-    # Critic: get value
+    z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+    logits = model.actor_head(z).squeeze(-1)
     g = model.critic_readout(z, batch.batch)
     value = model.critic_head(g).squeeze(-1).item()
 
-    # Mask and softmax for priors
     if not valid_actions:
         return {}, value
 
@@ -80,41 +90,140 @@ def network_forward(model, state_dict: Dict[str, Any], valid_actions: List[int],
     return priors, value
 
 
+@torch.inference_mode()
+def batch_network_forward(model, state_dicts: List[Dict[str, Any]], valid_actions_list: List[List[int]], device: str = 'cpu') -> List[Tuple[Dict[int, float], float]]:
+    """
+    Batched forward pass for multiple leaf states in a single NN call.
+
+    Instead of calling the network once per leaf (batch=1), this packs K leaf
+    states into a single PyG Batch and runs one forward pass. The GPU/CPU
+    processes all K graphs in parallel, amortizing kernel launch and memory
+    transfer overhead. With K=8 and n_iter=100, this reduces NN calls per
+    move from 100 to ~13.
+
+    Args:
+        model: Neural network
+        state_dicts: List of state dictionaries (one per leaf)
+        valid_actions_list: List of valid action lists (one per leaf)
+        device: Device for inference
+
+    Returns:
+        List of (priors_dict, value) tuples, one per input state
+    """
+    if not state_dicts:
+        return []
+
+    model.eval()
+
+    # Pack all leaf states into a single PyG Batch for one forward pass
+    data_list = [state_to_pyg_data(sd).to(device) for sd in state_dicts]
+    batch = Batch.from_data_list(data_list)
+
+    # Single forward pass through the shared GATv2 backbone, actor, and critic
+    z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+    logits = model.actor_head(z).squeeze(-1)
+    g = model.critic_readout(z, batch.batch)
+    values = model.critic_head(g).squeeze(-1)
+
+    # Split the concatenated node-level outputs back into per-graph results.
+    # batch.ptr[i] gives the starting node index for graph i in the batch.
+    ptr = batch.ptr
+    results = []
+    for i in range(len(state_dicts)):
+        start, end = ptr[i].item(), ptr[i + 1].item()
+        graph_logits = logits[start:end]  # logits for this graph's nodes
+        value = values[i].item()          # scalar value for this graph
+
+        valid_actions = valid_actions_list[i]
+        if not valid_actions:
+            results.append(({}, value))
+            continue
+
+        # Mask invalid actions and softmax to get prior probabilities
+        masked_logits = torch.full_like(graph_logits, float('-inf'))
+        for a in valid_actions:
+            if a < len(graph_logits):
+                masked_logits[a] = graph_logits[a]
+
+        probs = F.softmax(masked_logits, dim=0).cpu().numpy()
+        priors = {a: float(probs[a]) for a in valid_actions if a < len(probs)}
+        results.append((priors, value))
+
+    return results
+
+
+def _apply_virtual_loss(path: List[Tuple[MCTSNode, int]], vloss: int = 1) -> None:
+    """
+    Apply virtual loss along a selection path to discourage re-selection.
+
+    When collecting K leaves in a batch, we need each selection to explore
+    a different part of the tree. After selecting leaf i, we temporarily
+    penalize the path taken by adding a fake visit with negative value.
+    This makes the Q-values along this path appear worse, so the next
+    PUCT selection (for leaf i+1) will prefer a different branch.
+
+    The virtual loss is rolled back in Phase 3 before real backpropagation.
+    """
+    for node, action in path:
+        node.N[action] += vloss   # Fake visit count
+        node.W[action] -= vloss   # Negative value to lower Q
+        node.Q[action] = node.W[action] / node.N[action]
+
+
+def _rollback_virtual_loss(path: List[Tuple[MCTSNode, int]], vloss: int = 1) -> None:
+    """
+    Remove virtual loss along a selection path before real backpropagation.
+
+    Undoes the fake visit and negative value added by _apply_virtual_loss,
+    restoring the tree statistics to their true state. After rollback,
+    the normal update() call applies the real value from the NN evaluation.
+    """
+    for node, action in path:
+        node.N[action] -= vloss
+        node.W[action] += vloss
+        if node.N[action] > 0:
+            node.Q[action] = node.W[action] / node.N[action]
+        else:
+            node.Q[action] = 0.0
+
+
 def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, config: Dict[str, Any], add_noise: bool = True, device: str = 'cpu') -> np.ndarray:
     """
-    Run MCTS simulations from current tree root.
+    Run MCTS simulations with batched leaf evaluation and virtual loss.
 
-    Standalone version of MCTSAgent._run_mcts for worker processes.
+    Collects K leaves per batch using virtual loss to diversify selections,
+    evaluates them in a single NN forward pass, then rolls back virtual loss
+    and backpropagates real values. Single-threaded, so tree mutation is safe.
 
     Args:
         model: Neural network for value/policy estimation
         env: TransitEnv instance (for state observation generation)
         tree: MCTSTree to search
         tau: Temperature for visit count policy
-        config: Config dict with n_iter, c_puct, dirichlet_alpha, dirichlet_eps
+        config: Config dict with n_iter, c_puct, mcts_batch_size, etc.
         add_noise: Whether to add Dirichlet noise at root
-        device: Device for model inference ('cpu' for workers)
+        device: Device for model inference
 
     Returns:
         Policy array from visit counts
     """
     n_nodes = env.n_nodes
     n_iter = config.get('n_iter', 100)
+    leaf_batch_size = config.get('mcts_batch_size', 8)
     c_puct = config.get('c_puct', 1.5)
     dirichlet_alpha = config.get('dirichlet_alpha', 0.3)
     dirichlet_eps = config.get('dirichlet_eps', 0.25)
 
     root = tree.root
-    root_state = root.state
 
     # Get valid actions at root
-    valid_actions = root_state.get_valid_actions()
+    valid_actions = root.state.get_valid_actions()
     if not valid_actions:
         return np.zeros(n_nodes, dtype=np.float32)
 
-    # Expand root if needed
+    # Expand root if needed (single forward pass)
     if not root.expanded:
-        state_dict = get_state_tensor(env, root_state)
+        state_dict = get_state_tensor(env, root.state)
         priors, value = network_forward(model, state_dict, valid_actions, device)
         root.expand(priors, value)
 
@@ -122,54 +231,127 @@ def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, con
     if add_noise and root.P:
         root.P = add_dirichlet_noise(root.P, dirichlet_alpha, dirichlet_eps)
 
-    # Run simulations
-    for _ in range(n_iter):
-        node = root
-        path: List[Tuple[MCTSNode, int]] = []
+    # =========================================================================
+    # Batched simulation loop
+    #
+    # Instead of the standard sequential loop (select one leaf, expand it,
+    # backprop, repeat), we process K leaves at a time:
+    #
+    #   Phase 1 - SELECT:  Run K PUCT selections sequentially. After each,
+    #                       apply virtual loss on the selected path so the
+    #                       next selection diverges to a different leaf.
+    #   Phase 2 - EXPAND:  Collect all K leaf states, evaluate them in a
+    #                       single batched NN forward pass.
+    #   Phase 3 - BACKUP:  Roll back virtual loss on all K paths, expand
+    #                       the leaf nodes with real priors, and backprop
+    #                       real values up each path.
+    #
+    # This is all single-threaded within one worker, so tree mutation
+    # (N/W/Q dicts, children dict) is safe without locking.
+    # =========================================================================
+    sims_done = 0
+    while sims_done < n_iter:
+        current_batch = min(leaf_batch_size, n_iter - sims_done)
 
-        # SELECT: Traverse tree using PUCT
-        while node.expanded and not node.state.is_terminal():
-            node_valid = node.state.get_valid_actions()
-            if not node_valid:
-                break
+        # --- Phase 1: SELECT K leaves, applying virtual loss after each ---
+        # Each entry: (leaf_type, path, node, extra_info)
+        #   leaf_type: 'expand'   - normal unexpanded leaf, needs NN priors + value
+        #              'force_end' - no valid actions, evaluate the forced successor
+        #              'terminal'  - all routes built, just need NN value
+        #              'existing'  - already expanded (edge case), use stored value
+        pending = []
 
-            action = node.select_action(c_puct)
-            if action is None:
-                break
+        for _ in range(current_batch):
+            node = root
+            path: List[Tuple[MCTSNode, int]] = []
 
-            path.append((node, action))
-            node = node.get_child(action)
+            # PUCT selection down the tree. Virtual loss from earlier selections
+            # in this batch lowers Q-values on already-chosen paths, steering
+            # this selection toward a different leaf.
+            while node.expanded and not node.state.is_terminal():
+                node_valid = node.state.get_valid_actions()
+                if not node_valid:
+                    break
+                action = node.select_action(c_puct)
+                if action is None:
+                    break
+                path.append((node, action))
+                node = node.get_child(action)
 
-        # EXPAND: Expand leaf if not terminal
-        if not node.expanded and not node.state.is_terminal():
-            leaf_valid = node.state.get_valid_actions()
-
-            if leaf_valid:
-                state_dict = get_state_tensor(env, node.state)
-                priors, value = network_forward(model, state_dict, leaf_valid, device)
-                node.expand(priors, value)
-                v = value
+            # Classify the leaf we landed on
+            if not node.expanded and not node.state.is_terminal():
+                leaf_valid = node.state.get_valid_actions()
+                if leaf_valid:
+                    pending.append(('expand', path, node, leaf_valid))
+                else:
+                    # Dead end mid-episode: evaluate "what if this route ends here
+                    # and the next route starts from the transit center?"
+                    next_state = node.state.force_route_end()
+                    next_valid = next_state.get_valid_actions()
+                    pending.append(('force_end', path, node, (next_state, next_valid)))
+            elif node.state.is_terminal():
+                pending.append(('terminal', path, node, None))
             else:
-                # No valid actions - evaluate forced-end successor
-                next_state = node.state.force_route_end()
-                next_state_dict = get_state_tensor(env, next_state)
-                next_valid = next_state.get_valid_actions()
-                _, v = network_forward(model, next_state_dict, next_valid, device)
-        elif node.state.is_terminal():
-            # Terminal state: get value estimate from network (no valid actions)
-            state_dict = get_state_tensor(env, node.state)
-            _, v = network_forward(model, state_dict, [], device)
-        else:
-            v = node.value
+                pending.append(('existing', path, node, None))
 
-        # BACKPROPAGATE
-        for parent_node, action in reversed(path):
-            parent_node.update(action, v)
+            # Apply virtual loss so the next selection in this batch diverges.
+            # This is rolled back in Phase 3 before real backpropagation.
+            _apply_virtual_loss(path)
 
-    # Get policy from visit counts
-    policy = root.get_visit_count_policy(tau, n_nodes)
+        # --- Phase 2: Batch NN forward for all leaves needing evaluation ---
+        # Collect (state_dict, valid_actions) for each leaf that needs the NN.
+        # 'existing' leaves skip the NN since they already have a stored value.
+        nn_entries = []  # (index_in_pending, state_dict, valid_actions)
+        for i, (leaf_type, path, node, info) in enumerate(pending):
+            if leaf_type == 'expand':
+                # get_state_tensor syncs mcts_state to env then calls env._get_state().
+                # Each call produces independent numpy arrays, so collecting multiple
+                # states before the batch forward is safe.
+                sd = get_state_tensor(env, node.state)
+                nn_entries.append((i, sd, info))
+            elif leaf_type == 'force_end':
+                next_state, next_valid = info
+                sd = get_state_tensor(env, next_state)
+                nn_entries.append((i, sd, next_valid))
+            elif leaf_type == 'terminal':
+                sd = get_state_tensor(env, node.state)
+                nn_entries.append((i, sd, []))
 
-    return policy
+        # Single batched forward pass for all K leaves (the key speedup)
+        nn_results = {}
+        if nn_entries:
+            batch_sds = [e[1] for e in nn_entries]
+            batch_va = [e[2] for e in nn_entries]
+            batch_out = batch_network_forward(model, batch_sds, batch_va, device)
+            for j, (idx, _, _) in enumerate(nn_entries):
+                nn_results[idx] = batch_out[j]
+
+        # --- Phase 3: Rollback virtual loss, expand nodes, backpropagate ---
+        for i, (leaf_type, path, node, info) in enumerate(pending):
+            # Undo the fake visits/values from Phase 1
+            _rollback_virtual_loss(path)
+
+            if leaf_type == 'expand':
+                priors, value = nn_results[i]
+                # Guard: if two sims in this batch reached the same unexpanded node
+                # (rare, since virtual loss steers them apart), only expand once.
+                if not node.expanded:
+                    node.expand(priors, value)
+                v = value
+            elif leaf_type == 'force_end':
+                _, v = nn_results[i]
+            elif leaf_type == 'terminal':
+                _, v = nn_results[i]
+            else:  # existing (selection stopped at an expanded non-terminal node)
+                v = node.value
+
+            # Standard MCTS backpropagation with the real value
+            for parent_node, action in reversed(path):
+                parent_node.update(action, v)
+
+        sims_done += current_batch
+
+    return root.get_visit_count_policy(tau, n_nodes)
 
 
 def _create_mcts_state(env: TransitEnv) -> MCTSState:
@@ -273,3 +455,108 @@ def run_mcts_episode(model_state_dict: Dict[str, Any], policy_kwargs: Dict[str, 
         len(actions_taken),
         [list(r) for r in env.all_routes],
     )
+
+
+def _run_episode_on_env(env, model, config, seed, tau, device):
+    """
+    Run a single MCTS episode using an already-initialized env and model.
+
+    Shared logic for both the persistent worker loop and the standalone
+    run_mcts_episode function. The env and model must already exist and
+    have the correct weights loaded.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    state_dict, _ = env.reset(seed=seed)
+    mcts_state = _create_mcts_state(env)
+    tree = MCTSTree(mcts_state)
+
+    episode_data = []
+    actions_taken = []
+
+    while not mcts_state.is_terminal():
+        valid_actions = mcts_state.get_valid_actions()
+
+        if not valid_actions:
+            actions_taken.append(env.NO_VALID_ACTION)
+            mcts_state = mcts_state.force_route_end()
+            tree = MCTSTree(mcts_state)
+            continue
+
+        current_state_dict = get_state_tensor(env, mcts_state)
+        policy = run_mcts_simulations(model, env, tree, tau, config, add_noise=True, device=device)
+
+        episode_data.append((
+            {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in current_state_dict.items()},
+            policy.copy(),
+            list(valid_actions)
+        ))
+
+        valid_policy = policy[valid_actions]
+        if valid_policy.sum() > 0:
+            valid_policy = valid_policy / valid_policy.sum()
+            action = np.random.choice(valid_actions, p=valid_policy)
+        else:
+            action = np.random.choice(valid_actions)
+
+        actions_taken.append(action)
+        mcts_state = mcts_state.apply_action(action)
+        tree.advance(action)
+
+    terminal_reward, _ = env.simulate_routes_mcts(mcts_state.all_routes)
+
+    return (
+        episode_data,
+        terminal_reward,
+        len(actions_taken),
+        [list(r) for r in env.all_routes],
+    )
+
+
+def mcts_worker_loop(worker_id, config, policy_kwargs, shared_model_state, cmd_queue, result_queue):
+    """
+    Persistent MCTS worker process.
+
+    Unlike the old Pool+starmap approach where each episode created a fresh
+    TransitEnv (3 CSV reads, adjacency building) and GATV2ActorCritic
+    (+ torch.compile), this creates both once at startup and reuses them
+    across all episodes. Weight updates come via shared memory tensors
+    (in-place copy, no pickling overhead).
+
+    Commands (via cmd_queue):
+        {"type": "collect", "tau": float, "seed": int}  - Run one self-play episode
+        {"type": "stop"}                                  - Terminate worker
+    """
+    _cap_worker_threads()
+    device = 'cuda' if (config.get('gpu', False) and torch.cuda.is_available()) else 'cpu'
+
+    # Create env and model ONCE (the whole point of persistent workers).
+    # Previously these were recreated every episode, adding seconds of
+    # CSV parsing and model initialization overhead per iteration.
+    env = TransitEnv(config)
+    model = GATV2ActorCritic(**policy_kwargs)
+    model.to(device)
+    model.eval()
+    # No torch.compile: workers refresh weights each round, and the JIT
+    # warmup cost outweighs any benefit for batch-1 or small-batch inference.
+
+    while True:
+        cmd = cmd_queue.get()
+        cmd_type = cmd.get("type") if isinstance(cmd, dict) else None
+
+        if cmd_type == "stop":
+            break
+
+        elif cmd_type == "collect":
+            # Load latest weights from shared memory (zero-copy read of
+            # tensors placed in shared memory by MCTSAgent._update_shared_weights)
+            model.load_state_dict(shared_model_state)
+            model.eval()
+
+            tau = cmd["tau"]
+            seed = cmd["seed"]
+
+            result = _run_episode_on_env(env, model, config, seed, tau, device)
+            result_queue.put(result)

@@ -124,10 +124,66 @@ class MCTSAgent:
 
         # Parallel workers configuration
         self.num_workers = config.get('num_mcts_workers', 4)
-        self.pool = mp_ctx.Pool(self.num_workers)
+        self._start_persistent_workers()
 
         # Save initial network visualization
         self._save_network_visualization()
+
+    def _start_persistent_workers(self) -> None:
+        """
+        Spawn persistent worker processes with shared-memory weight distribution.
+
+        Architecture (same pattern as PPO's ParallelEnvManager):
+        - Each worker creates its TransitEnv and GATV2ActorCritic once at startup
+        - Model weights live in shared memory tensors (share_memory_())
+        - MCTSAgent updates shared memory after each training phase
+        - Workers load from shared memory at the start of each episode
+        - Commands flow through per-worker queues; results through a shared queue
+
+        This avoids the old Pool+starmap overhead of pickling the state dict and
+        recreating env/model from scratch every episode.
+        """
+        from rl.mcts_worker import mcts_worker_loop
+
+        # Place model weights in shared memory so workers can read them directly.
+        # strip _orig_mod. prefix added by torch.compile on the main process.
+        self.shared_model_state = {}
+        clean_state = self._get_clean_state_dict()
+        for name, param in clean_state.items():
+            shared_tensor = param.cpu().clone()
+            shared_tensor.share_memory_()  # Move to OS shared memory segment
+            self.shared_model_state[name] = shared_tensor
+
+        # Each worker gets its own command queue (for "collect"/"stop" messages).
+        # All workers share a single result queue (results are unordered but
+        # we just need all num_workers results per iteration).
+        self._cmd_queues = []
+        self._result_queue = mp_ctx.Queue()
+        self._worker_procs = []
+
+        for wid in range(self.num_workers):
+            cmd_q = mp_ctx.Queue()
+            proc = mp_ctx.Process(
+                target=mcts_worker_loop,
+                args=(wid, self.config, self.policy_kwargs,
+                      self.shared_model_state, cmd_q, self._result_queue),
+            )
+            proc.start()
+            self._cmd_queues.append(cmd_q)
+            self._worker_procs.append(proc)
+
+    def _update_shared_weights(self) -> None:
+        """
+        Push current model weights to shared memory for workers to pick up.
+
+        Called at the start of each _collect_episodes(). Workers will load
+        these weights via load_state_dict() before running their next episode.
+        In-place copy avoids any pickling or serialization overhead.
+        """
+        clean_state = self._get_clean_state_dict()
+        with torch.no_grad():
+            for name, param in clean_state.items():
+                self.shared_model_state[name].copy_(param.cpu())
 
     def _save_network_visualization(self) -> None:
         """Save initial network and demand visualization."""
@@ -230,101 +286,173 @@ class MCTSAgent:
 
         return priors, value
 
+    @torch.inference_mode()
+    def _batch_network_forward(self, state_dicts: List[Dict[str, Any]], valid_actions_list: List[List[int]]) -> List[Tuple[Dict[int, float], float]]:
+        """
+        Batched forward pass for multiple leaf states in one NN call.
+        Main-process version of batch_network_forward (used during evaluation).
+        See mcts_worker.batch_network_forward for detailed documentation.
+        """
+        if not state_dicts:
+            return []
+
+        self.model.eval()
+
+        # Pack K leaf states into a single PyG Batch
+        data_list = [self._state_to_pyg_data(sd).to(self.device) for sd in state_dicts]
+        batch = Batch.from_data_list(data_list).to(self.device)
+
+        # Single forward pass through GATv2 backbone + actor/critic heads
+        z = self.model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+        logits = self.model.actor_head(z).squeeze(-1)
+        g = self.model.critic_readout(z, batch.batch)
+        values = self.model.critic_head(g).squeeze(-1)
+
+        # Split concatenated outputs back into per-graph results
+        ptr = batch.ptr
+        results = []
+        for i in range(len(state_dicts)):
+            start, end = ptr[i].item(), ptr[i + 1].item()
+            graph_logits = logits[start:end]
+            value = values[i].item()
+
+            valid_actions = valid_actions_list[i]
+            if not valid_actions:
+                results.append(({}, value))
+                continue
+
+            masked_logits = torch.full_like(graph_logits, float('-inf'))
+            for a in valid_actions:
+                if a < len(graph_logits):
+                    masked_logits[a] = graph_logits[a]
+
+            probs = F.softmax(masked_logits, dim=0).cpu().numpy()
+            priors = {a: float(probs[a]) for a in valid_actions if a < len(probs)}
+            results.append((priors, value))
+
+        return results
+
     def _run_mcts(self, tree: MCTSTree, tau: float, add_noise: bool = True) -> np.ndarray:
         """
-        Run MCTS simulations from current tree root.
+        Run MCTS simulations with batched leaf evaluation and virtual loss.
+
+        Used for evaluation on the main process (GPU). Same 3-phase batched
+        algorithm as run_mcts_simulations in mcts_worker.py (used by workers).
+        See that function for detailed phase-by-phase documentation.
 
         Args:
             tree: MCTSTree to search
-            tau: Temperature for visit count policy (passed from caller for consistency)
+            tau: Temperature for visit count policy
             add_noise: Whether to add Dirichlet noise at root
 
         Returns:
             Policy array from visit counts
         """
-        root = tree.root
-        root_state = root.state
+        from rl.mcts_worker import _apply_virtual_loss, _rollback_virtual_loss
 
-        # Get valid actions at root
-        valid_actions = root_state.get_valid_actions()
+        root = tree.root
+        leaf_batch_size = self.config.get('mcts_batch_size', 8)
+
+        valid_actions = root.state.get_valid_actions()
         if not valid_actions:
-            # No valid actions - return empty policy
             return np.zeros(self.n_nodes, dtype=np.float32)
 
-        # Expand root if needed
         if not root.expanded:
-            state_dict = self._get_state_tensor(root_state)
+            state_dict = self._get_state_tensor(root.state)
             priors, value = self._network_forward(state_dict, valid_actions)
             root.expand(priors, value)
 
-        # Add Dirichlet noise at root for exploration
         if add_noise and root.P:
             root.P = add_dirichlet_noise(
                 root.P, self.dirichlet_alpha, self.dirichlet_eps
             )
 
-        # Run simulations
-        for _ in range(self.n_iter):
-            node = root
-            path: List[Tuple[MCTSNode, int]] = []
+        # Batched simulation loop (see mcts_worker.run_mcts_simulations for
+        # detailed comments on Phase 1/2/3 and virtual loss mechanics)
+        sims_done = 0
+        while sims_done < self.n_iter:
+            current_batch = min(leaf_batch_size, self.n_iter - sims_done)
 
-            # SELECT: Traverse tree using PUCT
-            while node.expanded and not node.state.is_terminal():
-                # Check for valid actions at this node
-                node_valid = node.state.get_valid_actions()
-                if not node_valid:
-                    # No valid actions - force route end
-                    break
+            # Phase 1: SELECT K leaves with virtual loss
+            pending = []
 
-                action = node.select_action(self.c_puct)
-                if action is None:
-                    break
+            for _ in range(current_batch):
+                node = root
+                path: List[Tuple[MCTSNode, int]] = []
 
-                path.append((node, action))
-                node = node.get_child(action)
+                while node.expanded and not node.state.is_terminal():
+                    node_valid = node.state.get_valid_actions()
+                    if not node_valid:
+                        break
+                    action = node.select_action(self.c_puct)
+                    if action is None:
+                        break
+                    path.append((node, action))
+                    node = node.get_child(action)
 
-            # EXPAND: Expand leaf if not terminal
-            if not node.expanded and not node.state.is_terminal():
-                leaf_valid = node.state.get_valid_actions()
-
-                if leaf_valid:
-                    state_dict = self._get_state_tensor(node.state)
-                    priors, value = self._network_forward(state_dict, leaf_valid)
-                    node.expand(priors, value)
-                    v = value
+                if not node.expanded and not node.state.is_terminal():
+                    leaf_valid = node.state.get_valid_actions()
+                    if leaf_valid:
+                        pending.append(('expand', path, node, leaf_valid))
+                    else:
+                        next_state = node.state.force_route_end()
+                        next_valid = next_state.get_valid_actions()
+                        pending.append(('force_end', path, node, (next_state, next_valid)))
+                elif node.state.is_terminal():
+                    pending.append(('terminal', path, node, None))
                 else:
-                    # No valid actions mid-episode: evaluate the forced-end successor.
-                    # A route ending early isn't necessarily bad - the value depends on
-                    # what comes next. We evaluate: "If this route ends here, what's the
-                    # value of starting the next route from the transit center?" This
-                    # removes bias against exploration paths that lead to shorter routes.
-                    next_state = node.state.force_route_end()
-                    next_state_dict = self._get_state_tensor(next_state)
-                    next_valid = next_state.get_valid_actions()
-                    _, v = self._network_forward(next_state_dict, next_valid)
-            elif node.state.is_terminal():
-                # Terminal state: get value estimate from network (no valid actions)
-                # CONCEPTUAL GAP VS ALPHAZERO: AlphaZero uses ground-truth outcome z here,
-                # but we substitute the Value Network V(s). This risks a "closed loop" where
-                # erroneous network values are reinforced by MCTS without reality checks (sim),
-                # though final MSE targets are eventually grounded in real rewards.
-                state_dict = self._get_state_tensor(node.state)
-                _, v = self._network_forward(state_dict, [])
-            else:
-                v = node.value
+                    pending.append(('existing', path, node, None))
 
-            # BACKPROPAGATE
-            for parent_node, action in reversed(path):
-                parent_node.update(action, v)
+                _apply_virtual_loss(path)
 
-        # Get policy from visit counts using passed temperature
-        policy = root.get_visit_count_policy(tau, self.n_nodes)
+            # Phase 2: Batch NN forward
+            nn_entries = []
+            for i, (leaf_type, path, node, info) in enumerate(pending):
+                if leaf_type == 'expand':
+                    sd = self._get_state_tensor(node.state)
+                    nn_entries.append((i, sd, info))
+                elif leaf_type == 'force_end':
+                    next_state, next_valid = info
+                    sd = self._get_state_tensor(next_state)
+                    nn_entries.append((i, sd, next_valid))
+                elif leaf_type == 'terminal':
+                    sd = self._get_state_tensor(node.state)
+                    nn_entries.append((i, sd, []))
 
-        return policy
+            nn_results = {}
+            if nn_entries:
+                batch_sds = [e[1] for e in nn_entries]
+                batch_va = [e[2] for e in nn_entries]
+                batch_out = self._batch_network_forward(batch_sds, batch_va)
+                for j, (idx, _, _) in enumerate(nn_entries):
+                    nn_results[idx] = batch_out[j]
+
+            # Phase 3: Rollback virtual loss, expand, backpropagate
+            for i, (leaf_type, path, node, info) in enumerate(pending):
+                _rollback_virtual_loss(path)
+
+                if leaf_type == 'expand':
+                    priors, value = nn_results[i]
+                    if not node.expanded:
+                        node.expand(priors, value)
+                    v = value
+                elif leaf_type == 'force_end':
+                    _, v = nn_results[i]
+                elif leaf_type == 'terminal':
+                    _, v = nn_results[i]
+                else:
+                    v = node.value
+
+                for parent_node, action in reversed(path):
+                    parent_node.update(action, v)
+
+            sims_done += current_batch
+
+        return root.get_visit_count_policy(tau, self.n_nodes)
 
     def _collect_episodes(self, tau: float, iteration: int) -> List[Tuple]:
         """
-        Collect episodes from parallel workers.
+        Collect episodes from persistent parallel workers.
 
         Args:
             tau: Temperature for action selection
@@ -333,31 +461,44 @@ class MCTSAgent:
         Returns:
             List of (episode_data, raw_reward, episode_length, routes) tuples
         """
-        from rl.mcts_worker import run_mcts_episode
+        # Push latest weights to shared memory
+        self._update_shared_weights()
 
         # Generate unique seeds for each worker
         base_seed = self.seed + iteration * self.num_workers
 
-        # Serialize model weights to CPU for workers.
-        # Strip "_orig_mod." prefix added by torch.compile so workers can load into uncompiled models.
-        cpu_state_dict = {k.replace("_orig_mod.", ""): v.cpu() for k, v in self.model.state_dict().items()}
-
-        # Prepare worker inputs
-        worker_inputs = [
-            (cpu_state_dict, self.policy_kwargs, self.config, base_seed + i, tau)
-            for i in range(self.num_workers)
-        ]
-
-        # Run episodes in parallel
+        # Dispatch collect commands
         print(f"  Collecting...", end="", flush=True)
-        results = self.pool.starmap(run_mcts_episode, worker_inputs)
+        for i in range(self.num_workers):
+            self._cmd_queues[i].put({
+                "type": "collect",
+                "tau": tau,
+                "seed": base_seed + i,
+            })
+
+        # Collect results from all workers
+        results = []
+        for _ in range(self.num_workers):
+            results.append(self._result_queue.get())
         print(" done")
         return results
 
     def _cleanup(self) -> None:
-        """Clean up pool at end of training."""
-        self.pool.close()
-        self.pool.join()
+        """
+        Shut down persistent workers and clean up resources.
+        Called in the finally block of train() to ensure workers are
+        always terminated, even if training is interrupted.
+        """
+        for q in self._cmd_queues:
+            q.put({"type": "stop"})
+        for p in self._worker_procs:
+            p.join(timeout=10.0)
+            if p.is_alive():
+                p.terminate()  # Force-kill workers that didn't stop gracefully
+        self._cmd_queues.clear()
+        self._worker_procs.clear()
+        self._result_queue = None
+        self.shared_model_state = None
 
     def _train_step(self) -> Dict[str, float]:
         """
