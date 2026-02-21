@@ -1418,7 +1418,10 @@ class TransitEnv(gym.Env):
         # All other modes use the same final simulation-based reward.
         # This is the primary objective that balances rider outcomes and operator costs.
         coverage = sim_result['demand_coverage_potential']
-        service_rate = sim_result['service_rate']
+        # Reward hack fix: service_rate has variable denominator (wanting_to_onboard),
+        # agent exploits by building short routes. Use fixed denominator (total_demand).
+        # service_rate = sim_result['service_rate']
+        service_rate = sim_result['demand_coverage_actual']
 
         total_wait = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
         total_movement = sim_result['total_movement_completed'] + sim_result['total_movement_ongoing']
