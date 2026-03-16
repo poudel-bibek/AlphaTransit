@@ -30,8 +30,8 @@ Our primary algorithm combines Monte Carlo Tree Search (MCTS) with neural networ
 
 Graph-attention actor-critic trained with Proximal Policy Optimization:
 - **Parallel environment workers** for efficient sample collection
-- **Reward shaping** during route construction + terminal simulation reward
-- **Generalized Advantage Estimation** for variance reduction
+- **Intermediate delta reward shaping** during route construction + terminal simulation reward
+- **Episode-level Generalized Advantage Estimation** for variance reduction
 - Same network architecture as AlphaTransit for fair comparison
 
 ### Baselines
@@ -69,30 +69,50 @@ source .venv/bin/activate
 
 ## Quick Start
 
-### 1. Run a baseline
+### Train with best hyperparameters
+
+Pass `--apply_best_params` to automatically use the best hyperparameters found from sweep experiments for the given algorithm and alpha. Explicit CLI args still override.
 
 ```bash
-# Heuristic baseline
-python main.py --mode=baseline --baseline_type=demand_cover --network=bloomington --num_eval_runs=5
+# PPO with best params (alpha=0.3, ~5 hours)
+python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params
 
-# Genetic Algorithm baseline
-python main.py --mode=baseline --baseline_type=genetic --ga_population=50 --ga_generations=100 --ga_num_workers=4
+# PPO with best params (alpha=1.0, ~3 hours)
+python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params
 
-# Real-world routes
-python main.py --mode=baseline --baseline_type=real_world --route_init=transit_center
+# AlphaTransit with best params (alpha=0.3, ~24-30 hours)
+python main.py --algorithm mcts --gpu --alpha=0.3 --apply_best_params
+
+# AlphaTransit with best params (alpha=1.0, ~18-24 hours)
+python main.py --algorithm mcts --gpu --alpha=1.0 --apply_best_params
+
+# Override a specific param while keeping the rest
+python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --lr=0.001
 ```
 
-### 2. Train a policy
+### Run baselines
 
 ```bash
-# AlphaTransit (1M environment steps equivalent)
-python main.py --algorithm mcts --gpu --max_iterations=744 --n_iter=400
+# Heuristic baselines (alpha=0.3)
+python main.py --mode=baseline --baseline_type=random_walk    --route_init=transit_center --alpha=0.3
+python main.py --mode=baseline --baseline_type=demand_cover   --route_init=transit_center --alpha=0.3
+python main.py --mode=baseline --baseline_type=shortest_path  --route_init=transit_center --alpha=0.3
+python main.py --mode=baseline --baseline_type=reward_max     --route_init=transit_center --alpha=0.3
+python main.py --mode=baseline --baseline_type=real_world     --route_init=transit_center --alpha=0.3
 
-# PPO (1M environment steps)
-python main.py --algorithm ppo --gpu --anneal_lr --max_steps=1000000
+# Heuristic baselines (alpha=1.0)
+python main.py --mode=baseline --baseline_type=random_walk    --route_init=transit_center --alpha=1.0
+python main.py --mode=baseline --baseline_type=demand_cover   --route_init=transit_center --alpha=1.0
+python main.py --mode=baseline --baseline_type=shortest_path  --route_init=transit_center --alpha=1.0
+python main.py --mode=baseline --baseline_type=reward_max     --route_init=transit_center --alpha=1.0
+python main.py --mode=baseline --baseline_type=real_world     --route_init=transit_center --alpha=1.0
+
+# Genetic Algorithm
+python main.py --mode=baseline --baseline_type=genetic --alpha=0.3 --ga_population=50 --ga_generations=100 --ga_num_workers=4
+python main.py --mode=baseline --baseline_type=genetic --alpha=1.0 --ga_population=50 --ga_generations=100 --ga_num_workers=4
 ```
 
-### 3. Evaluate a saved policy
+### Evaluate a saved policy
 
 ```bash
 # AlphaTransit evaluation
@@ -102,39 +122,59 @@ python main.py --algorithm mcts --mode=eval --saved_policy_path=training_data/<t
 python main.py --algorithm ppo --mode=eval --saved_policy_path=training_data/<timestamp>/ppo_policies/policy_final.pth
 ```
 
-### 4. Hyperparameter sweeps (requires WandB)
+### Hyperparameter sweeps (requires WandB)
 
 ```bash
-python sweep.py --algorithm mcts
 python sweep.py --algorithm ppo
+python sweep.py --algorithm mcts
+```
+
+### Reward ablation experiments
+
+```bash
+# Alpha 0.3
+python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --ppo_reward_mode=terminal_only
+python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --ppo_reward_mode=terminal_intermediate_raw_early_stop
+python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --ppo_reward_mode=terminal_intermediate_delta_early_stop
+python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --ppo_reward_mode=terminal_intermediate_delta_no_early_stop
+
+# Alpha 1.0
+python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params --ppo_reward_mode=terminal_only
+python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params --ppo_reward_mode=terminal_intermediate_raw_early_stop
+python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params --ppo_reward_mode=terminal_intermediate_delta_early_stop
+python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params --ppo_reward_mode=terminal_intermediate_delta_no_early_stop
 ```
 
 ## Key Hyperparameters
+
+Best hyperparameters are stored in `config.py` (`BEST_PARAMS` dict) and applied automatically with `--apply_best_params`. They were found via Bayesian/grid sweeps on WandB. Below are the defaults (which match alpha=0.3 PPO best params):
 
 ### AlphaTransit
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--max_iterations` | 744 | Training iterations (~1M steps with 8 workers) |
-| `--n_iter` | 400 | MCTS simulations per decision |
+| `--n_iter` | 100 | MCTS simulations per decision |
+| `--c_puct` | 1.0 | PUCT exploration constant |
+| `--temp_schedule` | "1.0:1.0" | Temperature schedule (progress:tau pairs) |
+| `--num_gat_blocks` | 4 | GATv2 attention blocks |
+| `--train_steps_per_iter` | 200 | Network training steps per MCTS iteration |
+| `--buffer_capacity` | 50000 | Replay buffer capacity |
+| `--max_iterations` | 680 | Training iterations (~1M steps with 8 workers) |
 | `--num_mcts_workers` | 8 | Parallel episode collection workers |
-| `--c_puct` | 1.5 | PUCT exploration constant |
-| `--dirichlet_alpha` | 0.3 | Dirichlet noise concentration |
-| `--temp_schedule` | "0.3:1.0,0.6:0.5,1.0:0.1" | Temperature schedule (progress:tau pairs) |
-| `--mcts_eval_every` | 3 | Evaluate every N iterations |
 
 ### PPO
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `--max_steps` | 1,000,000 | Total training environment steps |
-| `--num_ppo_workers` | 8 | Parallel environment workers |
 | `--lr` | 5e-5 | Learning rate |
-| `--anneal_lr` | False | Enable LR annealing (with `--min_lr` floor) |
-| `--K_epochs` | 4 | PPO epochs per update |
+| `--K_epochs` | 8 | PPO epochs per update |
 | `--batch_size` | 256 | Mini-batch size |
-| `--clip_frac` | 0.1 | PPO clipping ratio |
-| `--ppo_eval_every` | 5 | Evaluate every N updates |
+| `--clip_frac` | 0.2 | PPO clipping ratio |
+| `--num_gat_blocks` | 4 | GATv2 attention blocks |
+| `--activation` | tanh | Activation function |
+| `--ppo_reward_mode` | delta_no_early_stop | Reward shaping mode |
+| `--num_ppo_workers` | 8 | Parallel environment workers |
 
 ### Genetic Algorithm
 
@@ -160,7 +200,7 @@ python sweep.py --algorithm ppo
 ```
 AlphaTransit/
 ├── main.py                 # CLI entry point
-├── config.py               # Configuration and argument parsing
+├── config.py               # Configuration, argument parsing, and best hyperparameters
 ├── mcts.py                 # AlphaTransit training/evaluation
 ├── ppo.py                  # PPO training/evaluation
 ├── sweep.py                # WandB hyperparameter sweeps
@@ -187,7 +227,7 @@ AlphaTransit/
 │
 ├── uxsim/                  # UXsim simulator (extended with BusHandler)
 ├── plots/                  # Visualization and analysis scripts
-└── training_data/          # Training outputs, checkpoints, results
+└── training_data/          # Training outputs, checkpoints, sweep data
 ```
 
 ## Network Architecture
@@ -212,14 +252,16 @@ Each node has 16 features:
 
 Terminal reward combining:
 - **Demand coverage**: Fraction of total demand reachable by designed routes
-- **Service rate**: Fraction of potential passengers successfully served
+- **Service rate**: Fraction of total demand successfully served (fixed denominator)
 - **Travel time penalty**: Average passenger journey duration
 - **Route overlap penalty**: Discourages redundant route segments
+- **Fleet cost**: Penalizes excessive bus deployment
+- **Bus utilization**: Rewards efficient use of fleet
 
 ## Simulation
 
 - **Engine**: UXsim mesoscopic simulator with Newell's car-following model
-- **Time step**: Δt = 1 second, platoon size Δn = 5
+- **Time step**: dt = 1 second, platoon size dn = 5
 - **Horizon**: 10,000 steps (~2.7 hours)
 - **Bus parameters**: 40 passenger capacity, 60s dwell time per stop
 - **Frequency setting**: Max-load rule normalized for route overlaps

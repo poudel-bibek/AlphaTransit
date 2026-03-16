@@ -10,6 +10,81 @@ import torch
 from typing import Any, Dict
 
 
+# Best hyperparameters found from sweep experiments.
+# PPO: from term_ep_1 (alpha=0.3, 18 runs) and term_ep_2 (alpha=1.0, 32 runs)
+# MCTS: from 3_faster_general (alpha=0.3, 21 runs) and 4_faster_general (alpha=1.0, 24 runs)
+# Best PPO reward mode: terminal_intermediate_delta_no_early_stop (both alphas)
+BEST_PARAMS = {
+    "ppo": {
+        0.3: {
+            "lr": 5e-5,
+            "anneal_lr": False,
+            "K_epochs": 8,
+            "num_gat_blocks": 4,
+            "batch_size": 256,
+            "clip_frac": 0.2,
+            "entropy_coef": 0.01,
+            "activation": "tanh",
+            "ppo_reward_mode": "terminal_intermediate_delta_no_early_stop",
+        },
+        1.0: {
+            "lr": 1e-5,
+            "anneal_lr": True,
+            "K_epochs": 4,
+            "num_gat_blocks": 4,
+            "batch_size": 128,
+            "clip_frac": 0.1,
+            "entropy_coef": 0.02,
+            "activation": "tanh",
+            "ppo_reward_mode": "terminal_intermediate_delta_no_early_stop",
+        },
+    },
+    "mcts": {
+        0.3: {
+            "lr": 1e-4,
+            "c_puct": 1.5,
+            "n_iter": 100,
+            "temp_schedule": "1.0:1.0",
+            "num_gat_blocks": 8,
+            "batch_size": 256,
+            "buffer_capacity": 50000,
+            "activation": "tanh",
+            "dirichlet_alpha": 0.3,
+            "train_steps_per_iter": 200,
+        },
+        1.0: {
+            "lr": 1e-4,
+            "c_puct": 1.0,
+            "n_iter": 100,
+            "temp_schedule": "1.0:1.0",
+            "num_gat_blocks": 4,
+            "batch_size": 256,
+            "buffer_capacity": 50000,
+            "activation": "tanh",
+            "dirichlet_alpha": 0.3,
+            "train_steps_per_iter": 200,
+        },
+    },
+}
+
+
+def apply_best_params(config: Dict[str, Any], explicitly_set: set = None) -> Dict[str, Any]:
+    """
+    Override argparse defaults with best sweep params based on algorithm and alpha.
+    Only applies if --algorithm and --alpha are set and a match exists in BEST_PARAMS.
+    Keys explicitly passed on the CLI are never overridden.
+    """
+    algo = config.get("algorithm")
+    alpha = config.get("alpha")
+    if algo in BEST_PARAMS and alpha in BEST_PARAMS[algo]:
+        best = BEST_PARAMS[algo][alpha]
+        for k, v in best.items():
+            if explicitly_set and k in explicitly_set:
+                continue  # CLI override takes precedence
+            config[k] = v
+    return config
+
+
 def set_global_seeds(seed: int) -> None:
     """
     Set seeds for Python, NumPy, and PyTorch.
@@ -26,10 +101,20 @@ def get_config() -> Dict[str, Any]:
     """
     A unified config interface for both main and sweep.
     Does NOT set seeds or device here to allow overrides from sweep.
+
+    Applies best sweep params for the given algorithm+alpha, but any
+    explicitly passed CLI args take precedence over best params.
     """
     parser = build_arg_parser()
     args = parser.parse_args()
-    return vars(args)
+    # Track which args were explicitly passed on the command line
+    explicitly_set = {action.dest for action in parser._actions
+                      if action.dest in args and
+                      getattr(args, action.dest) != action.default}
+    config = vars(args)
+    if config.get("apply_best_params"):
+        config = apply_best_params(config, explicitly_set)
+    return config
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -39,6 +124,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
     parser.add_argument("--algorithm", choices=["ppo", "mcts"], default=None, help="Learning algorithm (required for train/eval modes)")
+    parser.add_argument("--apply_best_params", action="store_true", help="Apply best hyperparameters from sweep experiments for the given algorithm+alpha")
 
     # Simulation setup:
     parser.add_argument("--network", choices=["sioux_falls", "bloomington",], default="bloomington", help="Network selection")
@@ -74,7 +160,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end")
     parser.add_argument("--route_init", type=str, default="transit_center", help="Route initialization scheme")
     parser.add_argument("--transit_center_node", type=str, default="96", help="Transit center node identifier")
-    parser.add_argument("--ppo_reward_mode", type=str, default="terminal_only",
+    parser.add_argument("--ppo_reward_mode", type=str, default="terminal_intermediate_delta_no_early_stop",
         choices=["terminal_only", "terminal_intermediate_raw_early_stop", "terminal_intermediate_delta_early_stop", "terminal_intermediate_delta_no_early_stop"],
         help="Reward shaping mode (PPO only; MCTS uses terminal reward targets)")
 
@@ -89,7 +175,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
     parser.add_argument("--ppo_eval_every", type=int, default=5, help="PPO: Evaluate every N updates")
     parser.add_argument("--num_ppo_workers", type=int, default=8, help="PPO: Number of parallel workers")
-    parser.add_argument("--K_epochs", type=int, default=4, help="PPO: Number of epochs per update")
+    parser.add_argument("--K_epochs", type=int, default=8, help="PPO: Number of epochs per update")
     parser.add_argument("--batch_size", type=int, default=256, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO: Clipping ratio for policy loss")
     parser.add_argument("--vf_clip_param", type=float, default=0.5, help="PPO: Clipping ratio for value loss")
@@ -98,7 +184,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entropy_coef", type=float, default=0.01, help="PPO: Entropy coefficient")
     parser.add_argument("--value_loss_coef", type=float, default=0.5, help="PPO: Value loss coefficient")
     parser.add_argument("--max_grad_norm", type=float, default=0.5, help="Max gradient norm")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
+    parser.add_argument("--num_gat_blocks", type=int, default=4, help="Number of GAT attention blocks")
+    parser.add_argument("--activation", type=str, default="tanh", choices=["tanh", "leaky_relu"], help="Activation function")
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
     parser.add_argument("--save_policy_ppo", action="store_true", help="PPO: Save policy checkpoints to disk")
     parser.add_argument("--min_lr", type=float, default=1e-5, help="PPO: Minimum learning rate floor when annealing")
@@ -107,17 +195,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
     #                    max_iterations=744 × 1,344 ≈ 1M steps (comparable to PPO)
     # Eval frequency: 744 iterations / eval_every=3 → ~248 eval points
-    parser.add_argument("--n_iter", type=int, default=400, help="MCTS: Simulations per move")
+    parser.add_argument("--n_iter", type=int, default=100, help="MCTS: Simulations per move")
     parser.add_argument("--mcts_batch_size", type=int, default=8, help="MCTS: Leaves to batch per NN forward pass (virtual loss)")
-    parser.add_argument("--c_puct", type=float, default=1.5, help="MCTS: PUCT exploration constant")
+    parser.add_argument("--c_puct", type=float, default=1.0, help="MCTS: PUCT exploration constant")
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
-    parser.add_argument("--buffer_capacity", type=int, default=100000, help="MCTS: Replay buffer capacity")
+    parser.add_argument("--buffer_capacity", type=int, default=50000, help="MCTS: Replay buffer capacity")
     parser.add_argument("--num_mcts_workers", type=int, default=8, help="MCTS: Number of parallel workers")
     parser.add_argument("--train_steps_per_iter", type=int, default=200, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=680, help="MCTS: Max iterations (680 × 8 workers × ~203 steps ≈ 1.1M steps)")
     parser.add_argument("--mcts_eval_every", type=int, default=5, help="MCTS: Evaluate every N iterations")
-    parser.add_argument("--temp_schedule", type=str, default="0.7:1.0,0.9:0.7,1.0:0.5", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
+    parser.add_argument("--temp_schedule", type=str, default="1.0:1.0", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
 
     # Model:
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")

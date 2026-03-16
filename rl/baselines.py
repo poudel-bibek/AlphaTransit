@@ -110,12 +110,11 @@ def create_main_save_dir(config):
     """
     now = datetime.now()
     main_save_dir = os.path.join(
-        config.get("save_dir"), 
+        config.get("save_dir"),
         f"{config.get('baseline_type')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
     os.makedirs(main_save_dir, exist_ok=True)
-    eval_root = ensure_eval_step_update_dir(main_save_dir, update="baseline", steps=0, folder_name="eval_results")
-    return main_save_dir, eval_root
+    return main_save_dir, main_save_dir
 
 def create_initial_network_plot(env, config, img_dir):
     """
