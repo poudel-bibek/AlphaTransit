@@ -10,7 +10,7 @@ Key components:
 - Dirichlet noise for exploration during self-play
 - Replay buffer with terminal-only rewards
 - Welford normalization for reward stability
-- Parallel episode collection via num_mcts_workers (replaces episodes_per_iter)
+- Parallel episode collection via num_mcts_workers with configurable episodes_per_iter
 """
 
 import gc
@@ -121,6 +121,8 @@ class MCTSAgent:
 
         # Parallel workers configuration
         self.num_workers = config.get('num_mcts_workers', 4)
+        eps_cfg = config.get('episodes_per_iter', 0)
+        self.episodes_per_iter = eps_cfg if eps_cfg > 0 else self.num_workers
         self._start_persistent_workers()
 
         # Save initial network visualization
@@ -453,22 +455,29 @@ class MCTSAgent:
         # Push latest weights to shared memory
         self._update_shared_weights()
 
-        # Generate unique seeds for each worker
-        base_seed = self.seed + iteration * self.num_workers
-
-        # Dispatch collect commands
-        print(f"  Collecting...", end="", flush=True)
-        for i in range(self.num_workers):
-            self._cmd_queues[i].put({
-                "type": "collect",
-                "tau": tau,
-                "seed": base_seed + i,
-            })
-
-        # Collect results from all workers
+        target = self.episodes_per_iter
         results = []
-        for _ in range(self.num_workers):
-            results.append(self._result_queue.get())
+        episode_idx = 0
+
+        # Collect in rounds of num_workers until target episodes reached.
+        # When episodes_per_iter == num_workers (default), this is a single round.
+        print(f"  Collecting {target} episodes...", end="", flush=True)
+        while episode_idx < target:
+            batch = min(self.num_workers, target - episode_idx)
+            base_seed = self.seed + iteration * target + episode_idx
+
+            for i in range(batch):
+                self._cmd_queues[i].put({
+                    "type": "collect",
+                    "tau": tau,
+                    "seed": base_seed + i,
+                })
+
+            for _ in range(batch):
+                results.append(self._result_queue.get())
+
+            episode_idx += batch
+
         print(" done")
         return results
 
@@ -600,6 +609,7 @@ class MCTSAgent:
         """
         print(f"Starting MCTS training for {self.max_iterations} iterations")
         print(f"  Parallel workers: {self.num_workers}")
+        print(f"  Episodes per iteration: {self.episodes_per_iter}")
         print(f"  Train steps per iteration: {self.train_steps_per_iter}")
         print(f"  MCTS simulations per move: {self.n_iter}")
         print(f"  Device: {self.device}")
