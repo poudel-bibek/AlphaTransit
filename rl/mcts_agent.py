@@ -120,9 +120,8 @@ class MCTSAgent:
         self.policy_dir.mkdir(parents=True, exist_ok=True)
 
         # Parallel workers configuration
-        self.num_workers = config.get('num_mcts_workers', 4)
-        eps_cfg = config.get('episodes_per_iter', 0)
-        self.episodes_per_iter = eps_cfg if eps_cfg > 0 else self.num_workers
+        self.episodes_per_iter = config.get('episodes_per_iter', 8)
+        self.num_workers = min(config.get('num_mcts_workers', 8), self.episodes_per_iter)
         self._start_persistent_workers()
 
         # Save initial network visualization
@@ -460,7 +459,6 @@ class MCTSAgent:
         episode_idx = 0
 
         # Collect in rounds of num_workers until target episodes reached.
-        # When episodes_per_iter == num_workers (default), this is a single round.
         print(f"  Collecting {target} episodes...", end="", flush=True)
         while episode_idx < target:
             batch = min(self.num_workers, target - episode_idx)
