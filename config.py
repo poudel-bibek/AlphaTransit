@@ -200,9 +200,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
     parser.add_argument("--buffer_capacity", type=int, default=50000, help="MCTS: Replay buffer capacity")
     parser.add_argument("--num_mcts_workers", type=int, default=8, help="MCTS: Number of parallel workers")
-    parser.add_argument("--episodes_per_iter", type=int, default=8, help="MCTS: Episodes to collect per iteration")
+    parser.add_argument("--episodes_per_iter", type=int, default=16, help="MCTS: Episodes to collect per iteration")
     parser.add_argument("--train_steps_per_iter", type=int, default=200, help="MCTS: Training steps per iteration")
-    parser.add_argument("--max_iterations", type=int, default=680, help="MCTS: Max iterations (680 × 8 workers × ~203 steps ≈ 1.1M steps)")
+    parser.add_argument("--max_iterations", type=int, default=308, help="MCTS: Max iterations (308 × 16 eps × ~203 steps ≈ 1.0M steps)")
     parser.add_argument("--mcts_eval_every", type=int, default=5, help="MCTS: Evaluate every N iterations")
     parser.add_argument("--temp_schedule", type=str, default="0.7:1.0,0.9:0.7,1.0:0.5", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
 
