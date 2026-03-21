@@ -44,7 +44,6 @@ BEST_PARAMS = {
             "lr": 1e-4,
             "c_puct": 1.5,
             "n_iter": 100,
-            "temp_schedule": "1.0:1.0",
             "num_gat_blocks": 8,
             "batch_size": 256,
             "buffer_capacity": 50000,
@@ -56,7 +55,6 @@ BEST_PARAMS = {
             "lr": 1e-4,
             "c_puct": 1.0,
             "n_iter": 100,
-            "temp_schedule": "1.0:1.0",
             "num_gat_blocks": 4,
             "batch_size": 256,
             "buffer_capacity": 50000,
@@ -206,7 +204,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train_steps_per_iter", type=int, default=200, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=680, help="MCTS: Max iterations (680 × 8 workers × ~203 steps ≈ 1.1M steps)")
     parser.add_argument("--mcts_eval_every", type=int, default=5, help="MCTS: Evaluate every N iterations")
-    parser.add_argument("--temp_schedule", type=str, default="1.0:1.0", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
+    parser.add_argument("--temp_schedule", type=str, default="0.7:1.0,0.9:0.7,1.0:0.5", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
 
     # Model:
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")

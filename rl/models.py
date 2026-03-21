@@ -157,7 +157,11 @@ class GATV2ActorCritic(nn.Module):
             in_dim = block.eff_out()
 
         self.gat_blocks = nn.ModuleList(blocks)
-        # The output dim after layers (GAT blocks) going to be in_dim.
+
+        # Jumping Knowledge: concat all block outputs and project to last block's dim
+        jk_concat_dim = sum(block.eff_out() for block in self.gat_blocks)
+        self.jk_proj = nn.Linear(jk_concat_dim, in_dim)
+
         actor_input_dim = in_dim
         
         if self.critic_readout_type == "mean":
@@ -195,10 +199,12 @@ class GATV2ActorCritic(nn.Module):
         """
         # Input projection.
         x = self.proj(x) # [n_nodes, proj_out]
-        # GAT stack 
+        # GAT stack with Jumping Knowledge
+        intermediates = []
         for block in self.gat_blocks:
-            x = block(x, edge_index, edge_attr) # Edge attributes injected
-        return x 
+            x = block(x, edge_index, edge_attr)
+            intermediates.append(x)
+        return self.jk_proj(torch.cat(intermediates, dim=-1))
  
     def _get_ptr(self, batch_tensor):
         """
@@ -415,12 +421,14 @@ class GATV2ActorCritic(nn.Module):
     def count_params(self):
         proj_params = count_module(self.proj)
         block_params = sum(count_module(b) for b in self.gat_blocks)
+        jk_params = count_module(self.jk_proj)
         actor_params = count_module(self.actor_head)
         critic_params = count_module(self.critic_head)
-        total = proj_params + block_params + actor_params + critic_params
+        total = proj_params + block_params + jk_params + actor_params + critic_params
         lines = ["Parameter breakdown", "--------------------"]
         lines.append(f"Projection: {proj_params:,}")
         lines.append(f"GAT blocks total: {block_params:,}")
+        lines.append(f"JK projection: {jk_params:,}")
         lines.append(f"Actor head: {actor_params:,}")
         lines.append(f"Critic head: {critic_params:,}")
         lines.append(f"Total trainable: {total:,}")
