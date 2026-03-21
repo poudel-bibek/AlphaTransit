@@ -83,6 +83,7 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
             "gpu": {"value": True},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
+            "save_policy_ppo": {"value": True},
         },
     }
 
@@ -162,6 +163,7 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
             "gpu": {"value": True},
             "num_ppo_workers": {"value": 8},
             "ppo_eval_every": {"value": 5},
+            "save_policy_ppo": {"value": True},
         },
     }
 
