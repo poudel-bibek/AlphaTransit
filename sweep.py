@@ -236,8 +236,28 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     # }
 
     # =====================================================================
-    # 7. n_iter Scaling Sweep for MCTS Alpha 0.3
+    # 7. n_iter Scaling Sweep for MCTS Alpha 0.3 (completed)
     # All other params come from BEST_PARAMS via apply_best_params
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "n_iter": {"values": [100, 200, 300, 400, 500]},
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "mcts"},
+    #         "gpu": {"value": True},
+    #         "apply_best_params": {"value": True},
+    #     },
+    # }
+
+    # =====================================================================
+    # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
+    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
+    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
     # =====================================================================
     return {
         "method": "grid",
@@ -246,7 +266,8 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "n_iter": {"values": [100, 200, 300, 400, 500]},
+            "episodes_per_iter": {"values": [8, 16, 24]},
+            "n_iter": {"value": 200},
             "alpha": {"value": 0.3},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
@@ -313,8 +334,28 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     # }
 
     # =====================================================================
-    # 8. n_iter Scaling Sweep for MCTS Alpha 1.0
+    # 8. n_iter Scaling Sweep for MCTS Alpha 1.0 (completed)
     # All other params come from BEST_PARAMS via apply_best_params
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "n_iter": {"values": [100, 200, 300, 400, 500]},
+    #         "alpha": {"value": 1.0},
+    #         "algorithm": {"value": "mcts"},
+    #         "gpu": {"value": True},
+    #         "apply_best_params": {"value": True},
+    #     },
+    # }
+
+    # =====================================================================
+    # 10. episodes_per_iter Scaling Sweep for MCTS Alpha 1.0
+    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
+    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
     # =====================================================================
     return {
         "method": "grid",
@@ -323,7 +364,8 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "n_iter": {"values": [100, 200, 300, 400, 500]},
+            "episodes_per_iter": {"values": [8, 16, 24]},
+            "n_iter": {"value": 200},
             "alpha": {"value": 1.0},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
@@ -390,6 +432,11 @@ def create_agent_train(algorithm: str):
             # Apply best params if requested, but sweep params take precedence
             if sampled_params.get("apply_best_params"):
                 config = apply_best_params(config, explicitly_set=set(sampled_params.keys()))
+
+            # Auto-compute max_iterations for episodes_per_iter scaling sweeps (~1M env steps)
+            if 'episodes_per_iter' in sampled_params:
+                eps = config['episodes_per_iter']
+                config['max_iterations'] = -(-1_000_000 // (eps * 203))  # ceil division
 
             # Set seeds and device
             set_global_seeds(config["seed"])
