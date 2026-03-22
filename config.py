@@ -199,7 +199,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
     parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
     parser.add_argument("--buffer_capacity", type=int, default=50000, help="MCTS: Replay buffer capacity")
-    parser.add_argument("--num_mcts_workers", type=int, default=8, help="MCTS: Number of parallel workers")
+    parser.add_argument("--num_mcts_workers", type=int, default=16, help="MCTS: Number of parallel workers")
     parser.add_argument("--episodes_per_iter", type=int, default=16, help="MCTS: Episodes to collect per iteration")
     parser.add_argument("--train_steps_per_iter", type=int, default=200, help="MCTS: Training steps per iteration")
     parser.add_argument("--max_iterations", type=int, default=308, help="MCTS: Max iterations (308 × 16 eps × ~203 steps ≈ 1.0M steps)")
