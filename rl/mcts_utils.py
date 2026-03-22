@@ -18,6 +18,21 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from rl.env_utils import initialize_route
 
+
+def build_state_cache_key(
+    current_route: List[str],
+    all_routes: List[List[str]],
+    current_route_index: int,
+) -> Tuple[int, Tuple[str, ...], Tuple[Tuple[str, ...], ...]]:
+    """
+    Build a deterministic, hashable cache key for a route-construction state.
+    """
+    return (
+        int(current_route_index),
+        tuple(str(node) for node in current_route),
+        tuple(tuple(str(node) for node in route) for route in all_routes),
+    )
+
 @dataclass
 class MCTSState:
     """
@@ -48,6 +63,14 @@ class MCTSState:
             node_to_idx=self.node_to_idx,
             idx_to_node=self.idx_to_node,
             env=self.env,
+        )
+
+    def cache_key(self) -> Tuple[int, Tuple[str, ...], Tuple[Tuple[str, ...], ...]]:
+        """Get a stable cache key for this state."""
+        return build_state_cache_key(
+            current_route=self.current_route,
+            all_routes=self.all_routes,
+            current_route_index=self.current_route_index,
         )
 
     def get_valid_actions(self) -> List[int]:

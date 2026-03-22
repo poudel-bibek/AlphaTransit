@@ -34,6 +34,7 @@ mp_ctx = mp.get_context('spawn')
 
 from rl.models import GATV2ActorCritic
 from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json
+from rl.mcts_inference import inference_server_loop
 from rl.mcts_utils import MCTSState, MCTSNode, MCTSTree, ReplayBuffer, WelfordNormalizer, add_dirichlet_noise, get_temperature
 
 
@@ -45,7 +46,13 @@ class MCTSAgent:
     Uses terminal-only rewards with Welford normalization.
     """
 
-    def __init__(self, env: Any, config: Dict[str, Any], policy_kwargs: Dict[str, Any]) -> None:
+    def __init__(
+        self,
+        env: Any,
+        config: Dict[str, Any],
+        policy_kwargs: Dict[str, Any],
+        spawn_workers: bool = True,
+    ) -> None:
         """
         Initialize MCTS agent.
 
@@ -81,6 +88,7 @@ class MCTSAgent:
         self.n_actions = env.n_nodes + 1  # +1 for NO_VALID_ACTION
         self.num_routes = env.NUM_ROUTES
         self.max_route_length = env.MAX_ROUTE_LENGTH
+        self.collectors_enabled = spawn_workers
 
         # Initialize model
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
@@ -122,66 +130,100 @@ class MCTSAgent:
         # Parallel workers configuration
         self.episodes_per_iter = config.get('episodes_per_iter', 8)
         self.num_workers = min(config.get('num_mcts_workers', 8), self.episodes_per_iter)
-        self._start_persistent_workers()
+        self.policy_version = -1
+        self.shared_model_state = None
+        self._cmd_queues = []
+        self._result_queue = None
+        self._worker_procs = []
+        self._inference_cmd_queue = None
+        self._inference_ack_queue = None
+        self._inference_request_queue = None
+        self._inference_response_queues = []
+        self._inference_proc = None
+
+        if self.collectors_enabled:
+            self._start_inference_service()
+            self._start_persistent_workers()
 
         # Save initial network visualization
         self._save_network_visualization()
 
-    def _start_persistent_workers(self) -> None:
-        """
-        Spawn persistent worker processes with shared-memory weight distribution.
-
-        Architecture (same pattern as PPO's ParallelEnvManager):
-        - Each worker creates its TransitEnv and GATV2ActorCritic once at startup
-        - Model weights live in shared memory tensors (share_memory_())
-        - MCTSAgent updates shared memory after each training phase
-        - Workers load from shared memory at the start of each episode
-        - Commands flow through per-worker queues; results through a shared queue
-
-        This avoids the old Pool+starmap overhead of pickling the state dict and
-        recreating env/model from scratch every episode.
-        """
-        from rl.mcts_worker import mcts_worker_loop
-
-        # Place model weights in shared memory so workers can read them directly.
-        # strip _orig_mod. prefix added by torch.compile on the main process.
+    def _start_inference_service(self) -> None:
+        """Start the centralized inference process and shared policy tensors."""
         self.shared_model_state = {}
         clean_state = self._get_clean_state_dict()
         for name, param in clean_state.items():
             shared_tensor = param.cpu().clone()
-            shared_tensor.share_memory_()  # Move to OS shared memory segment
+            shared_tensor.share_memory_()
             self.shared_model_state[name] = shared_tensor
 
-        # Each worker gets its own command queue (for "collect"/"stop" messages).
-        # All workers share a single result queue (results are unordered but
-        # we just need all num_workers results per iteration).
-        self._cmd_queues = []
+        self._inference_cmd_queue = mp_ctx.Queue()
+        self._inference_ack_queue = mp_ctx.Queue()
+        self._inference_request_queue = mp_ctx.Queue()
+        self._inference_response_queues = [mp_ctx.Queue() for _ in range(self.num_workers)]
+        self._inference_proc = mp_ctx.Process(
+            target=inference_server_loop,
+            args=(
+                self.config,
+                self.policy_kwargs,
+                self.shared_model_state,
+                self._inference_cmd_queue,
+                self._inference_ack_queue,
+                self._inference_request_queue,
+                self._inference_response_queues,
+            ),
+        )
+        self._inference_proc.start()
+
+    def _publish_policy_snapshot(self) -> int:
+        """Push the latest learner weights to the inference service."""
+        clean_state = self._get_clean_state_dict()
+        with torch.no_grad():
+            for name, param in clean_state.items():
+                self.shared_model_state[name].copy_(param.cpu())
+
+        self.policy_version += 1
+        self._inference_cmd_queue.put(
+            {
+                "type": "set_policy",
+                "policy_version": self.policy_version,
+            }
+        )
+        ack = self._inference_ack_queue.get()
+        if int(ack["policy_version"]) != self.policy_version:
+            raise RuntimeError(
+                f"Inference service acknowledged policy_version={ack['policy_version']} "
+                f"instead of {self.policy_version}"
+            )
+        return self.policy_version
+
+    def _start_persistent_workers(self) -> None:
+        """
+        Spawn persistent worker processes.
+
+        Workers keep route construction and tree search local, but delegate
+        neural-network inference to the centralized inference service.
+        """
+        from rl.mcts_worker import mcts_worker_loop
+
         self._result_queue = mp_ctx.Queue()
-        self._worker_procs = []
 
         for wid in range(self.num_workers):
             cmd_q = mp_ctx.Queue()
             proc = mp_ctx.Process(
                 target=mcts_worker_loop,
-                args=(wid, self.config, self.policy_kwargs,
-                      self.shared_model_state, cmd_q, self._result_queue),
+                args=(
+                    wid,
+                    self.config,
+                    cmd_q,
+                    self._result_queue,
+                    self._inference_request_queue,
+                    self._inference_response_queues[wid],
+                ),
             )
             proc.start()
             self._cmd_queues.append(cmd_q)
             self._worker_procs.append(proc)
-
-    def _update_shared_weights(self) -> None:
-        """
-        Push current model weights to shared memory for workers to pick up.
-
-        Called at the start of each _collect_episodes(). Workers will load
-        these weights via load_state_dict() before running their next episode.
-        In-place copy avoids any pickling or serialization overhead.
-        """
-        clean_state = self._get_clean_state_dict()
-        with torch.no_grad():
-            for name, param in clean_state.items():
-                self.shared_model_state[name].copy_(param.cpu())
 
     def _save_network_visualization(self) -> None:
         """Save initial network and demand visualization."""
@@ -451,8 +493,10 @@ class MCTSAgent:
         Returns:
             List of (episode_data, raw_reward, episode_length, routes) tuples
         """
-        # Push latest weights to shared memory
-        self._update_shared_weights()
+        if not self.collectors_enabled:
+            raise RuntimeError("Parallel collectors are disabled for this agent instance")
+
+        policy_version = self._publish_policy_snapshot()
 
         target = self.episodes_per_iter
         results = []
@@ -469,6 +513,7 @@ class MCTSAgent:
                     "type": "collect",
                     "tau": tau,
                     "seed": base_seed + i,
+                    "policy_version": policy_version,
                 })
 
             for _ in range(batch):
@@ -490,10 +535,23 @@ class MCTSAgent:
         for p in self._worker_procs:
             p.join(timeout=10.0)
             if p.is_alive():
-                p.terminate()  # Force-kill workers that didn't stop gracefully
+                p.terminate()
         self._cmd_queues.clear()
         self._worker_procs.clear()
         self._result_queue = None
+
+        if self._inference_cmd_queue is not None:
+            self._inference_cmd_queue.put({"type": "stop"})
+        if self._inference_proc is not None:
+            self._inference_proc.join(timeout=10.0)
+            if self._inference_proc.is_alive():
+                self._inference_proc.terminate()
+
+        self._inference_cmd_queue = None
+        self._inference_ack_queue = None
+        self._inference_request_queue = None
+        self._inference_response_queues = []
+        self._inference_proc = None
         self.shared_model_state = None
 
     def _train_step(self) -> Dict[str, float]:
@@ -605,6 +663,9 @@ class MCTSAgent:
         Alternates between self-play data generation and network optimization.
         Uses parallel workers to collect episodes concurrently.
         """
+        if not self.collectors_enabled:
+            raise RuntimeError("MCTS training requires parallel collectors")
+
         print(f"Starting MCTS training for {self.max_iterations} iterations")
         print(f"  Parallel workers: {self.num_workers}")
         print(f"  Episodes per iteration: {self.episodes_per_iter}")
