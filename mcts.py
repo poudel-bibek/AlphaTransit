@@ -211,7 +211,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
     env = TransitEnv(config)
     policy_kwargs = get_policy_kwargs_mcts(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
-    mcts_agent = MCTSAgent(env, config, policy_kwargs)
+    mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=True)
     mcts_agent.train()
 
     # Finish wandb for standalone runs
@@ -234,7 +234,7 @@ def mcts_eval(config: Dict[str, Any]) -> None:
 
     env = TransitEnv(config)
     policy_kwargs = get_policy_kwargs_mcts(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
-    mcts_agent = MCTSAgent(env, config, policy_kwargs)
+    mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=False)
     mcts_agent.evaluate(
         policy_path=config.get("saved_policy_path", ""),
         save_dir=config["save_dir"]
