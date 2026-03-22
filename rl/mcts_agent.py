@@ -34,6 +34,7 @@ mp_ctx = mp.get_context('spawn')
 
 from rl.models import GATV2ActorCritic
 from rl.env_utils import plot_network_and_demand, aggregate_results, write_results_summary, ensure_eval_step_update_dir, make_seed_output_dir, save_routes_json
+from rl.mcts_inference import inference_server_loop
 from rl.mcts_utils import MCTSState, MCTSNode, MCTSTree, ReplayBuffer, WelfordNormalizer, add_dirichlet_noise, get_temperature
 
 
@@ -45,7 +46,13 @@ class MCTSAgent:
     Uses terminal-only rewards with Welford normalization.
     """
 
-    def __init__(self, env: Any, config: Dict[str, Any], policy_kwargs: Dict[str, Any]) -> None:
+    def __init__(
+        self,
+        env: Any,
+        config: Dict[str, Any],
+        policy_kwargs: Dict[str, Any],
+        spawn_workers: bool = True,
+    ) -> None:
         """
         Initialize MCTS agent.
 
@@ -81,6 +88,7 @@ class MCTSAgent:
         self.n_actions = env.n_nodes + 1  # +1 for NO_VALID_ACTION
         self.num_routes = env.NUM_ROUTES
         self.max_route_length = env.MAX_ROUTE_LENGTH
+        self.collectors_enabled = spawn_workers
 
         # Initialize model
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
@@ -89,6 +97,7 @@ class MCTSAgent:
 
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=(self.device.type == "cuda"))
 
         # Replay buffer and normalizer
         self.replay_buffer = ReplayBuffer(capacity=self.buffer_capacity)
@@ -122,66 +131,106 @@ class MCTSAgent:
         # Parallel workers configuration
         self.episodes_per_iter = config.get('episodes_per_iter', 8)
         self.num_workers = min(config.get('num_mcts_workers', 8), self.episodes_per_iter)
-        self._start_persistent_workers()
+        self.policy_version = -1
+        self.shared_model_state = None
+        self._cmd_queues = []
+        self._result_queue = None
+        self._worker_procs = []
+        self._inference_cmd_queue = None
+        self._inference_ack_queue = None
+        self._inference_request_queue = None
+        self._inference_response_queues = []
+        self._inference_proc = None
+
+        if self.collectors_enabled:
+            self._start_inference_service()
+            self._start_persistent_workers()
 
         # Save initial network visualization
         self._save_network_visualization()
 
-    def _start_persistent_workers(self) -> None:
-        """
-        Spawn persistent worker processes with shared-memory weight distribution.
+    def _start_inference_service(self) -> None:
+        """Start the centralized inference process and shared policy tensors."""
+        if not (self.config.get("gpu", False) and torch.cuda.is_available()):
+            raise RuntimeError(
+                "MCTS training requires --gpu. The centralized inference server "
+                "is designed for GPU; CPU-only runs would serialize all workers."
+            )
 
-        Architecture (same pattern as PPO's ParallelEnvManager):
-        - Each worker creates its TransitEnv and GATV2ActorCritic once at startup
-        - Model weights live in shared memory tensors (share_memory_())
-        - MCTSAgent updates shared memory after each training phase
-        - Workers load from shared memory at the start of each episode
-        - Commands flow through per-worker queues; results through a shared queue
-
-        This avoids the old Pool+starmap overhead of pickling the state dict and
-        recreating env/model from scratch every episode.
-        """
-        from rl.mcts_worker import mcts_worker_loop
-
-        # Place model weights in shared memory so workers can read them directly.
-        # strip _orig_mod. prefix added by torch.compile on the main process.
         self.shared_model_state = {}
         clean_state = self._get_clean_state_dict()
         for name, param in clean_state.items():
             shared_tensor = param.cpu().clone()
-            shared_tensor.share_memory_()  # Move to OS shared memory segment
+            shared_tensor.share_memory_()
             self.shared_model_state[name] = shared_tensor
 
-        # Each worker gets its own command queue (for "collect"/"stop" messages).
-        # All workers share a single result queue (results are unordered but
-        # we just need all num_workers results per iteration).
-        self._cmd_queues = []
+        self._inference_cmd_queue = mp_ctx.Queue()
+        self._inference_ack_queue = mp_ctx.Queue()
+        self._inference_request_queue = mp_ctx.Queue()
+        self._inference_response_queues = [mp_ctx.Queue() for _ in range(self.num_workers)]
+        self._inference_proc = mp_ctx.Process(
+            target=inference_server_loop,
+            args=(
+                self.config,
+                self.policy_kwargs,
+                self.shared_model_state,
+                self._inference_cmd_queue,
+                self._inference_ack_queue,
+                self._inference_request_queue,
+                self._inference_response_queues,
+            ),
+        )
+        self._inference_proc.start()
+
+    def _publish_policy_snapshot(self) -> int:
+        """Push the latest learner weights to the inference service."""
+        clean_state = self._get_clean_state_dict()
+        with torch.no_grad():
+            for name, param in clean_state.items():
+                self.shared_model_state[name].copy_(param.cpu())
+
+        self.policy_version += 1
+        self._inference_cmd_queue.put(
+            {
+                "type": "set_policy",
+                "policy_version": self.policy_version,
+            }
+        )
+        ack = self._inference_ack_queue.get()
+        if int(ack["policy_version"]) != self.policy_version:
+            raise RuntimeError(
+                f"Inference service acknowledged policy_version={ack['policy_version']} "
+                f"instead of {self.policy_version}"
+            )
+        return self.policy_version
+
+    def _start_persistent_workers(self) -> None:
+        """
+        Spawn persistent worker processes.
+
+        Workers keep route construction and tree search local, but delegate
+        neural-network inference to the centralized inference service.
+        """
+        from rl.mcts_worker import mcts_worker_loop
+
         self._result_queue = mp_ctx.Queue()
-        self._worker_procs = []
 
         for wid in range(self.num_workers):
             cmd_q = mp_ctx.Queue()
             proc = mp_ctx.Process(
                 target=mcts_worker_loop,
-                args=(wid, self.config, self.policy_kwargs,
-                      self.shared_model_state, cmd_q, self._result_queue),
+                args=(
+                    wid,
+                    self.config,
+                    cmd_q,
+                    self._result_queue,
+                    self._inference_request_queue,
+                    self._inference_response_queues[wid],
+                ),
             )
             proc.start()
             self._cmd_queues.append(cmd_q)
             self._worker_procs.append(proc)
-
-    def _update_shared_weights(self) -> None:
-        """
-        Push current model weights to shared memory for workers to pick up.
-
-        Called at the start of each _collect_episodes(). Workers will load
-        these weights via load_state_dict() before running their next episode.
-        In-place copy avoids any pickling or serialization overhead.
-        """
-        clean_state = self._get_clean_state_dict()
-        with torch.no_grad():
-            for name, param in clean_state.items():
-                self.shared_model_state[name].copy_(param.cpu())
 
     def _save_network_visualization(self) -> None:
         """Save initial network and demand visualization."""
@@ -240,23 +289,22 @@ class MCTSAgent:
             priors: Dict mapping action -> prior probability
             value: Value estimate (scalar)
         """
-        self.model.eval()
-
         # Convert to PyG data and batch
         data = self._state_to_pyg_data(state_dict).to(self.device)
         batch = Batch.from_data_list([data])
 
-        # Get node embeddings
-        z = self.model._get_node_embeddings(
-            batch.x, batch.edge_index, batch.edge_attr
-        )
+        with torch.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+            # Get node embeddings
+            z = self.model._get_node_embeddings(
+                batch.x, batch.edge_index, batch.edge_attr
+            )
 
-        # Actor: get logits per node
-        logits = self.model.actor_head(z).squeeze(-1)  # [n_nodes]
+            # Actor: get logits per node
+            logits = self.model.actor_head(z).squeeze(-1)  # [n_nodes]
 
-        # Critic: get value
-        g = self.model.critic_readout(z, batch.batch)
-        value = self.model.critic_head(g).squeeze(-1).item()
+            # Critic: get value
+            g = self.model.critic_readout(z, batch.batch)
+            value = self.model.critic_head(g).squeeze(-1).item()
 
         # Mask and softmax for priors
         if not valid_actions:
@@ -286,17 +334,16 @@ class MCTSAgent:
         if not state_dicts:
             return []
 
-        self.model.eval()
-
         # Pack K leaf states into a single PyG Batch
         data_list = [self._state_to_pyg_data(sd).to(self.device) for sd in state_dicts]
         batch = Batch.from_data_list(data_list).to(self.device)
 
-        # Single forward pass through GATv2 backbone + actor/critic heads
-        z = self.model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
-        logits = self.model.actor_head(z).squeeze(-1)
-        g = self.model.critic_readout(z, batch.batch)
-        values = self.model.critic_head(g).squeeze(-1)
+        with torch.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+            # Single forward pass through GATv2 backbone + actor/critic heads
+            z = self.model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+            logits = self.model.actor_head(z).squeeze(-1)
+            g = self.model.critic_readout(z, batch.batch)
+            values = self.model.critic_head(g).squeeze(-1)
 
         # Split concatenated outputs back into per-graph results
         ptr = batch.ptr
@@ -451,8 +498,10 @@ class MCTSAgent:
         Returns:
             List of (episode_data, raw_reward, episode_length, routes) tuples
         """
-        # Push latest weights to shared memory
-        self._update_shared_weights()
+        if not self.collectors_enabled:
+            raise RuntimeError("Parallel collectors are disabled for this agent instance")
+
+        policy_version = self._publish_policy_snapshot()
 
         target = self.episodes_per_iter
         results = []
@@ -469,6 +518,7 @@ class MCTSAgent:
                     "type": "collect",
                     "tau": tau,
                     "seed": base_seed + i,
+                    "policy_version": policy_version,
                 })
 
             for _ in range(batch):
@@ -490,10 +540,23 @@ class MCTSAgent:
         for p in self._worker_procs:
             p.join(timeout=10.0)
             if p.is_alive():
-                p.terminate()  # Force-kill workers that didn't stop gracefully
+                p.terminate()
         self._cmd_queues.clear()
         self._worker_procs.clear()
         self._result_queue = None
+
+        if self._inference_cmd_queue is not None:
+            self._inference_cmd_queue.put({"type": "stop"})
+        if self._inference_proc is not None:
+            self._inference_proc.join(timeout=10.0)
+            if self._inference_proc.is_alive():
+                self._inference_proc.terminate()
+
+        self._inference_cmd_queue = None
+        self._inference_ack_queue = None
+        self._inference_request_queue = None
+        self._inference_response_queues = []
+        self._inference_proc = None
         self.shared_model_state = None
 
     def _train_step(self) -> Dict[str, float]:
@@ -540,57 +603,60 @@ class MCTSAgent:
         target_values = torch.tensor(target_values, dtype=torch.float32).to(self.device)
         valid_masks = torch.stack(valid_masks).to(self.device)
 
-        # Forward pass
-        z = self.model._get_node_embeddings(
-            batch.x, batch.edge_index, batch.edge_attr
-        )
-        logits = self.model.actor_head(z).squeeze(-1)
-        g = self.model.critic_readout(z, batch.batch)
-        values = self.model.critic_head(g).squeeze(-1)
+        with torch.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+            # Forward pass
+            z = self.model._get_node_embeddings(
+                batch.x, batch.edge_index, batch.edge_attr
+            )
+            logits = self.model.actor_head(z).squeeze(-1)
+            g = self.model.critic_readout(z, batch.batch)
+            values = self.model.critic_head(g).squeeze(-1)
 
-        # Reshape logits per graph
-        ptr = self.model._get_ptr(batch.batch)
-        num_graphs = batch.num_graphs
+            # Reshape logits per graph
+            ptr = self.model._get_ptr(batch.batch)
+            num_graphs = batch.num_graphs
 
-        policy_losses = []
-        for i in range(num_graphs):
-            start, end = ptr[i], ptr[i + 1]
-            graph_logits = logits[start:end]
+            policy_losses = []
+            for i in range(num_graphs):
+                start, end = ptr[i], ptr[i + 1]
+                graph_logits = logits[start:end]
 
-            # Mask invalid actions (actions outside valid set)
-            mask_i = valid_masks[i, :len(graph_logits)]
-            masked_logits = graph_logits.clone()
-            masked_logits[~mask_i] = float('-inf')
+                # Mask invalid actions (actions outside valid set)
+                mask_i = valid_masks[i, :len(graph_logits)]
+                masked_logits = graph_logits.clone()
+                masked_logits[~mask_i] = float('-inf')
 
-            # Log softmax for cross-entropy (over valid actions only)
-            log_probs = F.log_softmax(masked_logits, dim=0)
+                # Log softmax for cross-entropy (over valid actions only)
+                log_probs = F.log_softmax(masked_logits, dim=0)
 
-            # Cross-entropy with target policy.
-            # Only sum where target_p > 0 to avoid NaN from 0 * -inf (IEEE-754).
-            # This is mathematically equivalent since 0 * log(p) = 0, but IEEE
-            # gives NaN for 0 * -inf which can poison training silently.
-            target_p = target_policies[i, :len(graph_logits)]
-            nonzero_mask = target_p > 0
-            if nonzero_mask.any():
-                policy_loss = -torch.sum(target_p[nonzero_mask] * log_probs[nonzero_mask])
-            else:
-                # Edge case: all zeros in target (shouldn't happen normally)
-                policy_loss = torch.tensor(0.0, device=self.device)
-            policy_losses.append(policy_loss)
+                # Cross-entropy with target policy.
+                # Only sum where target_p > 0 to avoid NaN from 0 * -inf (IEEE-754).
+                # This is mathematically equivalent since 0 * log(p) = 0, but IEEE
+                # gives NaN for 0 * -inf which can poison training silently.
+                target_p = target_policies[i, :len(graph_logits)]
+                nonzero_mask = target_p > 0
+                if nonzero_mask.any():
+                    policy_loss = -torch.sum(target_p[nonzero_mask] * log_probs[nonzero_mask])
+                else:
+                    # Edge case: all zeros in target (shouldn't happen normally)
+                    policy_loss = torch.tensor(0.0, device=self.device)
+                policy_losses.append(policy_loss)
 
-        policy_loss = torch.stack(policy_losses).mean()
+            policy_loss = torch.stack(policy_losses).mean()
 
-        # Value loss (MSE)
-        value_loss = F.mse_loss(values, target_values)
+            # Value loss (MSE)
+            value_loss = F.mse_loss(values, target_values)
 
-        # Total loss
-        total_loss = policy_loss + value_loss
+            # Total loss
+            total_loss = policy_loss + value_loss
 
         # Backward pass
-        self.optimizer.zero_grad()
-        total_loss.backward()
+        self.optimizer.zero_grad(set_to_none=True)
+        self.scaler.scale(total_loss).backward()
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
         return {
             'policy_loss': policy_loss.item(),
@@ -605,6 +671,9 @@ class MCTSAgent:
         Alternates between self-play data generation and network optimization.
         Uses parallel workers to collect episodes concurrently.
         """
+        if not self.collectors_enabled:
+            raise RuntimeError("MCTS training requires parallel collectors")
+
         print(f"Starting MCTS training for {self.max_iterations} iterations")
         print(f"  Parallel workers: {self.num_workers}")
         print(f"  Episodes per iteration: {self.episodes_per_iter}")

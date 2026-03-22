@@ -6,9 +6,11 @@ processes. All functions are self-contained with no dependency on MCTSAgent
 instance state, enabling multiprocessing.
 
 Key optimizations:
-1. Persistent workers (mcts_worker_loop): env and model created once per worker
-   process, not per episode. Weights updated via shared memory each iteration.
-2. Batched leaf evaluation (run_mcts_simulations): collects K leaves per batch
+1. Persistent workers (mcts_worker_loop): env created once per worker
+   process, not per episode.
+2. Centralized inference service: workers ship leaf states to one shared
+   model process instead of contending on the GPU with per-worker models.
+3. Batched leaf evaluation (run_mcts_simulations): collects K leaves per batch
    using virtual loss to diversify PUCT selections, evaluates all K in a single
    NN forward pass, then rolls back virtual loss and backpropagates real values.
    Reduces NN calls from n_iter to ~n_iter/K per move.
@@ -18,12 +20,9 @@ import os
 import random
 import numpy as np
 import torch
-import torch.nn.functional as F
 from typing import Any, Dict, List, Tuple
-from torch_geometric.data import Data, Batch
 
 from rl.env import TransitEnv
-from rl.models import GATV2ActorCritic
 from rl.mcts_utils import MCTSTree, MCTSState, MCTSNode, add_dirichlet_noise
 
 
@@ -36,15 +35,6 @@ def _cap_worker_threads():
         os.environ[var] = os.environ.get(var, "1") or "1"
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
-
-
-def state_to_pyg_data(state_dict: Dict[str, Any]) -> Data:
-    """Convert state dictionary to PyTorch Geometric Data object. (Pure function)"""
-    return Data(
-        x=torch.from_numpy(state_dict['node_features']).float(),
-        edge_index=torch.from_numpy(state_dict['edge_index']).long(),
-        edge_attr=torch.from_numpy(state_dict['edge_features']).float(),
-    )
 
 
 def sync_env_from_mcts_state(env: TransitEnv, mcts_state: MCTSState) -> None:
@@ -60,96 +50,51 @@ def get_state_tensor(env: TransitEnv, mcts_state: MCTSState) -> Dict[str, Any]:
     return env._get_state()
 
 
-@torch.inference_mode()
-def network_forward(model, state_dict: Dict[str, Any], valid_actions: List[int], device: str = 'cpu') -> Tuple[Dict[int, float], float]:
-    """
-    Single-state forward pass through network to get priors and value.
-    Used for root expansion and standalone evaluation.
-    """
-    model.eval()
+class RemoteInferenceClient:
+    """Blocking RPC client used by a single MCTS worker."""
 
-    data = state_to_pyg_data(state_dict).to(device)
-    batch = Batch.from_data_list([data])
+    def __init__(self, worker_id: int, policy_version: int, request_queue: Any, response_queue: Any):
+        self.worker_id = worker_id
+        self.policy_version = policy_version
+        self.request_queue = request_queue
+        self.response_queue = response_queue
 
-    z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
-    logits = model.actor_head(z).squeeze(-1)
-    g = model.critic_readout(z, batch.batch)
-    value = model.critic_head(g).squeeze(-1).item()
+    def infer_batch(self, payloads: List[Dict[str, Any]]) -> List[Tuple[Dict[int, float], float]]:
+        if not payloads:
+            return []
 
-    if not valid_actions:
-        return {}, value
+        self.request_queue.put(
+            {
+                "worker_id": self.worker_id,
+                "policy_version": self.policy_version,
+                "payloads": payloads,
+            }
+        )
+        response = self.response_queue.get()
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+        if int(response["policy_version"]) != self.policy_version:
+            raise RuntimeError(
+                f"Worker {self.worker_id} received stale inference response for "
+                f"policy_version={response['policy_version']}, expected={self.policy_version}"
+            )
+        return response["outputs"]
 
-    masked_logits = torch.full_like(logits, float('-inf'))
-    for a in valid_actions:
-        if a < len(logits):
-            masked_logits[a] = logits[a]
-
-    probs = F.softmax(masked_logits, dim=0).cpu().numpy()
-    priors = {a: float(probs[a]) for a in valid_actions if a < len(probs)}
-
-    return priors, value
-
-
-@torch.inference_mode()
-def batch_network_forward(model, state_dicts: List[Dict[str, Any]], valid_actions_list: List[List[int]], device: str = 'cpu') -> List[Tuple[Dict[int, float], float]]:
-    """
-    Batched forward pass for multiple leaf states in a single NN call.
-
-    Instead of calling the network once per leaf (batch=1), this packs K leaf
-    states into a single PyG Batch and runs one forward pass. The GPU/CPU
-    processes all K graphs in parallel, amortizing kernel launch and memory
-    transfer overhead. With K=8 and n_iter=100, this reduces NN calls per
-    move from 100 to ~13.
-
-    Args:
-        model: Neural network
-        state_dicts: List of state dictionaries (one per leaf)
-        valid_actions_list: List of valid action lists (one per leaf)
-        device: Device for inference
-
-    Returns:
-        List of (priors_dict, value) tuples, one per input state
-    """
-    if not state_dicts:
-        return []
-
-    model.eval()
-
-    # Pack all leaf states into a single PyG Batch for one forward pass
-    data_list = [state_to_pyg_data(sd).to(device) for sd in state_dicts]
-    batch = Batch.from_data_list(data_list)
-
-    # Single forward pass through the shared GATv2 backbone, actor, and critic
-    z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
-    logits = model.actor_head(z).squeeze(-1)
-    g = model.critic_readout(z, batch.batch)
-    values = model.critic_head(g).squeeze(-1)
-
-    # Split the concatenated node-level outputs back into per-graph results.
-    # batch.ptr[i] gives the starting node index for graph i in the batch.
-    ptr = batch.ptr
-    results = []
-    for i in range(len(state_dicts)):
-        start, end = ptr[i].item(), ptr[i + 1].item()
-        graph_logits = logits[start:end]  # logits for this graph's nodes
-        value = values[i].item()          # scalar value for this graph
-
-        valid_actions = valid_actions_list[i]
-        if not valid_actions:
-            results.append(({}, value))
-            continue
-
-        # Mask invalid actions and softmax to get prior probabilities
-        masked_logits = torch.full_like(graph_logits, float('-inf'))
-        for a in valid_actions:
-            if a < len(graph_logits):
-                masked_logits[a] = graph_logits[a]
-
-        probs = F.softmax(masked_logits, dim=0).cpu().numpy()
-        priors = {a: float(probs[a]) for a in valid_actions if a < len(probs)}
-        results.append((priors, value))
-
-    return results
+    def infer_single(
+        self,
+        state_key: Any,
+        state_dict: Dict[str, Any],
+        valid_actions: List[int],
+    ) -> Tuple[Dict[int, float], float]:
+        return self.infer_batch(
+            [
+                {
+                    "state_key": state_key,
+                    "state_dict": state_dict,
+                    "valid_actions": valid_actions,
+                }
+            ]
+        )[0]
 
 
 def _apply_virtual_loss(path: List[Tuple[MCTSNode, int]], vloss: int = 1) -> None:
@@ -187,7 +132,14 @@ def _rollback_virtual_loss(path: List[Tuple[MCTSNode, int]], vloss: int = 1) -> 
             node.Q[action] = 0.0
 
 
-def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, config: Dict[str, Any], add_noise: bool = True, device: str = 'cpu') -> np.ndarray:
+def run_mcts_simulations(
+    env: TransitEnv,
+    tree: MCTSTree,
+    tau: float,
+    config: Dict[str, Any],
+    inference_client: RemoteInferenceClient,
+    add_noise: bool = True,
+) -> np.ndarray:
     """
     Run MCTS simulations with batched leaf evaluation and virtual loss.
 
@@ -196,13 +148,12 @@ def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, con
     and backpropagates real values. Single-threaded, so tree mutation is safe.
 
     Args:
-        model: Neural network for value/policy estimation
         env: TransitEnv instance (for state observation generation)
         tree: MCTSTree to search
         tau: Temperature for visit count policy
         config: Config dict with n_iter, c_puct, mcts_batch_size, etc.
+        inference_client: RPC client for centralized model inference
         add_noise: Whether to add Dirichlet noise at root
-        device: Device for model inference
 
     Returns:
         Policy array from visit counts
@@ -224,7 +175,11 @@ def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, con
     # Expand root if needed (single forward pass)
     if not root.expanded:
         state_dict = get_state_tensor(env, root.state)
-        priors, value = network_forward(model, state_dict, valid_actions, device)
+        priors, value = inference_client.infer_single(
+            state_key=root.state.cache_key(),
+            state_dict=state_dict,
+            valid_actions=valid_actions,
+        )
         root.expand(priors, value)
 
     # Add Dirichlet noise at root for exploration
@@ -301,29 +256,35 @@ def run_mcts_simulations(model, env: TransitEnv, tree: MCTSTree, tau: float, con
         # --- Phase 2: Batch NN forward for all leaves needing evaluation ---
         # Collect (state_dict, valid_actions) for each leaf that needs the NN.
         # 'existing' leaves skip the NN since they already have a stored value.
-        nn_entries = []  # (index_in_pending, state_dict, valid_actions)
+        nn_entries = []  # (index_in_pending, state_key, state_dict, valid_actions)
         for i, (leaf_type, path, node, info) in enumerate(pending):
             if leaf_type == 'expand':
                 # get_state_tensor syncs mcts_state to env then calls env._get_state().
                 # Each call produces independent numpy arrays, so collecting multiple
                 # states before the batch forward is safe.
                 sd = get_state_tensor(env, node.state)
-                nn_entries.append((i, sd, info))
+                nn_entries.append((i, node.state.cache_key(), sd, info))
             elif leaf_type == 'force_end':
                 next_state, next_valid = info
                 sd = get_state_tensor(env, next_state)
-                nn_entries.append((i, sd, next_valid))
+                nn_entries.append((i, next_state.cache_key(), sd, next_valid))
             elif leaf_type == 'terminal':
                 sd = get_state_tensor(env, node.state)
-                nn_entries.append((i, sd, []))
+                nn_entries.append((i, node.state.cache_key(), sd, []))
 
         # Single batched forward pass for all K leaves (the key speedup)
         nn_results = {}
         if nn_entries:
-            batch_sds = [e[1] for e in nn_entries]
-            batch_va = [e[2] for e in nn_entries]
-            batch_out = batch_network_forward(model, batch_sds, batch_va, device)
-            for j, (idx, _, _) in enumerate(nn_entries):
+            payloads = [
+                {
+                    "state_key": state_key,
+                    "state_dict": state_dict,
+                    "valid_actions": valid_actions,
+                }
+                for _, state_key, state_dict, valid_actions in nn_entries
+            ]
+            batch_out = inference_client.infer_batch(payloads)
+            for j, (idx, _, _, _) in enumerate(nn_entries):
                 nn_results[idx] = batch_out[j]
 
         # --- Phase 3: Rollback virtual loss, expand nodes, backpropagate ---
@@ -369,18 +330,17 @@ def _create_mcts_state(env: TransitEnv) -> MCTSState:
     )
 
 
-def _run_episode_on_env(env, model, config, seed, tau, device):
+def _run_episode_on_env(env, config, seed, tau, inference_client: RemoteInferenceClient):
     """
-    Run a single MCTS episode using an already-initialized env and model.
+    Run a single MCTS episode using an already-initialized env.
 
-    Called by mcts_worker_loop for each "collect" command. The env and model
-    must already exist and have the correct weights loaded.
+    Called by mcts_worker_loop for each "collect" command.
     """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    state_dict, _ = env.reset(seed=seed)
+    env.reset(seed=seed)
     mcts_state = _create_mcts_state(env)
     tree = MCTSTree(mcts_state)
 
@@ -397,7 +357,14 @@ def _run_episode_on_env(env, model, config, seed, tau, device):
             continue
 
         current_state_dict = get_state_tensor(env, mcts_state)
-        policy = run_mcts_simulations(model, env, tree, tau, config, add_noise=True, device=device)
+        policy = run_mcts_simulations(
+            env=env,
+            tree=tree,
+            tau=tau,
+            config=config,
+            inference_client=inference_client,
+            add_noise=True,
+        )
 
         episode_data.append((
             {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in current_state_dict.items()},
@@ -426,32 +393,24 @@ def _run_episode_on_env(env, model, config, seed, tau, device):
     )
 
 
-def mcts_worker_loop(worker_id, config, policy_kwargs, shared_model_state, cmd_queue, result_queue):
+def mcts_worker_loop(worker_id, config, cmd_queue, result_queue, inference_request_queue, inference_response_queue):
     """
     Persistent MCTS worker process.
 
     Unlike the old Pool+starmap approach where each episode created a fresh
-    TransitEnv (3 CSV reads, adjacency building) and GATV2ActorCritic
-    (+ torch.compile), this creates both once at startup and reuses them
-    across all episodes. Weight updates come via shared memory tensors
-    (in-place copy, no pickling overhead).
+    TransitEnv, this creates the environment once at startup and reuses it
+    across all episodes. Neural-network inference is delegated to the
+    centralized inference service.
 
     Commands (via cmd_queue):
         {"type": "collect", "tau": float, "seed": int}  - Run one self-play episode
         {"type": "stop"}                                  - Terminate worker
     """
     _cap_worker_threads()
-    device = 'cuda' if (config.get('gpu', False) and torch.cuda.is_available()) else 'cpu'
-
-    # Create env and model ONCE (the whole point of persistent workers).
-    # Previously these were recreated every episode, adding seconds of
-    # CSV parsing and model initialization overhead per iteration.
+    # Create env ONCE (the whole point of persistent workers).
+    # Previously this was recreated every episode, adding CSV parsing and
+    # environment initialization overhead per iteration.
     env = TransitEnv(config)
-    model = GATV2ActorCritic(**policy_kwargs)
-    model.to(device)
-    model.eval()
-    # No torch.compile: workers refresh weights each round, and the JIT
-    # warmup cost outweighs any benefit for batch-1 or small-batch inference.
 
     while True:
         cmd = cmd_queue.get()
@@ -461,13 +420,20 @@ def mcts_worker_loop(worker_id, config, policy_kwargs, shared_model_state, cmd_q
             break
 
         elif cmd_type == "collect":
-            # Load latest weights from shared memory (zero-copy read of
-            # tensors placed in shared memory by MCTSAgent._update_shared_weights)
-            model.load_state_dict(shared_model_state)
-            model.eval()
-
             tau = cmd["tau"]
             seed = cmd["seed"]
-
-            result = _run_episode_on_env(env, model, config, seed, tau, device)
+            policy_version = cmd["policy_version"]
+            inference_client = RemoteInferenceClient(
+                worker_id=worker_id,
+                policy_version=policy_version,
+                request_queue=inference_request_queue,
+                response_queue=inference_response_queue,
+            )
+            result = _run_episode_on_env(
+                env=env,
+                config=config,
+                seed=seed,
+                tau=tau,
+                inference_client=inference_client,
+            )
             result_queue.put(result)
