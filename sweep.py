@@ -268,7 +268,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "episodes_per_iter": {"values": [8]},  # TODO: also run 16, 24
+            "episodes_per_iter": {"values": [8, 16, 24]},
             "n_iter": {"value": 200},
             "alpha": {"value": 0.3},
             "algorithm": {"value": "mcts"},
@@ -366,7 +366,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "episodes_per_iter": {"values": [8]},  # TODO: also run 16, 24
+            "episodes_per_iter": {"values": [8, 16, 24]},
             "n_iter": {"value": 200},
             "alpha": {"value": 1.0},
             "algorithm": {"value": "mcts"},
