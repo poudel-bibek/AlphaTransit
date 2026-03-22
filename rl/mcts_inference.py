@@ -63,7 +63,6 @@ def batch_network_forward(
     if not state_dicts:
         return []
 
-    model.eval()
     data_list = [state_to_pyg_data(sd).to(device) for sd in state_dicts]
     batch = Batch.from_data_list(data_list)
 

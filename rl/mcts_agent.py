@@ -150,6 +150,12 @@ class MCTSAgent:
 
     def _start_inference_service(self) -> None:
         """Start the centralized inference process and shared policy tensors."""
+        if not (self.config.get("gpu", False) and torch.cuda.is_available()):
+            raise RuntimeError(
+                "MCTS training requires --gpu. The centralized inference server "
+                "is designed for GPU; CPU-only runs would serialize all workers."
+            )
+
         self.shared_model_state = {}
         clean_state = self._get_clean_state_dict()
         for name, param in clean_state.items():
