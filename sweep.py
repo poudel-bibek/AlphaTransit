@@ -238,28 +238,8 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     # }
 
     # =====================================================================
-    # 7. n_iter Scaling Sweep for MCTS Alpha 0.3 (completed)
+    # 7. n_iter Scaling Sweep for MCTS Alpha 0.3
     # All other params come from BEST_PARAMS via apply_best_params
-    # =====================================================================
-    # return {
-    #     "method": "grid",
-    #     "metric": {
-    #         "name": "eval/episode_terminal_reward",
-    #         "goal": "maximize"
-    #     },
-    #     "parameters": {
-    #         "n_iter": {"values": [100, 200, 300, 400, 500]},
-    #         "alpha": {"value": 0.3},
-    #         "algorithm": {"value": "mcts"},
-    #         "gpu": {"value": True},
-    #         "apply_best_params": {"value": True},
-    #     },
-    # }
-
-    # =====================================================================
-    # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
-    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
-    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
     # =====================================================================
     return {
         "method": "grid",
@@ -268,14 +248,34 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "episodes_per_iter": {"values": [8, 16, 24]},
-            "n_iter": {"value": 200},
+            "n_iter": {"values": [100, 200, 300, 400, 500]},
             "alpha": {"value": 0.3},
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "apply_best_params": {"value": True},
         },
     }
+
+    # =====================================================================
+    # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
+    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
+    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "episodes_per_iter": {"values": [8, 16, 24]},
+    #         "n_iter": {"value": 200},
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "mcts"},
+    #         "gpu": {"value": True},
+    #         "apply_best_params": {"value": True},
+    #     },
+    # }
 
 
 def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
