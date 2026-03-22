@@ -291,7 +291,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "num_gat_blocks": {"values": [2, 4, 8]},
+            "num_gat_blocks": {"values": [8, 4, 2]},
             "n_iter": {"value": 200},
             "episodes_per_iter": {"value": 16},
             "alpha": {"value": 0.3},
@@ -414,7 +414,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "num_gat_blocks": {"values": [2, 4, 8]},
+            "num_gat_blocks": {"values": [8, 4, 2]},
             "n_iter": {"value": 200},
             "episodes_per_iter": {"value": 16},
             "alpha": {"value": 1.0},
