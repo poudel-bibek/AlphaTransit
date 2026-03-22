@@ -97,6 +97,7 @@ class MCTSAgent:
 
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=(self.device.type == "cuda"))
 
         # Replay buffer and normalizer
         self.replay_buffer = ReplayBuffer(capacity=self.buffer_capacity)
@@ -288,23 +289,22 @@ class MCTSAgent:
             priors: Dict mapping action -> prior probability
             value: Value estimate (scalar)
         """
-        self.model.eval()
-
         # Convert to PyG data and batch
         data = self._state_to_pyg_data(state_dict).to(self.device)
         batch = Batch.from_data_list([data])
 
-        # Get node embeddings
-        z = self.model._get_node_embeddings(
-            batch.x, batch.edge_index, batch.edge_attr
-        )
+        with torch.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+            # Get node embeddings
+            z = self.model._get_node_embeddings(
+                batch.x, batch.edge_index, batch.edge_attr
+            )
 
-        # Actor: get logits per node
-        logits = self.model.actor_head(z).squeeze(-1)  # [n_nodes]
+            # Actor: get logits per node
+            logits = self.model.actor_head(z).squeeze(-1)  # [n_nodes]
 
-        # Critic: get value
-        g = self.model.critic_readout(z, batch.batch)
-        value = self.model.critic_head(g).squeeze(-1).item()
+            # Critic: get value
+            g = self.model.critic_readout(z, batch.batch)
+            value = self.model.critic_head(g).squeeze(-1).item()
 
         # Mask and softmax for priors
         if not valid_actions:
@@ -334,17 +334,16 @@ class MCTSAgent:
         if not state_dicts:
             return []
 
-        self.model.eval()
-
         # Pack K leaf states into a single PyG Batch
         data_list = [self._state_to_pyg_data(sd).to(self.device) for sd in state_dicts]
         batch = Batch.from_data_list(data_list).to(self.device)
 
-        # Single forward pass through GATv2 backbone + actor/critic heads
-        z = self.model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
-        logits = self.model.actor_head(z).squeeze(-1)
-        g = self.model.critic_readout(z, batch.batch)
-        values = self.model.critic_head(g).squeeze(-1)
+        with torch.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+            # Single forward pass through GATv2 backbone + actor/critic heads
+            z = self.model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+            logits = self.model.actor_head(z).squeeze(-1)
+            g = self.model.critic_readout(z, batch.batch)
+            values = self.model.critic_head(g).squeeze(-1)
 
         # Split concatenated outputs back into per-graph results
         ptr = batch.ptr
@@ -604,57 +603,60 @@ class MCTSAgent:
         target_values = torch.tensor(target_values, dtype=torch.float32).to(self.device)
         valid_masks = torch.stack(valid_masks).to(self.device)
 
-        # Forward pass
-        z = self.model._get_node_embeddings(
-            batch.x, batch.edge_index, batch.edge_attr
-        )
-        logits = self.model.actor_head(z).squeeze(-1)
-        g = self.model.critic_readout(z, batch.batch)
-        values = self.model.critic_head(g).squeeze(-1)
+        with torch.autocast(device_type="cuda", enabled=(self.device.type == "cuda")):
+            # Forward pass
+            z = self.model._get_node_embeddings(
+                batch.x, batch.edge_index, batch.edge_attr
+            )
+            logits = self.model.actor_head(z).squeeze(-1)
+            g = self.model.critic_readout(z, batch.batch)
+            values = self.model.critic_head(g).squeeze(-1)
 
-        # Reshape logits per graph
-        ptr = self.model._get_ptr(batch.batch)
-        num_graphs = batch.num_graphs
+            # Reshape logits per graph
+            ptr = self.model._get_ptr(batch.batch)
+            num_graphs = batch.num_graphs
 
-        policy_losses = []
-        for i in range(num_graphs):
-            start, end = ptr[i], ptr[i + 1]
-            graph_logits = logits[start:end]
+            policy_losses = []
+            for i in range(num_graphs):
+                start, end = ptr[i], ptr[i + 1]
+                graph_logits = logits[start:end]
 
-            # Mask invalid actions (actions outside valid set)
-            mask_i = valid_masks[i, :len(graph_logits)]
-            masked_logits = graph_logits.clone()
-            masked_logits[~mask_i] = float('-inf')
+                # Mask invalid actions (actions outside valid set)
+                mask_i = valid_masks[i, :len(graph_logits)]
+                masked_logits = graph_logits.clone()
+                masked_logits[~mask_i] = float('-inf')
 
-            # Log softmax for cross-entropy (over valid actions only)
-            log_probs = F.log_softmax(masked_logits, dim=0)
+                # Log softmax for cross-entropy (over valid actions only)
+                log_probs = F.log_softmax(masked_logits, dim=0)
 
-            # Cross-entropy with target policy.
-            # Only sum where target_p > 0 to avoid NaN from 0 * -inf (IEEE-754).
-            # This is mathematically equivalent since 0 * log(p) = 0, but IEEE
-            # gives NaN for 0 * -inf which can poison training silently.
-            target_p = target_policies[i, :len(graph_logits)]
-            nonzero_mask = target_p > 0
-            if nonzero_mask.any():
-                policy_loss = -torch.sum(target_p[nonzero_mask] * log_probs[nonzero_mask])
-            else:
-                # Edge case: all zeros in target (shouldn't happen normally)
-                policy_loss = torch.tensor(0.0, device=self.device)
-            policy_losses.append(policy_loss)
+                # Cross-entropy with target policy.
+                # Only sum where target_p > 0 to avoid NaN from 0 * -inf (IEEE-754).
+                # This is mathematically equivalent since 0 * log(p) = 0, but IEEE
+                # gives NaN for 0 * -inf which can poison training silently.
+                target_p = target_policies[i, :len(graph_logits)]
+                nonzero_mask = target_p > 0
+                if nonzero_mask.any():
+                    policy_loss = -torch.sum(target_p[nonzero_mask] * log_probs[nonzero_mask])
+                else:
+                    # Edge case: all zeros in target (shouldn't happen normally)
+                    policy_loss = torch.tensor(0.0, device=self.device)
+                policy_losses.append(policy_loss)
 
-        policy_loss = torch.stack(policy_losses).mean()
+            policy_loss = torch.stack(policy_losses).mean()
 
-        # Value loss (MSE)
-        value_loss = F.mse_loss(values, target_values)
+            # Value loss (MSE)
+            value_loss = F.mse_loss(values, target_values)
 
-        # Total loss
-        total_loss = policy_loss + value_loss
+            # Total loss
+            total_loss = policy_loss + value_loss
 
         # Backward pass
-        self.optimizer.zero_grad()
-        total_loss.backward()
+        self.optimizer.zero_grad(set_to_none=True)
+        self.scaler.scale(total_loss).backward()
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
         return {
             'policy_loss': policy_loss.item(),

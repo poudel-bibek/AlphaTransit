@@ -66,10 +66,11 @@ def batch_network_forward(
     data_list = [state_to_pyg_data(sd).to(device) for sd in state_dicts]
     batch = Batch.from_data_list(data_list)
 
-    z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
-    logits = model.actor_head(z).squeeze(-1)
-    g = model.critic_readout(z, batch.batch)
-    values = model.critic_head(g).squeeze(-1)
+    with torch.autocast(device_type="cuda", enabled=(device != "cpu")):
+        z = model._get_node_embeddings(batch.x, batch.edge_index, batch.edge_attr)
+        logits = model.actor_head(z).squeeze(-1)
+        g = model.critic_readout(z, batch.batch)
+        values = model.critic_head(g).squeeze(-1)
 
     ptr = batch.ptr
     results: List[Tuple[Dict[int, float], float]] = []
