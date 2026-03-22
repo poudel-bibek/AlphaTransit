@@ -253,6 +253,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     #         "algorithm": {"value": "mcts"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
+    #         "num_mcts_workers": {"value": 16},
     #     },
     # }
 
@@ -274,6 +275,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "apply_best_params": {"value": True},
+            "num_mcts_workers": {"value": 16},
         },
     }
 
@@ -296,6 +298,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     #         "algorithm": {"value": "mcts"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
+    #         "num_mcts_workers": {"value": 16},
     #     },
     # }
 
@@ -373,6 +376,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     #         "algorithm": {"value": "mcts"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
+    #         "num_mcts_workers": {"value": 16},
     #     },
     # }
 
@@ -394,6 +398,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "algorithm": {"value": "mcts"},
             "gpu": {"value": True},
             "apply_best_params": {"value": True},
+            "num_mcts_workers": {"value": 16},
         },
     }
 
@@ -416,6 +421,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     #         "algorithm": {"value": "mcts"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
+    #         "num_mcts_workers": {"value": 16},
     #     },
     # }
 
