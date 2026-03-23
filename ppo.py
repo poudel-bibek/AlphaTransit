@@ -65,10 +65,10 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     Main Process (Learner):
     - Owns the model and optimizer
     - Creates shared memory tensors for model weights 
-    - Dispatches one episode-collection command to each worker per PPO round
-    - Collects one full-episode trajectory from each worker (barrier sync)
+    - Dispatches one or more full-episode collection waves per PPO update
+    - Collects barrier-synchronized full-episode trajectories until the per-update target is reached
     - Processes transitions (with precomputed advantages/returns) into PPO memory
-    - Performs exactly one PPO update per collection round
+    - Performs exactly one PPO update per completed collection budget
     - Copies updated weights to shared memory
 
     Worker Processes (Actors):
@@ -78,7 +78,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     - Receive next collect command only after learner update
 
     Note:
-    - Each PPO update uses one complete trajectory per worker from the same policy version.
+    - Each PPO update uses full episodes from a single policy version, possibly across multiple worker waves.
     - This removes cross-round staleness caused by asynchronous worker restarts.
 
     ------------------------------------------------------------------------------------------------
@@ -99,8 +99,12 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
 
     num_workers = config.get("num_ppo_workers")
+    episodes_per_update = config.get("ppo_episodes_per_update", num_workers)
     max_steps = config["max_steps"]
-    print(f"Training started: network={config['network']}, workers={num_workers}, max_steps={max_steps:,}")
+    print(
+        f"Training started: network={config['network']}, workers={num_workers}, "
+        f"episodes_per_update={episodes_per_update}, max_steps={max_steps:,}"
+    )
     
     # Reference environment for dimensions and visualization
     env = TransitEnv(config)
@@ -164,7 +168,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     episode_count, steps_elapsed, update_count, policy_path = 0, 0, 0, None
     
     # Rolling buffer for episode metrics - logged at each PPO update for uniform x-axis spacing
-    episode_buffer_size = 2 * num_workers
+    episode_buffer_size = 2 * episodes_per_update
     recent_episode_rewards = deque(maxlen = episode_buffer_size)
     recent_episode_lengths = deque(maxlen = episode_buffer_size)
     recent_episode_metrics = deque(maxlen = episode_buffer_size)  # Full sim_result dicts
@@ -180,8 +184,8 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     try:
         env_manager.start(model, policy_kwargs)
         
-        # Start all workers collecting episodes
-        env_manager.start_collection()
+        # Start the first PPO collection wave for this policy version.
+        env_manager.start_collection(num_to_dispatch=min(num_workers, episodes_per_update))
         
         # Log initial state at step 0 so all metrics start at the same x-axis point
         if not config.get("wandb_off"):
@@ -192,22 +196,33 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         
         # Main Training Loop:
         while steps_elapsed < max_steps:
-            # 1. Barrier collect: one complete episode from each worker for this PPO round.
+            # 1. Barrier collect full episodes until we reach the per-update target.
             round_start = time.time()
-            chunks = env_manager.collect_rollouts(expected_workers=num_workers)
-            if not chunks:
+            all_chunks = []
+            episodes_remaining = episodes_per_update
+            while episodes_remaining > 0:
+                dispatch_count = min(num_workers, episodes_remaining)
+                chunks = env_manager.collect_rollouts(expected_workers=dispatch_count)
+                if not chunks:
+                    break
+                all_chunks.extend(chunks)
+                episodes_remaining -= len(chunks)
+                if episodes_remaining > 0:
+                    env_manager.start_collection(num_to_dispatch=min(num_workers, episodes_remaining))
+
+            if not all_chunks:
                 break
             
             # 2. Process trajectories and add to memory.
             # Advantages/returns are computed in workers using scaled rewards (worker-side normalization).
             batch_steps = 0
             episode_lengths_this_update = []
-            # print(f"[DEBUG] Learner: Processing {len(chunks)} chunks into PPO memory...")
+            # print(f"[DEBUG] Learner: Processing {len(all_chunks)} chunks into PPO memory...")
             
             # Recover RAW returns from scaled returns to update running stats in raw units.
             # raw_return = scaled_return * reward_scale_used (since scaled_return = raw_return / scale)
             all_raw_returns = []
-            for chunk in chunks:
+            for chunk in all_chunks:
                 raw_returns = [r * chunk.reward_scale_used for r in chunk.returns]
                 all_raw_returns.extend(raw_returns)
             
@@ -223,7 +238,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
             env_manager.update_reward_scale(return_rms.std)
             
             # Add transitions to memory (advantages/returns already normalized by workers)
-            for chunk in chunks:
+            for chunk in all_chunks:
                 if not chunk.is_terminal:
                     raise RuntimeError("Expected terminal full-episode chunk in PPO barrier collection.")
 
@@ -283,7 +298,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
             # 4. Start next round only after updated weights are published.
             if steps_elapsed < max_steps:
-                env_manager.start_collection()
+                env_manager.start_collection(num_to_dispatch=min(num_workers, episodes_per_update))
             
             # 5. Log aggregated episode metrics (mean of recent episodes in buffer)
             if not config.get("wandb_off"):

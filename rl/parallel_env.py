@@ -534,15 +534,16 @@ class ParallelEnvManager:
                     
         return results
     
-    def start_collection(self):
+    def start_collection(self, num_to_dispatch=None):
         """
-        Dispatch one collect command to every worker for the next PPO round.
-        Each worker will run exactly one full episode and send one terminal chunk.
+        Dispatch collect commands for the next PPO round.
+        Each selected worker will run exactly one full episode and send one terminal chunk.
         """
         if self._active_workers:
             raise RuntimeError("Cannot start a new collection round while workers are still active.")
 
-        for wid in range(self.num_workers):
+        count = self.num_workers if num_to_dispatch is None else num_to_dispatch
+        for wid in range(count):
             self._actor_cmd_queues[wid].put({"type": "collect"})
             self._active_workers.add(wid)
     

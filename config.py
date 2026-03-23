@@ -169,10 +169,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # PPO hyperparameters:
     # Training duration: max_steps = 1M env steps (comparable to MCTS with max_iterations=744)
-    # Eval frequency is update-count based and depends on episode lengths × num_ppo_workers.
+    # Eval frequency is update-count based and depends on episode lengths × ppo_episodes_per_update.
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
     parser.add_argument("--ppo_eval_every", type=int, default=5, help="PPO: Evaluate every N updates")
     parser.add_argument("--num_ppo_workers", type=int, default=8, help="PPO: Number of parallel workers")
+    parser.add_argument("--ppo_episodes_per_update", type=int, default=8,
+                        help="PPO: Episodes to collect before each update (decoupled from worker count)")
     parser.add_argument("--K_epochs", type=int, default=8, help="PPO: Number of epochs per update")
     parser.add_argument("--batch_size", type=int, default=256, help="Mini-batch size")
     parser.add_argument("--clip_frac", type=float, default=0.2, help="PPO: Clipping ratio for policy loss")
