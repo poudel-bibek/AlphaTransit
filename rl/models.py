@@ -215,7 +215,7 @@ class GATV2ActorCritic(nn.Module):
         ptr[1:] = torch.cumsum(torch.bincount(batch_tensor), dim=0)
         return ptr
 
-    def act(self, x, edge_index, edge_attr, batch, valid_mask, stochastic: bool = True):
+    def act(self, x, edge_index, edge_attr, batch, valid_mask, stochastic: bool = True, temperature: float = 1.0):
         """
        valid_mask (NOT optional) is a 2D bool tensor i.e., for each graph in the batch e.g., 2 graphs of 4 nodes each, [[False, True, True, False], [False, True, False, True]]
        - Mask out nodes that are not valid.
@@ -232,6 +232,8 @@ class GATV2ActorCritic(nn.Module):
        - log_probs: tensor [batch_size] of log probabilities of the selected actions
        - values: tensor [batch_size] i.e., one value per graph.
        """
+
+        assert temperature > 0, f"temperature must be positive, got {temperature}"
 
         z = self._get_node_embeddings(x, edge_index, edge_attr)
         logits = self.actor_head(z).squeeze(-1)
@@ -266,13 +268,12 @@ class GATV2ActorCritic(nn.Module):
             # Distribution has to be built over all local indices in the current graph but logits for invalid ones are masked to -inf.
             # If we were to build a dist over only valid nodes (for example 3 valid nodes), then it would be over indices 0, 1, 2.
             # This is a problem because although the valid nodes could be index 10 , 11, 12 in the graph the dist would have indices 0, 1, 2.
-            dist = Categorical(logits=masked_logits)
-        
+            dist = Categorical(logits=masked_logits / temperature)
+
             if stochastic:
                 local_idx = dist.sample()
             else:
-                local_idx = torch.argmax(masked_logits) # Select the node index with the highest logit.
-                # local_idx = dist.probs.argmax() # Select the node index with the highest probability. This is fine but slower and can NaN if all invalid.
+                local_idx = torch.argmax(masked_logits)
 
             log_prob = dist.log_prob(local_idx)      # scalar value
             actions_list.append(local_idx)

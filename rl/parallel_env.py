@@ -142,10 +142,24 @@ def _compute_gae_chunk(rewards, values, dones, gamma, gae_lambda, bootstrap_valu
     # print(f"[DEBUG] GAE chunk: len={len(rewards)}, bootstrap={bootstrap_value:.4f}, adv_range=[{advantages.min():.3f}, {advantages.max():.3f}], ret_range=[{returns.min():.2f}, {returns.max():.2f}], reward_sum={rewards.sum():.2f}")
     return advantages.tolist(), returns.tolist()
 
-def run_single_eval(env, model, seed, device):
+def run_single_eval(env, model, seed, device, eval_temperature=0.1):
     """
     Internal helper to run evaluation on a given env/model instance.
     Used by rollout_worker_loop to reuse resources.
+
+    Uses low-temperature stochastic sampling (default tau=0.1) instead of
+    deterministic argmax, matching the MCTS eval protocol for fair comparison.
+
+    With argmax, the same seed + same policy weights produces the exact same
+    trajectory every eval run, so num_eval_runs yields zero variance and no
+    meaningful confidence intervals. Low-temperature sampling preserves
+    near-greedy behavior while allowing the policy distribution to express
+    uncertainty across runs — PPO's distribution is its only search mechanism,
+    unlike MCTS which refines actions through tree search before applying tau.
+
+    This follows standard practice in neural combinatorial optimization
+    (Kool et al. ICLR 2019, POMO NeurIPS 2020, Bello et al. 2017), where
+    sampling-based evaluation is preferred over greedy decoding.
     """
     # Set seed
     torch.manual_seed(seed)
@@ -180,7 +194,8 @@ def run_single_eval(env, model, seed, device):
                                                  batch.edge_attr,
                                                  batch.batch,
                                                  valid_mask=valid_mask,
-                                                 stochastic=False) # DETERMINISTIC action for evaluation
+                                                 stochastic=True,
+                                                 temperature=eval_temperature)
         else:
             # No valid next node found.
             action_tensor = torch.tensor([env.NO_VALID_ACTION], dtype=torch.long, device=device)
@@ -279,7 +294,8 @@ def worker(worker_id, config, policy_kwargs, shared_model_state, shared_update_c
         elif cmd_type == "eval":
             model.load_state_dict(shared_model_state)
             model.eval()
-            result = run_single_eval(env, model, cmd["seed"], device)
+            result = run_single_eval(env, model, cmd["seed"], device,
+                                     eval_temperature=config.get("ppo_eval_temperature", 0.1))
             result.run_id = cmd["run_id"]
             eval_res_queue.put([result])
 
