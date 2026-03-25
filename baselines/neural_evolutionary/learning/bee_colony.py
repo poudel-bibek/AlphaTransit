@@ -338,7 +338,6 @@ def get_mutants(bee_networks, chosen_route_idxs, n_type1, n_type2,
     return bee_networks
 
 
-# [C7 hub-start] Post-mutation check: revert if hub-start lost
 def get_neural_variants(model, env_state, bee_networks, drop_route_idxs,
                         greedy=False):
     bee_dim = bee_networks.ndim == 4
@@ -370,17 +369,6 @@ def get_neural_variants(model, env_state, bee_networks, drop_route_idxs,
         routes = routes.reshape(batch_size, n_bees, n_routes, -1)
     pad_size = max_n_nodes - routes.shape[-1]
     routes = torch.nn.functional.pad(routes, (0, pad_size), value=-1)
-
-    # [C7] Revert any network where the new route lost the hub-start
-    new_route_starts = routes[..., -1, 0]  # start of the newly added route
-    hub_lost = new_route_starts != HUB_NODE
-    if hub_lost.any():
-        # Pad original bee_networks to match routes shape if needed
-        orig = bee_networks
-        if orig.shape[-1] < routes.shape[-1]:
-            orig = torch.nn.functional.pad(
-                orig, (0, routes.shape[-1] - orig.shape[-1]), value=-1)
-        routes[hub_lost] = orig[hub_lost]
 
     return routes
 

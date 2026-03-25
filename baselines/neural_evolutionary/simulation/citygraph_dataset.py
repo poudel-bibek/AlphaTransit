@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License along with 
 # Transit Learning. If not, see <https://www.gnu.org/licenses/>.
 
+import os
 import argparse
 import pickle
 import shutil
@@ -408,7 +409,8 @@ class CityGraphData(HeteroData):
                                 style='dashed', ax=ax)
             
     @staticmethod
-    def from_tensors(node_locs, street_adj, demand, pos_only=False):
+    def from_tensors(node_locs, street_adj, demand, pos_only=False,
+                     hub_node=None):
         graph = CityGraphData()
         n_nodes = node_locs.shape[0]
         graph.fixed_routes = torch.zeros((0, n_nodes))
@@ -436,7 +438,17 @@ class CityGraphData(HeteroData):
             graph[STOP_KEY].x = torch.zeros((n_nodes, 0))
         else:
             graph[STOP_KEY].x = get_node_features(edge_idx, demand)
-            
+
+        # [C7] Hub mask: designate hub node for hub-start constraint
+        hub_mask = torch.zeros(n_nodes, dtype=torch.bool)
+        if hub_node is not None:
+            hub_mask[hub_node] = True
+        else:
+            # Default: highest total demand node
+            total_demand = demand.sum(0) + demand.sum(1)
+            hub_mask[total_demand.argmax()] = True
+        graph.hub_mask = hub_mask
+
         return graph
         
     @staticmethod
@@ -530,6 +542,17 @@ class CityGraphData(HeteroData):
         dmd_edge_feat = torch.stack((demand_feat, drive_time_feat), dim=1)
         data[DEMAND_KEY].edge_attr = dmd_edge_feat
         data.demand = od
+
+        # [C7] Hub mask from HUB_NODE env var (default: highest demand node)
+        n_nodes = od.shape[0]
+        hub_mask = torch.zeros(n_nodes, dtype=torch.bool)
+        hub_env = os.environ.get("HUB_NODE")
+        if hub_env is not None:
+            hub_mask[int(hub_env)] = True
+        else:
+            total_demand = od.sum(0) + od.sum(1)
+            hub_mask[total_demand.argmax()] = True
+        data.hub_mask = hub_mask
 
         assert data.fixed_routes is not None
         return data

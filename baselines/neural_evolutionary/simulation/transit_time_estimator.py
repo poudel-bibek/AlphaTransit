@@ -640,6 +640,15 @@ class RouteGenBatchState:
             return None
         
     @property
+    def hub_mask(self):
+        """[C7] Boolean mask of hub nodes, shape (batch_size, max_n_nodes)."""
+        if hasattr(self.graph_data, 'hub_mask'):
+            # PyG Batch concatenates 1D tensors; reshape to (batch, n_nodes)
+            flat = self.graph_data.hub_mask
+            return flat.reshape(self.batch_size, -1)
+        return None
+
+    @property
     def norm_cost_weights(self):
         if hasattr(self.extra_data, 'norm_cost_weights'):
             return self.extra_data.norm_cost_weights

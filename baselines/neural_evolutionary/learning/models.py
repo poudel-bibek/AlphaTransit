@@ -1452,6 +1452,15 @@ class PathCombiningRouteGenerator(RouteGeneratorBase):
         xtnding_exp = extending[:, None, None]
         start_scores = self._update_path_scores(state, path_scores, path_lens,
                                                 state.drive_times)
+
+        # [C7] For starting routes, only allow hub nodes as start terminals
+        hub_mask = state.hub_mask
+        if hub_mask is not None:
+            # hub_mask: (batch, n_nodes), start_scores: (batch, n_nodes, n_nodes)
+            # Mask rows where start node is NOT a hub
+            non_hub = ~hub_mask[:, :start_scores.shape[1]]
+            start_scores[non_hub.unsqueeze(-1).expand_as(start_scores)] = TORCH_FMIN
+
         ppe_scores = start_scores * ~xtnding_exp + ext_scores * xtnding_exp
 
         # select an option

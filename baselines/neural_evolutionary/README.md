@@ -24,14 +24,19 @@ For a fair comparison, all AlphaTransit route constraints must be enforced on Ho
 | C6 | Bidirectional edges | — | Yes | Mumford format assumes symmetric adjacency |
 | C7 | Hub-start (all routes begin at transit center) | Node 96 (Mumford idx 95) | **No** | Modified below |
 
-**C7 is the only mismatch.** Four code locations are modified to enforce hub-start:
+**C7 is the only mismatch.** It is enforced differently for each baseline:
+
+**Bee Colony:** Modified initialization and mutation operators (3 code locations):
 
 | File | Function | Change |
 |------|----------|--------|
-| `learning/initialization.py:227` | `nikolic_init()` | Force all route start nodes to Mumford index 95 |
-| `learning/bee_colony.py:362` | `get_bee_1_variants()` | Force replacement route starts to index 95 |
-| `learning/bee_colony.py:442` | `get_bee_2_variants()` | Post-mutation check: revert if hub-start lost |
-| `learning/bee_colony.py:328` | `get_neural_variants()` | Post-mutation check: revert if hub-start lost |
+| `learning/initialization.py` | `nikolic_init()` | Force all route start nodes to Mumford index 95 |
+| `learning/bee_colony.py` | `get_bee_1_variants()` | Force replacement route starts to index 95 |
+| `learning/bee_colony.py` | `get_bee_2_variants()` | Post-mutation check: revert if hub-start lost |
+
+**Neural Evolutionary:** Hub-start enforced at the model level during training and inference. The GNN is self-trained on synthetic cities where the highest-demand node is designated as hub. During route construction, non-hub start nodes are masked to $-\infty$ in `PathCombiningRouteGenerator.step()` (models.py). The published pretrained weights do not support hub-start (see below).
+
+**Why pretrained weights do not work:** The published weights from Holliday et al. were trained on synthetic cities without any hub-start constraint. When used in the Neural Evolutionary Algorithm, the GNN proposes routes starting at arbitrary nodes. Since all such routes violate hub-start, every neural mutation is rejected, and the algorithm degrades to plain Bee Colony. We therefore self-train the GNN with hub-start enforced during training.
 
 ## Two-Environment Workflow
 
@@ -42,18 +47,30 @@ Holliday's code requires Python 3.9 and PyTorch 1.12, which are incompatible wit
 conda activate holliday
 cd baselines/neural_evolutionary
 
-# Run Evolutionary Algorithm (EA)
+# Run Bee Colony
 PYTHONPATH=. BCO_LOG_CSV=training_data/ea_log.csv \
   python learning/bee_colony.py eval.dataset.path=datasets/bloomington \
   +eval=bloomington init.method=nikolic +run_name=bloomington_ea
 
-# Run Neural Evolutionary Algorithm (NEA) with pretrained weights
-PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
-  python learning/bee_colony.py --config-name neural_bco_mumford \
-  +model.weights=weights/pretrained/inductive_gae_seed_0.pt \
+# Self-train GNN with hub constraint (one-time, ~2-4 hrs GPU)
+PYTHONPATH=. python simulation/citygraph_dataset.py datasets/synthetic_20_hub mixed \
+  -n 32768 --min 20 --max 20 --ovaldemand
+PYTHONPATH=. python learning/inductive_route_learning.py \
+  dataset.kwargs.path=datasets/synthetic_20_hub +run_name=self_trained_hub
+
+# Run LC-100 with self-trained weights
+HUB_NODE=95 PYTHONPATH=. python learning/eval_route_generator.py \
+  +model.weights=weights/self_trained/inductive_self_trained_hub.pt \
   eval.dataset.path=datasets/bloomington +eval=bloomington \
-  init.path=output_routes/nn_construction_bloomington_lc100_seed0_routes.pkl \
-  +run_name=bloomington_nea_pretrained
+  +run_name=bloomington_lc100_hub
+
+# Run Neural Evolutionary with self-trained weights
+HUB_NODE=95 PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
+  python learning/bee_colony.py --config-name neural_bco_mumford \
+  +model.weights=weights/self_trained/inductive_self_trained_hub.pt \
+  eval.dataset.path=datasets/bloomington +eval=bloomington \
+  init.path=output_routes/nn_construction_bloomington_lc100_hub_routes.pkl \
+  +run_name=bloomington_nea
 ```
 This produces route pickle files in `output_routes/`.
 
