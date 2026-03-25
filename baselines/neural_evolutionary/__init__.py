@@ -11,7 +11,7 @@ Usage:
 
 import os
 
-from baselines.utils import load_holliday_routes, load_node_mapping
+from baselines.utils import load_holliday_routes
 
 BASELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 
