@@ -61,7 +61,7 @@ class MCTSAgent:
             config: Configuration dictionary containing:
                 - MCTS hyperparameters (n_iter, c_puct, dirichlet_alpha, etc.)
                 - Training hyperparameters (lr, batch_size, etc.)
-            policy_kwargs: Model architecture kwargs from get_policy_kwargs_mcts
+            policy_kwargs: Model architecture kwargs from get_policy_kwargs_alpha
         """
         self.env = env
         self.config = dict(config)

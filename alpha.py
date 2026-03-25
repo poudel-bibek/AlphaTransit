@@ -150,9 +150,9 @@ from rl.mcts_agent import MCTSAgent
 warnings.filterwarnings("ignore", message=".*torch-scatter.*")
 
 
-def get_policy_kwargs_mcts(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
+def get_policy_kwargs_alpha(config: Dict[str, Any], node_feature_dim: int, edge_feature_dim: int) -> Dict[str, Any]:
     """
-    Get model kwargs for MCTS. Matches structure of get_policy_kwargs_ppo.
+    Get model kwargs for AlphaTransit. Matches structure of get_policy_kwargs_ppo.
     """
     n = config.get("num_gat_blocks", 4)
     half = n // 2
@@ -188,7 +188,7 @@ def get_policy_kwargs_mcts(config: Dict[str, Any], node_feature_dim: int, edge_f
 
 def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     """
-    Main MCTS training function for both standalone and sweep use.
+    Main AlphaTransit training function for both standalone and sweep use.
 
     Args:
         config: Configuration dictionary
@@ -210,7 +210,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
 
     env = TransitEnv(config)
-    policy_kwargs = get_policy_kwargs_mcts(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
+    policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
     mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=True)
     mcts_agent.train()
 
@@ -226,14 +226,14 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
 def alpha_eval(config: Dict[str, Any]) -> None:
     """
-    Entry point for standalone MCTS evaluation mode (like ppo_eval).
+    Entry point for standalone AlphaTransit evaluation mode (like ppo_eval).
     """
     import os
     os.makedirs(config["save_dir"], exist_ok=True)
     config["wandb_off"] = True
 
     env = TransitEnv(config)
-    policy_kwargs = get_policy_kwargs_mcts(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
+    policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
     mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=False)
     mcts_agent.evaluate(
         policy_path=config.get("saved_policy_path", ""),
