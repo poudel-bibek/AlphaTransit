@@ -139,3 +139,7 @@ plots/routes_*.png
 ./plots/routes_*.png
 
 CLAUDE.md
+
+# Build artifacts
+uxsim.egg-info/
+*.egg-info/
