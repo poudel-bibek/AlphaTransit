@@ -40,12 +40,24 @@ For a fair comparison, all AlphaTransit route constraints must be enforced on Ho
 
 ## Two-Environment Workflow
 
-Holliday's code requires Python 3.9 and PyTorch 1.12, which are incompatible with AlphaTransit's runtime (Python 3.14, PyTorch 2.11). The workflow has two stages:
+The code in this folder requires Python 3.9 and PyTorch 1.12, which are incompatible with AlphaTransit's runtime (Python 3.14, PyTorch 2.11). A separate conda environment is needed for route generation. Evaluation of the generated routes runs in AlphaTransit's main environment.
 
-**Step 1: Generate routes** (in `holliday` conda env)
+### Environment Setup
+
 ```bash
+conda create -n holliday python=3.9
 conda activate holliday
+pip install torch==1.12.0 torch-geometric==2.1.0 torch-scatter torch-sparse
+pip install hydra-core==1.2 omegaconf networkx scipy tqdm pyyaml pandas optuna
+```
+
+### Step 1: Generate Routes
+
+All commands below run from `baselines/neural_evolutionary/` with the environment above activated.
+
+```bash
 cd baselines/neural_evolutionary
+conda activate holliday
 
 # Run Bee Colony
 PYTHONPATH=. BCO_LOG_CSV=training_data/ea_log.csv \
@@ -74,16 +86,18 @@ HUB_NODE=95 PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
 ```
 This produces route pickle files in `output_routes/`.
 
-**Step 2: Evaluate routes in AlphaTransit simulator** (in `alphatransit` conda env)
+### Step 2: Evaluate Routes in AlphaTransit Simulator
+
+Switch back to the main AlphaTransit environment and run the generated routes through UXsim.
+
 ```bash
-conda activate alphatransit
 cd /path/to/AlphaTransit
 
-# Evaluate EA routes
+# Evaluate Bee Colony routes
 python main.py --mode baseline --baseline_type evolutionary --alpha 0.3
 python main.py --mode baseline --baseline_type evolutionary --alpha 1.0
 
-# Evaluate NEA routes
+# Evaluate Neural Evolutionary routes
 python main.py --mode baseline --baseline_type neural_evolutionary --alpha 0.3
 python main.py --mode baseline --baseline_type neural_evolutionary --alpha 1.0
 ```
