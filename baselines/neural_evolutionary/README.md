@@ -33,6 +33,45 @@ For a fair comparison, all AlphaTransit route constraints must be enforced on Ho
 | `learning/bee_colony.py:442` | `get_bee_2_variants()` | Post-mutation check: revert if hub-start lost |
 | `learning/bee_colony.py:328` | `get_neural_variants()` | Post-mutation check: revert if hub-start lost |
 
+## Two-Environment Workflow
+
+Holliday's code requires Python 3.9 and PyTorch 1.12, which are incompatible with AlphaTransit's runtime (Python 3.14, PyTorch 2.11). The workflow has two stages:
+
+**Step 1: Generate routes** (in `holliday` conda env)
+```bash
+conda activate holliday
+cd baselines/neural_evolutionary
+
+# Run Evolutionary Algorithm (EA)
+PYTHONPATH=. BCO_LOG_CSV=training_data/ea_log.csv \
+  python learning/bee_colony.py eval.dataset.path=datasets/bloomington \
+  +eval=bloomington init.method=nikolic +run_name=bloomington_ea
+
+# Run Neural Evolutionary Algorithm (NEA) with pretrained weights
+PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
+  python learning/bee_colony.py --config-name neural_bco_mumford \
+  +model.weights=weights/pretrained/inductive_gae_seed_0.pt \
+  eval.dataset.path=datasets/bloomington +eval=bloomington \
+  init.path=output_routes/nn_construction_bloomington_lc100_seed0_routes.pkl \
+  +run_name=bloomington_nea_pretrained
+```
+This produces route pickle files in `output_routes/`.
+
+**Step 2: Evaluate routes in AlphaTransit simulator** (in `icml_rebuttal` conda env)
+```bash
+conda activate icml_rebuttal
+cd /path/to/AlphaTransit
+
+# Evaluate EA routes
+python main.py --mode baseline --baseline_type evolutionary --alpha 0.3
+python main.py --mode baseline --baseline_type evolutionary --alpha 1.0
+
+# Evaluate NEA routes
+python main.py --mode baseline --baseline_type neural_evolutionary --alpha 0.3
+python main.py --mode baseline --baseline_type neural_evolutionary --alpha 1.0
+```
+The `_HollidayBaseline` class in `__init__.py` loads the pre-computed route pickles and evaluates them through UXsim.
+
 ---
 
 *Original README from transit_learning follows below.*

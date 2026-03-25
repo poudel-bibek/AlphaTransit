@@ -23,12 +23,16 @@ from torch_geometric.loader import DataLoader
 from omegaconf import DictConfig
 import hydra
 
+import os
 from models import check_extensions_add_connections
 import torch_utils as tu
 from simulation.citygraph_dataset import get_dataset_from_config
 from simulation.transit_time_estimator import RouteGenBatchState
 import learning.utils as lrnu
 from learning.initialization import get_direct_sat_dmd
+
+# [C7 hub-start] Mumford index 95 = AlphaTransit node 96 (Bloomington transit center)
+HUB_NODE = int(os.environ.get("HUB_NODE", 95))
 
 
 def bee_colony(state, cost_obj, init_network, n_bees=10, passes_per_it=5, 
@@ -257,8 +261,17 @@ def bee_colony(state, cost_obj, init_network, n_bees=10, passes_per_it=5,
             for name, vals in zip(metric_names, best_metrics.unbind(-1)):
                 _row[name] = vals.mean().item()
             _log_writer.writerow(_row)
-            if (iteration + 1) % 10 == 0:
-                _log_file.flush()
+            _log_file.flush()
+
+        # --- Verbose console logging every 10 iterations ---
+        if not silent and (iteration + 1) % 10 == 0:
+            _metrics_str = ", ".join(
+                f"{name}={vals.mean().item():.4f}"
+                for name, vals in zip(metric_names, best_metrics.unbind(-1)))
+            print(f"  [iter {iteration+1}/{n_iterations}] "
+                  f"best_cost={best_costs.mean().item():.4f}, "
+                  f"pop_mean={bee_costs.mean().item():.4f}, "
+                  f"{_metrics_str}")
 
     if _log_file is not None:
         _log_file.flush()
@@ -357,6 +370,18 @@ def get_neural_variants(model, env_state, bee_networks, drop_route_idxs,
         routes = routes.reshape(batch_size, n_bees, n_routes, -1)
     pad_size = max_n_nodes - routes.shape[-1]
     routes = torch.nn.functional.pad(routes, (0, pad_size), value=-1)
+
+    # [C7] Revert any network where the new route lost the hub-start
+    new_route_starts = routes[..., -1, 0]  # start of the newly added route
+    hub_lost = new_route_starts != HUB_NODE
+    if hub_lost.any():
+        # Pad original bee_networks to match routes shape if needed
+        orig = bee_networks
+        if orig.shape[-1] < routes.shape[-1]:
+            orig = torch.nn.functional.pad(
+                orig, (0, routes.shape[-1] - orig.shape[-1]), value=-1)
+        routes[hub_lost] = orig[hub_lost]
+
     return routes
 
 
@@ -430,6 +455,9 @@ def get_bee_1_variants(remaining_state, batch_bee_routes, direct_sat_dmd_mat,
 
     new_starts = keep_start_term * route_starts + ~keep_start_term * new_terms
     new_ends = ~keep_start_term * route_ends + keep_start_term * new_terms
+
+    # [C7] Force all replacement routes to start at hub node
+    new_starts[:] = HUB_NODE
     new_routes = shortest_paths[batch_idxs, new_starts, new_ends]
 
     # pad the end of the new routes to match the existing ones
@@ -535,6 +563,10 @@ def get_bee_2_variants(batch_bee_routes, shorten_prob, are_neighbours):
     
     out_lens = (out_routes > -1).sum(-1)
     assert ((out_lens - route_lens).abs() <= 1).all()
+
+    # [C7] Revert any route whose start is no longer the hub node
+    hub_lost = out_routes[:, 0] != HUB_NODE
+    out_routes[hub_lost] = flat_routes[hub_lost]
 
     # fold back into batch x bees
     if bee_dim:

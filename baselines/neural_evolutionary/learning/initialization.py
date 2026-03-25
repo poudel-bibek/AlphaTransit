@@ -1,3 +1,4 @@
+import os
 import logging as log
 
 import torch
@@ -225,9 +226,16 @@ def john_init(state: RouteGenBatchState, alpha=None,
     
 
 # [C7 hub-start] Force all route start nodes to Mumford index 95 (= AlphaTransit node 96)
+# Hub node is configurable via HUB_NODE env var; defaults to 95.
+HUB_NODE = int(os.environ.get("HUB_NODE", 95))
+
 def nikolic_init(state: RouteGenBatchState):
-    """Constructs a network based on the algorithm of Nikolic and Teodorovic 
+    """Constructs a network based on the algorithm of Nikolic and Teodorovic
         (2013).
+
+    Modified for AlphaTransit: all routes are forced to start at HUB_NODE
+    (Mumford index 95 = AlphaTransit node 96) to match the hub-start
+    constraint used by all other baselines.
     """
     shortest_paths, _ = reconstruct_all_paths(state.nexts)
 
@@ -239,7 +247,7 @@ def nikolic_init(state: RouteGenBatchState):
     # add dummy column and row
     dm_uncovered = torch.nn.functional.pad(dm_uncovered, (0, 1, 0, 1))
     n_routes = state.n_routes_to_plan
-    best_networks = torch.full((batch_size, n_routes, max_n_nodes), -1, 
+    best_networks = torch.full((batch_size, n_routes, max_n_nodes), -1,
                                 device=dev)
     log.info('computing initial network')
     # stop-to-itself routes are all invalid
@@ -260,9 +268,14 @@ def nikolic_init(state: RouteGenBatchState):
         flat_dsd = direct_sat_dmd.flatten(1, 2)
         _, best_flat_idxs = flat_dsd.max(dim=1)
         # add 1 to account for the dummy column and row
-        best_i = torch.div(best_flat_idxs, (max_n_nodes + 1), 
+        best_i = torch.div(best_flat_idxs, (max_n_nodes + 1),
                            rounding_mode='floor')
         best_j = best_flat_idxs % (max_n_nodes + 1)
+
+        # [C7] Override start to hub node, pick best destination from hub
+        best_i = torch.full_like(best_j, HUB_NODE)
+        hub_dsd = direct_sat_dmd[:, HUB_NODE, :]
+        _, best_j = hub_dsd.max(dim=1)
         # batch_size x route_len
         routes = shortest_paths[batch_idxs, best_i, best_j]
         best_networks[:, ri, :routes.shape[-1]] = routes

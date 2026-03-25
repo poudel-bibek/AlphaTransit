@@ -43,9 +43,11 @@ Graph-attention actor-critic trained with Proximal Policy Optimization:
 | **Shortest Path** | Sample proportional to inverse edge length |
 | **Reward Maximization** | Greedy immediate reward maximization |
 | **Genetic Algorithm** | Population-based metaheuristic with route-exchange crossover and path-regeneration mutation |
+| **Evolutionary** | Holliday et al. evolutionary algorithm (Nikolic-style heuristic mutations) |
+| **Neural Evolutionary** | Holliday et al. EA with GNN-guided mutations (pre-trained or self-trained) |
 | **Real World** | Existing Bloomington Transit routes (16 routes) |
 
-All methods use identical reward functions and simulation parameters for fair comparison.
+All methods use identical reward functions and simulation parameters for fair comparison. The Evolutionary and Neural Evolutionary baselines use a separate conda environment (`holliday`, Python 3.9) to generate routes, which are then evaluated in AlphaTransit's simulator. See `baselines/neural_evolutionary/README.md` for details.
 
 ## Installation
 
