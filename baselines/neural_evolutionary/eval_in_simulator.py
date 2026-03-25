@@ -66,8 +66,7 @@ def evaluate_routes(routes, alpha, num_seeds=5, base_seed=42):
     """Evaluate routes in AlphaTransit's UXsim simulator."""
     from config import get_config
     from rl.env import TransitEnv
-    from rl.baselines.heuristics import simulate_baseline_routes
-    from rl.env_utils import create_main_save_dir
+    from baselines.utils import simulate_baseline_routes, create_main_save_dir
 
     # Build config
     sys.argv = [

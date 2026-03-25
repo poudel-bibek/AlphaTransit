@@ -1,12 +1,13 @@
 """Baselines package for AlphaTransit."""
-from rl.baselines.heuristics import (
+from baselines.heuristics import (
     RandomWalk,
     DemandCoverage,
     ShortestPath,
     RewardMaximization,
     RealWorld,
-    GeneticAlgorithm,
 )
+from baselines.genetic import GeneticAlgorithm
+from baselines.neural_evolutionary import NeuralEvolutionary, EvolutionaryAlgorithm
 
 __all__ = [
     "RandomWalk",
@@ -15,4 +16,6 @@ __all__ = [
     "RewardMaximization",
     "RealWorld",
     "GeneticAlgorithm",
+    "NeuralEvolutionary",
+    "EvolutionaryAlgorithm",
 ]
