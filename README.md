@@ -81,10 +81,10 @@ python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params
 python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params
 
 # AlphaTransit with best params (alpha=0.3, ~24-30 hours)
-python main.py --algorithm mcts --gpu --alpha=0.3 --apply_best_params
+python main.py --algorithm alpha --gpu --alpha=0.3 --apply_best_params
 
 # AlphaTransit with best params (alpha=1.0, ~18-24 hours)
-python main.py --algorithm mcts --gpu --alpha=1.0 --apply_best_params
+python main.py --algorithm alpha --gpu --alpha=1.0 --apply_best_params
 
 # Override a specific param while keeping the rest
 python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --lr=0.001
@@ -116,7 +116,7 @@ python main.py --mode=baseline --baseline_type=genetic --alpha=1.0 --ga_populati
 
 ```bash
 # AlphaTransit evaluation
-python main.py --algorithm mcts --mode=eval --saved_policy_path=training_data/<timestamp>/mcts_policies/policy_final.pth
+python main.py --algorithm alpha --mode=eval --saved_policy_path=training_data/<timestamp>/mcts_policies/policy_final.pth
 
 # PPO evaluation
 python main.py --algorithm ppo --mode=eval --saved_policy_path=training_data/<timestamp>/ppo_policies/policy_final.pth
@@ -126,7 +126,7 @@ python main.py --algorithm ppo --mode=eval --saved_policy_path=training_data/<ti
 
 ```bash
 python sweep.py --algorithm ppo
-python sweep.py --algorithm mcts
+python sweep.py --algorithm alpha
 ```
 
 ### Reward ablation experiments
@@ -201,7 +201,7 @@ Best hyperparameters are stored in `config.py` (`BEST_PARAMS` dict) and applied 
 AlphaTransit/
 ├── main.py                 # CLI entry point
 ├── config.py               # Configuration, argument parsing, and best hyperparameters
-├── mcts.py                 # AlphaTransit training/evaluation
+├── alpha.py                # AlphaTransit training/evaluation
 ├── ppo.py                  # PPO training/evaluation
 ├── sweep.py                # WandB hyperparameter sweeps
 │
@@ -214,8 +214,14 @@ AlphaTransit/
 │   ├── ppo_agent.py        # PPO agent implementation
 │   ├── ppo_utils.py        # PPO memory buffer, normalizers
 │   ├── parallel_env.py     # Parallel environment workers for PPO
-│   ├── baselines.py        # Heuristic and GA baselines
 │   └── env_utils.py        # Plotting, aggregation, seed utilities
+│
+├── baselines/
+│   ├── heuristics.py       # Heuristic baselines (RandomWalk, DemandCoverage, etc.)
+│   ├── genetic.py          # Genetic Algorithm baseline
+│   ├── mcts.py             # Pure MCTS baseline (ablation, no learned network)
+│   ├── neural_evolutionary/# Holliday et al. EA/NEA baseline
+│   └── utils.py            # Shared baseline utilities
 │
 ├── networks/
 │   ├── bloomington/        # Bloomington, IN network data
@@ -225,7 +231,8 @@ AlphaTransit/
 │   │   └── bloomington_existing_routes.json
 │   └── sioux_falls/        # Sioux Falls network (for testing)
 │
-├── uxsim/                  # UXsim simulator (extended with BusHandler)
+├── uxsim/                  # UXsim v1.8.2 (https://github.com/toruseo/UXsim, released June 17, 2024)
+│                           # with custom extensions for bus transit simulation
 ├── plots/                  # Visualization and analysis scripts
 └── training_data/          # Training outputs, checkpoints, sweep data
 ```
@@ -260,7 +267,7 @@ Terminal reward combining:
 
 ## Simulation
 
-- **Engine**: UXsim mesoscopic simulator with Newell's car-following model
+- **Engine**: Built on UXsim v1.8.2 (https://github.com/toruseo/UXsim, released June 17, 2024) with custom extensions for bus transit simulation. The modified source is included in the `uxsim/` directory.
 - **Time step**: dt = 1 second, platoon size dn = 5
 - **Horizon**: 10,000 steps (~2.7 hours)
 - **Bus parameters**: 40 passenger capacity, 60s dwell time per stop
@@ -279,8 +286,8 @@ Training logs to Weights & Biases by default:
 
 ```bash
 # With WandB
-python main.py --algorithm mcts --wandb_project=transit --wandb_entity=my-team
+python main.py --algorithm alpha --wandb_project=transit --wandb_entity=my-team
 
 # Without WandB
-python main.py --algorithm mcts --wandb_off
+python main.py --algorithm alpha --wandb_off
 ```
