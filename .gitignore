@@ -140,6 +140,13 @@ plots/routes_*.png
 
 CLAUDE.md
 
+# Holliday baseline generated artifacts
+baselines/neural_evolutionary/datasets/synthetic_20_hub/
+baselines/neural_evolutionary/output/
+baselines/neural_evolutionary/outputs/
+baselines/neural_evolutionary/training_logs/
+baselines/neural_evolutionary/training_data/
+
 # Build artifacts
 uxsim.egg-info/
 *.egg-info/
