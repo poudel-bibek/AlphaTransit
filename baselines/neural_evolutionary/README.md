@@ -8,7 +8,7 @@ The code corresponds to the following papers:
 
 2. A. Holliday and G. Dudek, "A Neural-Evolutionary Algorithm for Autonomous Transit Network Design," in *2024 IEEE International Conference on Robotics and Automation (ICRA)*, IEEE, 2024. [arXiv:2403.07917](https://arxiv.org/abs/2403.07917)
 
-Files required to run Evolutionary, Neural Evolutionary (pre-trained), and Neural Evolutionary (self-trained) on the Bloomington instance are included here, along with additional configs from the original repository for reference. For the full codebase, see the original repository linked above.
+Files required to run Bee Colony and Neural Evolutionary on the Bloomington instance are included here, along with additional configs from the original repository for reference. For the full codebase, see the original repository linked above.
 
 ## Constraint Matching
 
@@ -74,9 +74,9 @@ HUB_NODE=95 PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
 ```
 This produces route pickle files in `output_routes/`.
 
-**Step 2: Evaluate routes in AlphaTransit simulator** (in `icml_rebuttal` conda env)
+**Step 2: Evaluate routes in AlphaTransit simulator** (in `alphatransit` conda env)
 ```bash
-conda activate icml_rebuttal
+conda activate alphatransit
 cd /path/to/AlphaTransit
 
 # Evaluate EA routes
