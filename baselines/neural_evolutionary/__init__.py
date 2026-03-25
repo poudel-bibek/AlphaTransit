@@ -10,9 +10,8 @@ Usage:
 """
 
 import os
-import csv
-import pickle
-import numpy as np
+
+from baselines.utils import load_holliday_routes, load_node_mapping
 
 BASELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -24,49 +23,6 @@ ROUTE_FILES = {
     "lc100": os.path.join(BASELINE_DIR, "output_routes",
                           "nn_construction_bloomington_lc100_seed0_routes.pkl"),
 }
-
-
-def _load_node_mapping():
-    """Load Mumford 0-indexed -> AlphaTransit node name mapping."""
-    mapping_path = os.path.join(BASELINE_DIR, "datasets", "bloomington",
-                                "node_mapping.csv")
-    idx_to_name = {}
-    with open(mapping_path, "r") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            idx = int(row["mumford_idx"])
-            name = row["original_name"]
-            idx_to_name[idx] = name
-    return idx_to_name
-
-
-def _load_routes(pkl_path):
-    """Load routes from Holliday's pickle format -> List[List[str]]."""
-    try:
-        import torch
-        with open(pkl_path, "rb") as f:
-            routes_data = pickle.load(f)
-        # Holliday's code saves as list[tensor(n_routes, max_len)]
-        if isinstance(routes_data, list):
-            routes_data = routes_data[0]
-        if isinstance(routes_data, torch.Tensor):
-            routes_np = routes_data.numpy()
-        else:
-            routes_np = np.array(routes_data)
-    except ImportError:
-        with open(pkl_path, "rb") as f:
-            routes_data = pickle.load(f)
-        if isinstance(routes_data, list):
-            routes_data = routes_data[0]
-        routes_np = np.array(routes_data)
-
-    idx_to_name = _load_node_mapping()
-    routes = []
-    for i in range(routes_np.shape[0]):
-        valid = routes_np[i][routes_np[i] >= 0]
-        route_names = [idx_to_name[int(idx)] for idx in valid]
-        routes.append(route_names)
-    return routes
 
 
 class _HollidayBaseline:
@@ -89,7 +45,7 @@ class _HollidayBaseline:
                 f"Run the {self.route_key.upper()} baseline first using the "
                 f"holliday conda env. See baselines/neural_evolutionary/README.md"
             )
-        self.routes = _load_routes(pkl_path)
+        self.routes = load_holliday_routes(pkl_path)
         print(f"Loaded {len(self.routes)} {self.route_key.upper()} routes "
               f"from {os.path.basename(pkl_path)}")
 

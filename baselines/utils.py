@@ -7,7 +7,9 @@ neural evolutionary baselines.
 """
 
 import os
+import csv
 import json
+import pickle
 import shutil
 import numpy as np
 import random
@@ -263,6 +265,105 @@ def execute_runs(baseline, num_runs, base_seed):
         result = simulate_baseline_routes(baseline.env, baseline.config, routes, img_dir, seed_dir)
         results.append(result)
     
+    aggregated = aggregate_results(results)
+    print_results(results, aggregated)
+    return results, aggregated
+
+
+# ---------------------------------------------------------------------------
+# Holliday et al. route loading and evaluation utilities
+# ---------------------------------------------------------------------------
+
+NEURAL_EVOL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "neural_evolutionary")
+
+
+def load_node_mapping(mapping_path=None):
+    """Load Mumford index -> AlphaTransit node name mapping."""
+    if mapping_path is None:
+        mapping_path = os.path.join(NEURAL_EVOL_DIR, "datasets", "bloomington", "node_mapping.csv")
+    idx_to_name = {}
+    with open(mapping_path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            idx = int(row["mumford_idx"])
+            name = row["original_name"]
+            idx_to_name[idx] = name
+    return idx_to_name
+
+
+def load_holliday_routes(pkl_path, idx_to_name=None):
+    """Load routes from Holliday's pickle format and convert to AlphaTransit format.
+
+    Holliday stores routes as a torch tensor of shape (n_routes, max_len)
+    with -1 padding, where values are 0-indexed Mumford node indices.
+
+    Returns: List[List[str]] — AlphaTransit route format.
+    """
+    if idx_to_name is None:
+        idx_to_name = load_node_mapping()
+
+    with open(pkl_path, "rb") as f:
+        routes_tensor = pickle.load(f)
+
+    # Handle list[tensor] wrapper produced by some Holliday scripts
+    if isinstance(routes_tensor, list):
+        routes_tensor = routes_tensor[0]
+
+    if isinstance(routes_tensor, torch.Tensor):
+        routes_tensor = routes_tensor.numpy()
+
+    routes = []
+    for i in range(routes_tensor.shape[0]):
+        route_indices = routes_tensor[i]
+        valid = route_indices[route_indices >= 0]
+        route_names = [idx_to_name[int(idx)] for idx in valid]
+        routes.append(route_names)
+
+    return routes
+
+
+def evaluate_holliday_routes(routes, alpha, num_seeds=5, base_seed=42):
+    """Evaluate Holliday et al. routes in AlphaTransit's UXsim simulator.
+
+    Uses the same simulation pipeline as all other baselines.
+    Returns (results_list, aggregated_dict).
+    """
+    import sys
+    from config import get_config
+    from rl.env import TransitEnv
+
+    # Build config via argparse
+    original_argv = sys.argv
+    sys.argv = [
+        "eval_holliday",
+        "--mode", "baseline",
+        "--baseline_type", "real_world",
+        "--alpha", str(alpha),
+        "--network", "bloomington",
+        "--num_eval_runs", str(num_seeds),
+        "--seed", str(base_seed),
+    ]
+    config = get_config()
+    sys.argv = original_argv
+
+    config["alpha"] = alpha
+    env = TransitEnv(config)
+
+    results = []
+    for seed_offset in range(num_seeds):
+        seed = base_seed + seed_offset * 2
+        np.random.seed(seed)
+
+        save_dir = os.path.join(
+            config.get("save_dir", "./training_data"), "NEA_eval",
+            f"alpha_{alpha}", f"seed_{seed}")
+        os.makedirs(save_dir, exist_ok=True)
+
+        sim_result = simulate_baseline_routes(
+            env, config, routes, img_dir=save_dir, baseline_save_dir=save_dir)
+        results.append(sim_result)
+        print(f"  Seed {seed}: service_rate={sim_result.get('service_rate', 'N/A')}")
+
     aggregated = aggregate_results(results)
     print_results(results, aggregated)
     return results, aggregated
