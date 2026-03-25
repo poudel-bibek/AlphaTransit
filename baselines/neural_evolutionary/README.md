@@ -45,11 +45,14 @@ The code in this folder requires Python 3.9 and PyTorch 1.12, which are incompat
 ### Environment Setup
 
 ```bash
-conda create -n holliday python=3.9
+conda create -n holliday python=3.9 -y
 conda activate holliday
-pip install torch==1.12.0 torch-geometric==2.1.0 torch-scatter torch-sparse
-pip install hydra-core==1.2 omegaconf networkx scipy tqdm pyyaml pandas optuna
+pip install torch==2.0.1+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+pip install "numpy<2" torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.0.1+cu118.html
+pip install torch-geometric hydra-core omegaconf networkx scipy tqdm pyyaml pandas optuna tensorboard matplotlib
 ```
+
+A full `requirements.txt` is included in this directory for exact reproducibility.
 
 ### Step 1: Generate Routes
 
