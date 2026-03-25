@@ -134,7 +134,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world, genetic, evolutionary, neural_evolutionary")
+    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world, genetic, evolutionary, neural_evolutionary, mcts")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of evaluation runs")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
     parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")

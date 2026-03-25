@@ -8,6 +8,7 @@ from baselines.heuristics import (
 )
 from baselines.genetic import GeneticAlgorithm
 from baselines.neural_evolutionary import NeuralEvolutionary, EvolutionaryAlgorithm
+from baselines.mcts import PureMCTS
 
 __all__ = [
     "RandomWalk",
@@ -18,4 +19,5 @@ __all__ = [
     "GeneticAlgorithm",
     "NeuralEvolutionary",
     "EvolutionaryAlgorithm",
+    "PureMCTS",
 ]

@@ -143,3 +143,4 @@ CLAUDE.md
 # Build artifacts
 uxsim.egg-info/
 *.egg-info/
+.python-version
