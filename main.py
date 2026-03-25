@@ -4,7 +4,7 @@ from baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximizati
 from rl.parallel_env import _cap_worker_threads
 from config import get_config, set_global_seeds
 from ppo import train as ppo_train, ppo_eval
-from mcts import train as mcts_train, mcts_eval
+from alpha import train as alpha_train, alpha_eval
 
 def main():
 
@@ -39,7 +39,7 @@ def main():
 
     if mode in {"train", "eval"}:
         if algorithm is None:
-            raise ValueError("--algorithm is required for train/eval modes. Use --algorithm ppo or --algorithm mcts")
+            raise ValueError("--algorithm is required for train/eval modes. Use --algorithm ppo or --algorithm alpha")
         set_global_seeds(config["seed"])
 
     device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
@@ -55,13 +55,13 @@ def main():
             ppo_eval(config)
             return
 
-    if algorithm == "mcts":
+    if algorithm == "alpha":
         if mode == "train":
-            mcts_train(config)
+            alpha_train(config)
             return
 
         if mode == "eval":
-            mcts_eval(config)
+            alpha_eval(config)
             return
 
 if __name__ == "__main__":

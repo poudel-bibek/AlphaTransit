@@ -5,7 +5,7 @@ import argparse
 from typing import Any, Dict
 from config import get_config, set_global_seeds, apply_best_params, BEST_PARAMS
 from ppo import train as ppo_train
-from mcts import train as mcts_train
+from alpha import train as alpha_train
 
 
 def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
@@ -232,7 +232,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     #         "activation": {"value": "tanh"},
     #         "dirichlet_alpha": {"value": 0.3},
     #         "alpha": {"value": 0.3},
-    #         "algorithm": {"value": "mcts"},
+    #         "algorithm": {"value": "alpha"},
     #         "gpu": {"value": True},
     #         "num_mcts_workers": {"value": 8},
     #         "mcts_eval_every": {"value": 5},
@@ -252,7 +252,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     #     "parameters": {
     #         "n_iter": {"values": [100, 200, 300, 400, 500]},
     #         "alpha": {"value": 0.3},
-    #         "algorithm": {"value": "mcts"},
+    #         "algorithm": {"value": "alpha"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
     #         "num_mcts_workers": {"value": 16},
@@ -274,7 +274,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     #         "episodes_per_iter": {"values": [8, 16, 24]},
     #         "n_iter": {"value": 200},
     #         "alpha": {"value": 0.3},
-    #         "algorithm": {"value": "mcts"},
+    #         "algorithm": {"value": "alpha"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
     #         "num_mcts_workers": {"value": 16},
@@ -297,7 +297,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
             "n_iter": {"value": 200},
             "episodes_per_iter": {"value": 16},
             "alpha": {"value": 0.3},
-            "algorithm": {"value": "mcts"},
+            "algorithm": {"value": "alpha"},
             "gpu": {"value": True},
             "apply_best_params": {"value": True},
             "num_mcts_workers": {"value": 16},
@@ -355,7 +355,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     #         "activation": {"value": "tanh"},
     #         "dirichlet_alpha": {"value": 0.3},
     #         "alpha": {"value": 1.0},
-    #         "algorithm": {"value": "mcts"},
+    #         "algorithm": {"value": "alpha"},
     #         "gpu": {"value": True},
     #         "num_mcts_workers": {"value": 8},
     #         "mcts_eval_every": {"value": 5},
@@ -375,7 +375,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     #     "parameters": {
     #         "n_iter": {"values": [100, 200, 300, 400, 500]},
     #         "alpha": {"value": 1.0},
-    #         "algorithm": {"value": "mcts"},
+    #         "algorithm": {"value": "alpha"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
     #         "num_mcts_workers": {"value": 16},
@@ -397,7 +397,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
             "episodes_per_iter": {"values": [8, 16, 24]},
             "n_iter": {"value": 200},
             "alpha": {"value": 1.0},
-            "algorithm": {"value": "mcts"},
+            "algorithm": {"value": "alpha"},
             "gpu": {"value": True},
             "apply_best_params": {"value": True},
             "num_mcts_workers": {"value": 16},
@@ -420,7 +420,7 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     #         "n_iter": {"value": 200},
     #         "episodes_per_iter": {"value": 16},
     #         "alpha": {"value": 1.0},
-    #         "algorithm": {"value": "mcts"},
+    #         "algorithm": {"value": "alpha"},
     #         "gpu": {"value": True},
     #         "apply_best_params": {"value": True},
     #         "num_mcts_workers": {"value": 16},
@@ -446,10 +446,10 @@ def get_sweep_config(algorithm: str, alpha: float) -> Dict[str, Any]:
     """
     if algorithm == "ppo":
         return build_ppo_sweep_config(alpha)
-    elif algorithm == "mcts":
+    elif algorithm == "alpha":
         return build_mcts_sweep_config(alpha)
     else:
-        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'mcts'")
+        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'alpha'")
 
 def get_train_fn(algorithm: str):
     """
@@ -457,10 +457,10 @@ def get_train_fn(algorithm: str):
     """
     if algorithm == "ppo":
         return ppo_train
-    elif algorithm == "mcts":
-        return mcts_train
+    elif algorithm == "alpha":
+        return alpha_train
     else:
-        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'mcts'")
+        raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'alpha'")
 
 def create_agent_train(algorithm: str):
     """
@@ -509,10 +509,10 @@ def main() -> None:
     """
     Usage:
         python sweep.py --algorithm ppo
-        python sweep.py --algorithm mcts
+        python sweep.py --algorithm alpha
     """
     parser = argparse.ArgumentParser(description="Hyperparameter sweep for transit design RL")
-    parser.add_argument("--algorithm", choices=["ppo", "mcts"], required=True,
+    parser.add_argument("--algorithm", choices=["ppo", "alpha"], required=True,
                         help="Algorithm to sweep (required)")
     parser.add_argument("--alpha", type=float, choices=[0.3, 1.0], required=True,
                         help="Modal split alpha value (required)")

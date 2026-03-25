@@ -220,11 +220,11 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
 
 # =============================================================================
-# MCTS eval entry point. Called from main.py when algorithm == "mcts" and mode == "eval".
+# Alpha eval entry point. Called from main.py when algorithm == "alpha" and mode == "eval".
 # For training, use train() directly.
 # =============================================================================
 
-def mcts_eval(config: Dict[str, Any]) -> None:
+def alpha_eval(config: Dict[str, Any]) -> None:
     """
     Entry point for standalone MCTS evaluation mode (like ppo_eval).
     """
