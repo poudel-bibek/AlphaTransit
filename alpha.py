@@ -220,7 +220,7 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
 
 # =============================================================================
-# Alpha eval entry point. Called from main.py when algorithm == "alpha" and mode == "eval".
+# Alpha eval entry point. Called from main.py when algorithm == "alphatransit" and mode == "eval".
 # For training, use train() directly.
 # =============================================================================
 

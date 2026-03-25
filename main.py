@@ -40,7 +40,7 @@ def main():
 
     if mode in {"train", "eval"}:
         if algorithm is None:
-            raise ValueError("--algorithm is required for train/eval modes. Use --algorithm ppo or --algorithm alpha")
+            raise ValueError("--algorithm is required for train/eval modes. Use --algorithm ppo or --algorithm alphatransit")
         set_global_seeds(config["seed"])
 
     device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")
@@ -56,7 +56,7 @@ def main():
             ppo_eval(config)
             return
 
-    if algorithm == "alpha":
+    if algorithm == "alphatransit":
         if mode == "train":
             alpha_train(config)
             return

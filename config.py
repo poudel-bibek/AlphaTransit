@@ -39,7 +39,7 @@ BEST_PARAMS = {
             "ppo_reward_mode": "terminal_intermediate_delta_no_early_stop",
         },
     },
-    "alpha": {
+    "alphatransit": {
         0.3: {
             "lr": 1e-4,
             "c_puct": 1.5,
@@ -121,7 +121,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     Define common RL, system, and sweepable hyperparameters.
     """
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
-    parser.add_argument("--algorithm", choices=["ppo", "alpha"], default=None, help="Learning algorithm (required for train/eval modes)")
+    parser.add_argument("--algorithm", choices=["ppo", "alphatransit"], default=None, help="Learning algorithm (required for train/eval modes)")
     parser.add_argument("--apply_best_params", action="store_true", help="Apply best hyperparameters from sweep experiments for the given algorithm+alpha")
 
     # Simulation setup:

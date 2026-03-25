@@ -17,9 +17,9 @@ BASELINE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 ROUTE_FILES = {
     "nea": os.path.join(BASELINE_DIR, "output_routes",
-                        "neural_bco_bloomington_nea_pretrained_routes.pkl"),
+                        "neural_bco_bloomington_nea_hub_routes.pkl"),
     "ea": os.path.join(BASELINE_DIR, "output_routes",
-                       "bco_bloomington_ea_nikolic_routes.pkl"),
+                       "bco_bloomington_ea_hub_routes.pkl"),
     "lc100": os.path.join(BASELINE_DIR, "output_routes",
                           "nn_construction_bloomington_lc100_seed0_routes.pkl"),
 }
