@@ -45,7 +45,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["uxsim", "rl"]
+packages = ["uxsim", "rl", "baselines"]
 
 [tool.uv]
 # For free-threading experiments, add: python-preference = "cpython-freethreaded"

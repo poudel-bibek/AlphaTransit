@@ -45,14 +45,20 @@ def _load_routes(pkl_path):
     try:
         import torch
         with open(pkl_path, "rb") as f:
-            routes_tensor = pickle.load(f)
-        if isinstance(routes_tensor, torch.Tensor):
-            routes_np = routes_tensor.numpy()
+            routes_data = pickle.load(f)
+        # Holliday's code saves as list[tensor(n_routes, max_len)]
+        if isinstance(routes_data, list):
+            routes_data = routes_data[0]
+        if isinstance(routes_data, torch.Tensor):
+            routes_np = routes_data.numpy()
         else:
-            routes_np = np.array(routes_tensor)
+            routes_np = np.array(routes_data)
     except ImportError:
         with open(pkl_path, "rb") as f:
-            routes_np = np.array(pickle.load(f))
+            routes_data = pickle.load(f)
+        if isinstance(routes_data, list):
+            routes_data = routes_data[0]
+        routes_np = np.array(routes_data)
 
     idx_to_name = _load_node_mapping()
     routes = []

@@ -7,7 +7,7 @@ through the same simulation pipeline used for all other AlphaTransit baselines.
 Usage:
     conda activate icml_rebuttal
     cd /home/bibek/Desktop/ICML/AlphaTransit
-    python rl/baselines/NEA/eval_in_simulator.py --routes_pkl <path_to_routes.pkl> --alpha 0.3
+    python baselines/neural_evolutionary/eval_in_simulator.py --routes_pkl <path_to_routes.pkl> --alpha 0.3
 """
 
 import argparse
@@ -20,7 +20,7 @@ import numpy as np
 
 # Add AlphaTransit root to path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ALPHA_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
+ALPHA_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 sys.path.insert(0, ALPHA_ROOT)
 
 
