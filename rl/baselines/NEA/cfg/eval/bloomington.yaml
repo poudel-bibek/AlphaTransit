@@ -1,0 +1,8 @@
+csv: true
+n_routes: 16
+min_route_len: 2
+max_route_len: 14
+dataset:
+  type: mumford
+  path: datasets/bloomington
+  city: Bloomington

@@ -1,0 +1,27 @@
+route_generator:
+  feat_alpha: 0.006442153
+  n_nodepair_layers: 2
+  n_scorelenfn_layers: 2
+  scorelenfn_hidden_dim: 25
+  use_extra_dmd_feats: False
+  use_extra_route_feats: False
+
+common:
+  dropout: 0.25459279
+  embed_dim: 58
+  nonlin_type: ELU
+
+env_gn:
+  net_type: sgc
+  kwargs:
+    n_layers: 4
+    in_edge_dim: 2
+    in_node_dim: 8
+
+route_gn:
+  net_type: graph conv
+  kwargs:
+    n_layers: 4
+    recurrent: False
+    residual: False
+    dense: True

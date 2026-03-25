@@ -1,0 +1,11 @@
+n_bees: 10
+n_iterations: 400
+batch_size: 10
+neural_bees: true
+force_linking_unlinked: false
+
+defaults:
+  - _self_
+  - experiment: standard
+  - model: bestsofar_feb2023
+  - init: load

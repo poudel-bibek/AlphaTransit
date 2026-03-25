@@ -1,0 +1,9 @@
+n_samples: 100
+batch_size: 512
+experiment:
+  logdir: null
+
+defaults:
+  - experiment: standard
+  - model: bestsofar_feb2023
+  - _self_

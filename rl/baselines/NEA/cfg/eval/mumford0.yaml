@@ -1,0 +1,8 @@
+csv: true
+n_routes: 12
+min_route_len: 2
+max_route_len: 15
+dataset:
+  type: mumford
+  path: datasets/mumford_dataset/Instances
+  city: Mumford0
