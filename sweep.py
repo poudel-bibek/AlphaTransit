@@ -182,7 +182,7 @@ def build_ppo_sweep_config(alpha: float) -> Dict[str, Any]:
         raise ValueError(f"No PPO sweep config for alpha={alpha}")
 
 
-def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
+def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
     """
     MCTS hyperparameter sweep search space for Alpha = 0.3.
 
@@ -305,7 +305,7 @@ def build_sweep_config_mcts_0_3() -> Dict[str, Any]:
     }
 
 
-def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
+def build_sweep_config_alpha_1_0() -> Dict[str, Any]:
     """
     MCTS hyperparameter sweep search space for Alpha = 1.0.
 
@@ -428,16 +428,16 @@ def build_sweep_config_mcts_1_0() -> Dict[str, Any]:
     # }
 
 
-def build_mcts_sweep_config(alpha: float) -> Dict[str, Any]:
+def build_alpha_sweep_config(alpha: float) -> Dict[str, Any]:
     """
     MCTS hyperparameter sweep - selects config based on alpha.
     """
     if alpha == 0.3:
-        return build_sweep_config_mcts_0_3()
+        return build_sweep_config_alpha_0_3()
     elif alpha == 1.0:
-        return build_sweep_config_mcts_1_0()
+        return build_sweep_config_alpha_1_0()
     else:
-        raise ValueError(f"No MCTS sweep config for alpha={alpha}")
+        raise ValueError(f"No AlphaTransit sweep config for alpha={alpha}")
 
 
 def get_sweep_config(algorithm: str, alpha: float) -> Dict[str, Any]:
@@ -447,7 +447,7 @@ def get_sweep_config(algorithm: str, alpha: float) -> Dict[str, Any]:
     if algorithm == "ppo":
         return build_ppo_sweep_config(alpha)
     elif algorithm == "alpha":
-        return build_mcts_sweep_config(alpha)
+        return build_alpha_sweep_config(alpha)
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}. Supported: 'ppo', 'alpha'")
 
