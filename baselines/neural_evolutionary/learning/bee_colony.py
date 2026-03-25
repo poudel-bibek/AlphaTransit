@@ -325,6 +325,7 @@ def get_mutants(bee_networks, chosen_route_idxs, n_type1, n_type2,
     return bee_networks
 
 
+# [C7 hub-start] Post-mutation check: revert if hub-start lost
 def get_neural_variants(model, env_state, bee_networks, drop_route_idxs,
                         greedy=False):
     bee_dim = bee_networks.ndim == 4
@@ -359,6 +360,7 @@ def get_neural_variants(model, env_state, bee_networks, drop_route_idxs,
     return routes
 
 
+# [C7 hub-start] Force replacement route starts to Mumford index 95 (= AlphaTransit node 96)
 def get_bee_1_variants(remaining_state, batch_bee_routes, direct_sat_dmd_mat,
                        shortest_paths, force_linking_unlinked=False):
     """
@@ -439,6 +441,7 @@ def get_bee_1_variants(remaining_state, batch_bee_routes, direct_sat_dmd_mat,
     return new_routes
 
 
+# [C7 hub-start] Post-mutation check: revert if hub-start lost
 def get_bee_2_variants(batch_bee_routes, shorten_prob, are_neighbours):
     """
     batch_bee_routes: a batch_size x n_bees x n_nodes tensor of routes

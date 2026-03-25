@@ -8,7 +8,30 @@ The code corresponds to the following papers:
 
 2. A. Holliday and G. Dudek, "A Neural-Evolutionary Algorithm for Autonomous Transit Network Design," in *2024 IEEE International Conference on Robotics and Automation (ICRA)*, IEEE, 2024. [arXiv:2403.07917](https://arxiv.org/abs/2403.07917)
 
-Only the minimum files required to run LC-100, EA, and NEA on the Bloomington instance are included here. For the full codebase, see the original repository linked above.
+Files required to run Evolutionary, Neural Evolutionary (pre-trained), and Neural Evolutionary (self-trained) on the Bloomington instance are included here, along with additional configs from the original repository for reference. For the full codebase, see the original repository linked above.
+
+## Constraint Matching
+
+For a fair comparison, all AlphaTransit route constraints must be enforced on Holliday's methods. The table below lists each constraint, whether it is natively supported, and where code changes are made to enforce it.
+
+| # | Constraint | Value | Natively Supported? | Code Change |
+|---|-----------|-------|---------------------|-------------|
+| C1 | Number of routes ($K$) | 16 | Yes | Set in `cfg/eval/bloomington.yaml` |
+| C2 | Max route length ($L_{\max}$) | 14 | Yes | Set in `cfg/eval/bloomington.yaml` |
+| C3 | Min route length ($L_{\min}$) | 2 | Yes | Set in `cfg/eval/bloomington.yaml` |
+| C4 | Simple paths (no repeated nodes) | — | Yes | Enforced natively by route construction |
+| C5 | Connected routes (consecutive nodes share an edge) | — | Yes | Enforced natively by neighbor-based construction |
+| C6 | Bidirectional edges | — | Yes | Mumford format assumes symmetric adjacency |
+| C7 | Hub-start (all routes begin at transit center) | Node 96 (Mumford idx 95) | **No** | Modified below |
+
+**C7 is the only mismatch.** Four code locations are modified to enforce hub-start:
+
+| File | Function | Change |
+|------|----------|--------|
+| `learning/initialization.py:227` | `nikolic_init()` | Force all route start nodes to Mumford index 95 |
+| `learning/bee_colony.py:362` | `get_bee_1_variants()` | Force replacement route starts to index 95 |
+| `learning/bee_colony.py:442` | `get_bee_2_variants()` | Post-mutation check: revert if hub-start lost |
+| `learning/bee_colony.py:328` | `get_neural_variants()` | Post-mutation check: revert if hub-start lost |
 
 ---
 

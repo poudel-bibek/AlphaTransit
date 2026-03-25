@@ -224,6 +224,7 @@ def john_init(state: RouteGenBatchState, alpha=None,
     return networks      
     
 
+# [C7 hub-start] Force all route start nodes to Mumford index 95 (= AlphaTransit node 96)
 def nikolic_init(state: RouteGenBatchState):
     """Constructs a network based on the algorithm of Nikolic and Teodorovic 
         (2013).
