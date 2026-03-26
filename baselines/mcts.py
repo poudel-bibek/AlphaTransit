@@ -1,20 +1,29 @@
 """
 Pure MCTS Baseline for Transit Route Network Design.
 
-This baseline runs Monte Carlo Tree Search WITHOUT a learned policy-value
-network. It uses uniform random priors and rollout-based value estimation
-(full UXsim simulation) instead of the GNN policy head (P) and value head (V)
-used by AlphaTransit.
+Ablation baseline that isolates the contribution of tree search from the
+learned neural components. Compares against:
+- AlphaTransit (MCTS + learned policy P + learned value V)
+- End-to-End RL (learned P + learned V, no search)
+- Pure MCTS (MCTS + uniform P + rollout V)  <-- this file
 
-Comparing:
-- AlphaTransit (MCTS + learned P + learned V)
-- Pure MCTS (MCTS + uniform P + rollout V)
-- End-to-End RL (learned P + learned V, no MCTS)
+Algorithm (per decision step):
+1. EXPAND root with uniform priors P(a) = 1/|valid_actions| and a random
+   rollout value (complete routes randomly, run full UXsim simulation).
+2. For n_iter simulations:
+   a. SELECT: walk down tree using PUCT (same formula as AlphaTransit).
+   b. EXPAND leaf: uniform priors + full UXsim rollout for value.
+   c. BACKUP: propagate reward up the path.
+3. Pick action with highest visit count (near-greedy, tau=0.1).
+4. Advance tree, repeat until all 16 routes are built.
 
-demonstrates how much each component contributes to performance.
+Rollouts are parallelized across --num_mcts_rollout_workers processes.
+Each rollout creates an independent UXsim world (~8s per rollout on
+Bloomington). Uses the same n_iter and c_puct as AlphaTransit for fair
+comparison. Requires route_init='transit_center' (deterministic starts).
 
 Usage:
-    python main.py --mode baseline --baseline_type mcts --alpha 0.3 --n_iter 100
+    python main.py --mode baseline --baseline_type mcts --alpha 1.0 --n_iter 100
 """
 
 import os
