@@ -137,6 +137,7 @@ plots/routes_*.pdf
 plots/routes_*.png
 ./plots/routes_*.pdf
 ./plots/routes_*.png
+# Keep plots/plots.md (style guide) tracked
 
 CLAUDE.md
 
