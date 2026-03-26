@@ -2,13 +2,14 @@
 Plot MCTS n_iter scaling results.
 
 Usage:
-    python plots/plot_mcts_scaling.py
+    python plots/plot_mcts_scaling.py [--outdir PATH]
 
-Outputs (in training_data/NeurIPS_results/{alpha}/nips_{sweep}_mcts_n_iter_alpha_{alpha}/):
-    - n_iter_scaling_training_curves.png   — eval reward + total loss side by side
-    - n_iter_scaling_best_reward.png       — line+dot chart of peak rewards per n_iter
+Outputs:
+    - n_iter_scaling_training_curves_alpha_{alpha}.png
+    - n_iter_scaling_best_reward_alpha_{alpha}.png
 """
 import os
+import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -58,11 +59,6 @@ COLORS = {
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
 N_ITERS = [100, 200, 300, 400, 500]
-
-SWEEPS = {
-    '0_3': ROOT / 'training_data' / 'NeurIPS_results' / '0_3' / 'nips_7_mcts_n_iter_alpha_0_3',
-    '1_0': ROOT / 'training_data' / 'NeurIPS_results' / '1_0' / 'nips_8_mcts_n_iter_alpha_1_0',
-}
 
 SAVE_PDF = False  # Set to True to also save PDF versions
 
@@ -121,7 +117,7 @@ def _save(fig, out_path: Path):
         print(f'Saved {out_path.with_suffix(".pdf")}')
 
 
-def plot_training_curves(alpha: str, sweep_dir: Path, smooth_window: int = 5):
+def plot_training_curves(alpha: str, sweep_dir: Path, outdir: Path, smooth_window: int = 5):
     if not has_data(sweep_dir):
         print(f'No data for alpha={alpha}, skipping training curves.')
         return
@@ -146,12 +142,12 @@ def plot_training_curves(alpha: str, sweep_dir: Path, smooth_window: int = 5):
 
     fig.subplots_adjust(wspace=0.25, bottom=0.15)
 
-    out = ROOT / 'training_data' / 'NeurIPS_results' / f'n_iter_scaling_training_curves_alpha_{alpha}.png'
+    out = outdir / f'n_iter_scaling_training_curves_alpha_{alpha}.png'
     _save(fig, out)
     plt.close(fig)
 
 
-def plot_best_reward(alpha: str, sweep_dir: Path):
+def plot_best_reward(alpha: str, sweep_dir: Path, outdir: Path):
     if not has_data(sweep_dir):
         print(f'No data for alpha={alpha}, skipping best reward.')
         return
@@ -183,12 +179,24 @@ def plot_best_reward(alpha: str, sweep_dir: Path):
     ax.set_ylim(min(peaks) - 3, max(peaks) + 4)
     ax.grid(True)
 
-    out = ROOT / 'training_data' / 'NeurIPS_results' / f'n_iter_scaling_best_reward_alpha_{alpha}.png'
+    out = outdir / f'n_iter_scaling_best_reward_alpha_{alpha}.png'
     _save(fig, out)
     plt.close(fig)
 
 
 if __name__ == '__main__':
-    for alpha, sweep_dir in SWEEPS.items():
-        plot_training_curves(alpha, sweep_dir)
-        plot_best_reward(alpha, sweep_dir)
+    parser = argparse.ArgumentParser(description='Plot MCTS n_iter scaling results')
+    parser.add_argument('--outdir', type=str, required=True, help='Directory to save plots')
+    parser.add_argument('--sweeps', type=str, nargs='+', required=True,
+                        help='alpha:sweep_dir pairs, e.g. 0_3:/path/to/sweep 1_0:/path/to/sweep')
+    args = parser.parse_args()
+
+    outdir = Path(args.outdir)
+    if not outdir.exists():
+        raise FileNotFoundError(f'Output directory does not exist: {outdir}')
+
+    for entry in args.sweeps:
+        alpha, sweep_path = entry.split(':', 1)
+        sweep_dir = Path(sweep_path)
+        plot_training_curves(alpha, sweep_dir, outdir)
+        plot_best_reward(alpha, sweep_dir, outdir)
