@@ -152,3 +152,6 @@ baselines/neural_evolutionary/training_data/
 uxsim.egg-info/
 *.egg-info/
 .python-version
+
+# Local-only files
+plots/plots.md
