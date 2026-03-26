@@ -47,35 +47,10 @@ class PureMCTS:
                               'eval_results_summary.json')
         return results, aggregated
 
-    def _proxy_rollout_value(self, mcts_state):
-        """
-        Random playout to terminal state, then compute a fast proxy reward
-        based on demand coverage (no full UXsim simulation).
-        """
-        sim_state = mcts_state.clone()
-
-        # Complete all remaining routes with random actions
-        while not sim_state.is_terminal():
-            valid = sim_state.get_valid_actions()
-            if not valid:
-                sim_state = sim_state.force_route_end()
-                continue
-            action = random.choice(valid)
-            sim_state = sim_state.apply_action(action)
-
-        # Compute proxy reward from demand coverage
-        self.env.all_routes = [list(r) for r in sim_state.all_routes]
-        self.env.current_route = []
-        metrics = self.env._get_partial_route_metrics()
-        coverage = metrics.get('demand_coverage_potential', 0.0)
-
-        # Simple proxy: coverage as reward (higher = better)
-        return coverage
-
-    def _full_rollout_value(self, mcts_state):
+    def _rollout_value(self, mcts_state):
         """
         Random playout to terminal state, then run full UXsim simulation.
-        Expensive but accurate.
+        Uses the same simulation-based reward as AlphaTransit.
         """
         sim_state = mcts_state.clone()
 
@@ -101,9 +76,7 @@ class PureMCTS:
         n_nodes = len(self.env.node_to_idx)
         tau = 0.1  # Near-greedy action selection
 
-        # Use proxy rollout by default (fast); set MCTS_FULL_ROLLOUT=1 for full sim
-        use_full_rollout = os.environ.get("MCTS_FULL_ROLLOUT", "") == "1"
-        rollout_fn = self._full_rollout_value if use_full_rollout else self._proxy_rollout_value
+        rollout_fn = self._rollout_value
 
         # CSV logging
         log_path = os.environ.get("MCTS_LOG_CSV", "")
