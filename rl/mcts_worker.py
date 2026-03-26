@@ -330,6 +330,62 @@ def _create_mcts_state(env: TransitEnv) -> MCTSState:
     )
 
 
+def _run_eval_episode_on_env(env, config, seed, inference_client: RemoteInferenceClient, eval_tau=0.1):
+    """
+    Run a single eval episode on a worker.
+
+    Matches _run_single_eval_episode() semantics exactly:
+    tau=0.1, no Dirichlet noise, greedy argmax over visit-count policy.
+    Returns flat metrics dict (no nested 'sim_result' key).
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    env.reset(seed=seed)
+    mcts_state = _create_mcts_state(env)
+    tree = MCTSTree(mcts_state)
+    actions = []
+
+    while not mcts_state.is_terminal():
+        valid_actions = mcts_state.get_valid_actions()
+
+        if not valid_actions:
+            actions.append(env.NO_VALID_ACTION)
+            mcts_state = mcts_state.force_route_end()
+            tree = MCTSTree(mcts_state)
+            continue
+
+        policy = run_mcts_simulations(
+            env=env,
+            tree=tree,
+            tau=eval_tau,
+            config=config,
+            inference_client=inference_client,
+            add_noise=False,
+        )
+
+        valid_policy = policy[valid_actions]
+        if valid_policy.sum() > 0:
+            action = valid_actions[np.argmax(valid_policy)]
+        else:
+            action = valid_actions[0]
+
+        actions.append(action)
+        mcts_state = mcts_state.apply_action(action)
+        tree.advance(action)
+
+    reward, sim_result = env.simulate_routes_mcts(mcts_state.all_routes)
+    return {
+        'episode_terminal_reward': reward,
+        'episode_total_reward': reward,
+        'episode_length': len(actions),
+        'routes': [list(r) for r in env.all_routes],
+        'seed': seed,
+        **sim_result
+    }
+
+
 def _run_episode_on_env(env, config, seed, tau, inference_client: RemoteInferenceClient):
     """
     Run a single MCTS episode using an already-initialized env.
@@ -404,6 +460,7 @@ def mcts_worker_loop(worker_id, config, cmd_queue, result_queue, inference_reque
 
     Commands (via cmd_queue):
         {"type": "collect", "tau": float, "seed": int}  - Run one self-play episode
+        {"type": "eval", "seed": int, "policy_version": int} - Run one eval episode
         {"type": "stop"}                                  - Terminate worker
     """
     _cap_worker_threads()
@@ -436,4 +493,21 @@ def mcts_worker_loop(worker_id, config, cmd_queue, result_queue, inference_reque
                 tau=tau,
                 inference_client=inference_client,
             )
-            result_queue.put(result)
+            result_queue.put({"type": "collect", "data": result})
+
+        elif cmd_type == "eval":
+            seed = cmd["seed"]
+            policy_version = cmd["policy_version"]
+            inference_client = RemoteInferenceClient(
+                worker_id=worker_id,
+                policy_version=policy_version,
+                request_queue=inference_request_queue,
+                response_queue=inference_response_queue,
+            )
+            result = _run_eval_episode_on_env(
+                env=env,
+                config=config,
+                seed=seed,
+                inference_client=inference_client,
+            )
+            result_queue.put({"type": "eval", "data": result})

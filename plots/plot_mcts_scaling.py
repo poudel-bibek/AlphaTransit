@@ -1,8 +1,14 @@
 """
-Plot MCTS n_iter scaling results.
+Plot AlphaTransit n_iter scaling results.
+
+Best checkpoint selection: peak eval/episode_terminal_reward from wandb training history.
+Training curves: smoothed eval reward and total loss over environment steps.
+Best reward: peak eval/episode_terminal_reward per n_iter value.
 
 Usage:
-    python plots/plot_mcts_scaling.py [--outdir PATH]
+    python plots/plot_mcts_scaling.py --outdir PATH --sweeps alpha:sweep_dir [...]
+
+    Each sweep_dir must contain wandb_data/wandb_scan_history/*.csv files.
 
 Outputs:
     - n_iter_scaling_training_curves_alpha_{alpha}.png

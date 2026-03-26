@@ -522,7 +522,9 @@ class MCTSAgent:
                 })
 
             for _ in range(batch):
-                results.append(self._result_queue.get())
+                result = self._result_queue.get()
+                assert result["type"] == "collect", f"Expected collect result, got {result['type']}"
+                results.append(result["data"])
 
             episode_idx += batch
 
@@ -731,14 +733,14 @@ class MCTSAgent:
                 else:
                     avg_policy_loss = avg_value_loss = 0.0
 
-                iter_time = time.time() - iter_start
+                collect_train_time = time.time() - iter_start
                 print(f"Iter {iteration:4d} | "
                       f"Reward: {avg_reward:8.2f} | "
                       f"Policy Loss: {avg_policy_loss:.4f} | "
                       f"Value Loss: {avg_value_loss:.4f} | "
                       f"Buffer: {len(self.replay_buffer):6d} | "
                       f"Tau: {tau:.2f} | "
-                      f"Time: {iter_time:.1f}s")
+                      f"Time: {collect_train_time:.1f}s")
 
                 # WandB logging
                 if not self.config.get("wandb_off"):
@@ -766,6 +768,13 @@ class MCTSAgent:
                 if self.eval_every > 0 and iteration % self.eval_every == 0:
                     self._run_evaluation(policy_path, iteration)
 
+                iteration_total_time = time.time() - iter_start
+                if not self.config.get("wandb_off"):
+                    wandb.log({
+                        "mcts/collect_train_time": collect_train_time,
+                        "mcts/iteration_total_time": iteration_total_time,
+                    }, step=self.total_env_steps)
+
             # Final save
             final_path = self.policy_dir / "policy_final.pth"
             torch.save(self._get_clean_state_dict(), final_path)
@@ -790,9 +799,12 @@ class MCTSAgent:
         return str(path)
 
     def _load_policy(self, path: str) -> None:
-        """Load model weights from policy file."""
+        """Load model weights from policy file (handles torch.compile prefix)."""
         state_dict = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(state_dict)
+        if hasattr(self.model, '_orig_mod'):
+            self.model._orig_mod.load_state_dict(state_dict)
+        else:
+            self.model.load_state_dict(state_dict)
 
     def _run_single_eval_episode(self, seed: int) -> Dict[str, Any]:
         """
@@ -844,11 +856,47 @@ class MCTSAgent:
         }
         return metrics
 
+    def _dispatch_parallel_eval(self, num_eval: int, seed_offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Dispatch eval episodes to workers in rounds and collect results.
+
+        Args:
+            num_eval: Number of eval episodes to run
+            seed_offset: Added to base eval seed for each episode
+
+        Returns:
+            List of metrics dicts (same shape as _run_single_eval_episode output)
+        """
+        policy_version = self._publish_policy_snapshot()
+
+        results = []
+        eval_idx = 0
+        while eval_idx < num_eval:
+            dispatch_count = min(self.num_workers, num_eval - eval_idx)
+            for i in range(dispatch_count):
+                seed = self.seed + self.eval_seed_offset + seed_offset + eval_idx + i
+                self._cmd_queues[i].put({
+                    "type": "eval",
+                    "seed": seed,
+                    "policy_version": policy_version,
+                })
+
+            for _ in range(dispatch_count):
+                result = self._result_queue.get()
+                assert result["type"] == "eval", f"Expected eval result, got {result['type']}"
+                results.append(result["data"])
+
+            eval_idx += dispatch_count
+
+        return results
+
     def _run_evaluation(self, policy_path: str, iteration: int) -> Dict[str, float]:
         """
-        Run evaluation during training (like PPO's eval function).
-        Uses same directory structure and utilities as PPO.
+        Run evaluation during training.
+        Dispatches eval episodes to idle workers in parallel.
         """
+        eval_start = time.time()
+
         episode_dir = ensure_eval_step_update_dir(
             str(self.training_save_dir),
             update=iteration,
@@ -856,19 +904,18 @@ class MCTSAgent:
             folder_name="eval_results"
         )
 
-        results = []
-        for i in range(self.num_eval_runs):
-            seed = self.seed + self.eval_seed_offset + i
-            metrics = self._run_single_eval_episode(seed)
+        results = self._dispatch_parallel_eval(self.num_eval_runs)
 
-            # Save routes for this seed
-            seed_dir, _ = make_seed_output_dir(episode_dir, seed)
+        # Save routes for each seed
+        for metrics in results:
+            seed_dir, _ = make_seed_output_dir(episode_dir, metrics['seed'])
             save_routes_json(seed_dir, metrics['routes'])
-            results.append(metrics)
 
         # Aggregate and save summary
         aggregated = aggregate_results(results)
         write_results_summary(aggregated, self.num_eval_runs, episode_dir, 'eval_results_summary.json')
+
+        eval_wall_time = time.time() - eval_start
 
         # Log to wandb
         if not self.config.get("wandb_off"):
@@ -891,19 +938,28 @@ class MCTSAgent:
                 "eval/fleet_size": aggregated['fleet_size'],
                 "eval/bus_utilization": aggregated['bus_utilization'],
                 "eval/iteration": iteration,
+                "eval/eval_wall_time": eval_wall_time,
             }, step=self.total_env_steps)
 
+        print(f"  Eval: {eval_wall_time:.1f}s")
         return aggregated
 
     def evaluate(self, policy_path: str, save_dir: str) -> Dict[str, Any]:
         """
         Standalone evaluation entry point (like ppo_eval).
+        Uses parallel workers + inference server.
 
         Args:
             policy_path: Path to saved policy weights
             save_dir: Directory to save results
         """
-        # Load policy
+        if not self.collectors_enabled:
+            raise RuntimeError(
+                "Standalone eval requires parallel workers. "
+                "Use spawn_workers=True and --gpu."
+            )
+
+        # Load policy into learner model, then publish to inference server
         if policy_path and os.path.exists(policy_path):
             self._load_policy(policy_path)
             print(f"Loaded policy from {policy_path}")
@@ -911,7 +967,6 @@ class MCTSAgent:
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
 
-        # Create eval directory
         episode_dir = ensure_eval_step_update_dir(
             str(save_path),
             update="final",
@@ -919,24 +974,21 @@ class MCTSAgent:
             folder_name="eval_results"
         )
 
-        results = []
-        for i in range(self.num_eval_runs):
-            seed = self.seed + self.eval_seed_offset + i
-            metrics = self._run_single_eval_episode(seed)
+        try:
+            results = self._dispatch_parallel_eval(self.num_eval_runs)
 
-            # Save routes for this seed
-            seed_dir, _ = make_seed_output_dir(episode_dir, seed)
-            save_routes_json(seed_dir, metrics['routes'])
-            results.append(metrics)
+            for metrics in results:
+                seed_dir, _ = make_seed_output_dir(episode_dir, metrics['seed'])
+                save_routes_json(seed_dir, metrics['routes'])
+                print(f"  Seed {metrics['seed']}: Reward = {metrics['episode_terminal_reward']:.2f}")
 
-            print(f"Episode {i + 1}/{self.num_eval_runs}: Reward = {metrics['episode_terminal_reward']:.2f}")
+            aggregated = aggregate_results(results)
+            write_results_summary(aggregated, self.num_eval_runs, episode_dir, 'eval_results_summary.json')
 
-        # Aggregate and save summary
-        aggregated = aggregate_results(results)
-        write_results_summary(aggregated, self.num_eval_runs, episode_dir, 'eval_results_summary.json')
+            print(f"\nEvaluation Results ({self.num_eval_runs} episodes):")
+            print(f"  Mean Reward: {aggregated.get('episode_terminal_reward', 0):.2f}")
+            print(f"  Results saved to: {episode_dir}")
 
-        print(f"\nEvaluation Results ({self.num_eval_runs} episodes):")
-        print(f"  Mean Reward: {aggregated.get('episode_terminal_reward', 0):.2f}")
-        print(f"  Results saved to: {episode_dir}")
-
-        return aggregated
+            return aggregated
+        finally:
+            self._cleanup()

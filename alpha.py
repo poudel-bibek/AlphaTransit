@@ -227,14 +227,21 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 def alpha_eval(config: Dict[str, Any]) -> None:
     """
     Entry point for standalone AlphaTransit evaluation mode (like ppo_eval).
+    Requires --gpu (uses parallel workers + inference server).
     """
+    if config.get("route_init") == "random":
+        raise ValueError(
+            "route_init='random' is incompatible with MCTS. "
+            "Use 'transit_center' or 'highest_demand' instead."
+        )
+
     import os
     os.makedirs(config["save_dir"], exist_ok=True)
     config["wandb_off"] = True
 
     env = TransitEnv(config)
     policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
-    mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=False)
+    mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=True)
     mcts_agent.evaluate(
         policy_path=config.get("saved_policy_path", ""),
         save_dir=config["save_dir"]
