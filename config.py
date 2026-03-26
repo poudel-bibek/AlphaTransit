@@ -212,7 +212,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Pure MCTS baseline hyperparameters (ablation: MCTS without learned network):
     # Uses the same n_iter and c_puct as AlphaTransit for fair comparison.
     # Replaces GNN policy with uniform priors and GNN value with full UXsim rollouts.
-    parser.add_argument("--num_mcts_rollout_workers", type=int, default=4, help="Pure MCTS baseline: parallel rollout workers")
+    parser.add_argument("--num_mcts_rollout_workers", type=int, default=8, help="Pure MCTS baseline: parallel rollout workers")
 
     # Model:
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
