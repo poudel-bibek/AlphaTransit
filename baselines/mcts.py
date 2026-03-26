@@ -61,6 +61,11 @@ class PureMCTS:
 
     def __init__(self, env, config, num_runs, base_seed):
         from baselines.utils import create_main_save_dir
+        if config.get("route_init") == "random":
+            raise ValueError(
+                "Pure MCTS requires deterministic route initialization (route_init='transit_center'). "
+                "Random starts produce non-deterministic successor states, invalidating tree statistics."
+            )
         self.env = env
         self.config = config
         self.num_runs = num_runs
