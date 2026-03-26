@@ -1,11 +1,10 @@
 """
-Plot PPO reward ablation results.
+Plot PPO reward ablation results — both alphas side by side.
 
 Usage:
-    python plots/plot_reward_ablation.py --outdir PATH --sweeps 0_3:/path/to/all_runs.json
+    python plots/plot_reward_ablation.py --outdir PATH --sweep_0_3 PATH --sweep_1_0 PATH
 
-Outputs:
-    - reward_ablation_alpha_{alpha}.png
+At least one sweep path must be provided. Missing sweeps show a placeholder.
 """
 import json
 import argparse
@@ -43,7 +42,6 @@ plt.rcParams.update({
     'savefig.pad_inches': 0.15,
 })
 
-# Dual-hue inspired palette for reward modes
 MODE_STYLES = {
     'terminal_only': {
         'color': '#4A90D9',
@@ -63,7 +61,6 @@ MODE_STYLES = {
     },
 }
 
-# Plot order
 MODE_ORDER = [
     'terminal_only',
     'terminal_intermediate_raw_early_stop',
@@ -71,12 +68,8 @@ MODE_ORDER = [
     'terminal_intermediate_delta_no_early_stop',
 ]
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent.parent
-
 SAVE_PDF = False  # Set to True to also save PDF versions
+SMOOTH_WINDOW = 10
 
 
 def _save(fig, out_path: Path):
@@ -87,21 +80,24 @@ def _save(fig, out_path: Path):
         print(f'Saved {out_path.with_suffix(".pdf")}')
 
 
-def plot_ablation(alpha: str, data_path: Path, outdir: Path):
-    if not data_path.exists():
-        print(f'No data for alpha={alpha}, skipping.')
-        return
+def _plot_ablation_on_ax(ax, data_path: Path):
+    """Plot reward ablation curves on a given axes. Returns True if data was plotted."""
+    if data_path is None or not data_path.exists():
+        ax.text(0.5, 0.5, r'\textit{Pending}',
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=13, color='#999999')
+        ax.set_xlabel(r'Eval Step')
+        ax.set_ylabel(r'Eval Terminal Reward')
+        ax.grid(True)
+        return False
 
     with open(data_path) as f:
         runs = json.load(f)
 
-    # Group histories by reward mode
     mode_histories = {}
     for run in runs:
         mode = run.get('ppo_reward_mode', run.get('config', {}).get('ppo_reward_mode', '?'))
         mode_histories.setdefault(mode, []).append(run['history'])
-
-    fig, ax = plt.subplots(figsize=(8, 5))
 
     for mode in MODE_ORDER:
         histories = mode_histories.get(mode, [])
@@ -114,6 +110,14 @@ def plot_ablation(alpha: str, data_path: Path, outdir: Path):
         mean_curve = trimmed.mean(axis=0)
         std_curve = trimmed.std(axis=0)
 
+        # Smooth
+        if SMOOTH_WINDOW > 1 and len(mean_curve) >= SMOOTH_WINDOW:
+            import pandas as pd
+            mean_series = pd.Series(mean_curve)
+            std_series = pd.Series(std_curve)
+            mean_curve = mean_series.rolling(window=SMOOTH_WINDOW, min_periods=1).mean().values
+            std_curve = std_series.rolling(window=SMOOTH_WINDOW, min_periods=1).mean().values
+
         x = np.arange(len(mean_curve))
         ax.plot(x, mean_curve, label=style['label'], color=style['color'], linewidth=1.8)
         ax.fill_between(x, mean_curve - std_curve, mean_curve + std_curve,
@@ -122,16 +126,31 @@ def plot_ablation(alpha: str, data_path: Path, outdir: Path):
     ax.set_xlabel(r'Eval Step')
     ax.set_ylabel(r'Eval Terminal Reward')
     ax.grid(True)
+    return True
 
-    # Legend at bottom
-    handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', ncol=2,
-              frameon=True, fancybox=False, edgecolor='#CCCCCC',
-              bbox_to_anchor=(0.5, -0.06))
 
-    fig.subplots_adjust(bottom=0.18)
+def plot_ablation(outdir: Path, sweep_0_3: Path = None, sweep_1_0: Path = None):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    out = outdir / f'reward_ablation_alpha_{alpha}.png'
+    _plot_ablation_on_ax(axes[0], sweep_0_3)
+    _plot_ablation_on_ax(axes[1], sweep_1_0)
+
+    # Shared legend at bottom
+    handles, labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        if h:
+            handles, labels = h, l
+            break
+
+    if handles:
+        fig.legend(handles, labels, loc='lower center', ncol=2,
+                  frameon=True, fancybox=False, edgecolor='#CCCCCC',
+                  bbox_to_anchor=(0.5, -0.06))
+
+    fig.subplots_adjust(wspace=0.25, bottom=0.18)
+
+    out = outdir / 'reward_ablation.png'
     _save(fig, out)
     plt.close(fig)
 
@@ -139,14 +158,15 @@ def plot_ablation(alpha: str, data_path: Path, outdir: Path):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Plot PPO reward ablation results')
     parser.add_argument('--outdir', type=str, required=True, help='Directory to save plots')
-    parser.add_argument('--sweeps', type=str, nargs='+', required=True,
-                        help='alpha:data_json pairs, e.g. 0_3:/path/to/all_runs.json')
+    parser.add_argument('--sweep_0_3', type=str, default=None, help='Path to all_runs.json for alpha=0.3')
+    parser.add_argument('--sweep_1_0', type=str, default=None, help='Path to all_runs.json for alpha=1.0')
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
     if not outdir.exists():
         raise FileNotFoundError(f'Output directory does not exist: {outdir}')
 
-    for entry in args.sweeps:
-        alpha, data_path = entry.split(':', 1)
-        plot_ablation(alpha, Path(data_path), outdir)
+    sweep_0_3 = Path(args.sweep_0_3) if args.sweep_0_3 else None
+    sweep_1_0 = Path(args.sweep_1_0) if args.sweep_1_0 else None
+
+    plot_ablation(outdir, sweep_0_3, sweep_1_0)
