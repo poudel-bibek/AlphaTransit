@@ -40,7 +40,7 @@ For a fair comparison, all AlphaTransit route constraints must be enforced on Ho
 
 ## Two-Environment Workflow
 
-The code in this folder requires Python 3.9 and PyTorch 1.12, which are incompatible with AlphaTransit's runtime (Python 3.14, PyTorch 2.11). A separate conda environment is needed for route generation. Evaluation of the generated routes runs in AlphaTransit's main environment.
+The code in this folder requires Python 3.9 and PyTorch 2.0, which are incompatible with AlphaTransit's runtime (Python 3.14, PyTorch 2.11). A separate conda environment is needed for route generation. Evaluation runs in AlphaTransit's main environment.
 
 ### Environment Setup
 
@@ -52,34 +52,64 @@ pip install "numpy<2" torch-scatter torch-sparse -f https://data.pyg.org/whl/tor
 pip install torch-geometric hydra-core omegaconf networkx scipy tqdm pyyaml pandas optuna tensorboard matplotlib
 ```
 
-A full `requirements.txt` is included in this directory for exact reproducibility.
+A full `requirements.txt` is included for exact reproducibility.
 
-### Step 1: Generate Routes
+## Evaluation Only (using supplied artifacts)
 
-All commands below run from `baselines/neural_evolutionary/` with the environment above activated.
+We supply pre-computed route pickles in `output_routes/` and self-trained GNN weights in `weights/self_trained/`. To reproduce the evaluation results without any training:
 
 ```bash
-cd baselines/neural_evolutionary
-conda activate holliday
+cd /path/to/AlphaTransit
 
-# Run Bee Colony
+# Evaluate Bee Colony routes (no trained model needed, routes pre-computed)
+python main.py --mode baseline --baseline_type evolutionary --alpha 0.3
+python main.py --mode baseline --baseline_type evolutionary --alpha 1.0
+
+# Evaluate Neural Evolutionary routes (routes pre-computed from self-trained GNN)
+python main.py --mode baseline --baseline_type neural_evolutionary --alpha 0.3
+python main.py --mode baseline --baseline_type neural_evolutionary --alpha 1.0
+```
+
+This loads route pickles from `output_routes/` and evaluates them through UXsim. No separate conda environment needed for evaluation.
+
+**Supplied artifacts:**
+- `output_routes/bco_bloomington_ea_hub_routes.pkl` -- Bee Colony routes (16 routes, hub-start)
+- `output_routes/neural_bco_bloomington_nea_self_trained_routes.pkl` -- Neural Evol. routes (16 routes, hub-start)
+- `weights/self_trained/inductive_self_trained_hub.pt` -- Self-trained GNN policy (1.2MB)
+
+## Training and Route Generation (from scratch)
+
+To regenerate routes or train a new GNN policy, use the `holliday` conda environment. All commands run from `baselines/neural_evolutionary/`.
+
+### Bee Colony
+
+No trained model needed. Generates routes using heuristic mutations only.
+
+```bash
+conda activate holliday
+cd baselines/neural_evolutionary
+
 PYTHONPATH=. BCO_LOG_CSV=training_data/ea_log.csv \
   python learning/bee_colony.py eval.dataset.path=datasets/bloomington \
   +eval=bloomington init.method=nikolic +run_name=bloomington_ea
+```
 
-# Self-train GNN with hub constraint (one-time, ~2-4 hrs GPU)
-PYTHONPATH=. python simulation/citygraph_dataset.py datasets/synthetic_20_hub mixed \
-  -n 32768 --min 20 --max 20 --ovaldemand
-PYTHONPATH=. python learning/inductive_route_learning.py \
-  dataset.kwargs.path=datasets/synthetic_20_hub +run_name=self_trained_hub
+Output: `output_routes/bco_bloomington_ea_routes.pkl`
 
-# Run LC-100 with self-trained weights
+### Neural Evolutionary
+
+Requires a trained GNN policy. Either use the supplied weights or train from scratch.
+
+**Using supplied weights** (`weights/self_trained/inductive_self_trained_hub.pt`):
+
+```bash
+# Step 1: LC-100 (learned construction, 100 samples, pick best)
 HUB_NODE=95 PYTHONPATH=. python learning/eval_route_generator.py \
   +model.weights=weights/self_trained/inductive_self_trained_hub.pt \
   eval.dataset.path=datasets/bloomington +eval=bloomington \
   +run_name=bloomington_lc100_hub
 
-# Run Neural Evolutionary with self-trained weights
+# Step 2: Neural Evolutionary (400 iterations)
 HUB_NODE=95 PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
   python learning/bee_colony.py --config-name neural_bco_mumford \
   +model.weights=weights/self_trained/inductive_self_trained_hub.pt \
@@ -87,24 +117,21 @@ HUB_NODE=95 PYTHONPATH=. BCO_LOG_CSV=training_data/nea_log.csv \
   init.path=output_routes/nn_construction_bloomington_lc100_hub_routes.pkl \
   +run_name=bloomington_nea
 ```
-This produces route pickle files in `output_routes/`.
 
-### Step 2: Evaluate Routes in AlphaTransit Simulator
-
-Switch back to the main AlphaTransit environment and run the generated routes through UXsim.
+**Training a new GNN from scratch** (~4 hrs GPU):
 
 ```bash
-cd /path/to/AlphaTransit
+# Generate synthetic training data (32K cities, ~30 min)
+PYTHONPATH=. python simulation/citygraph_dataset.py \
+  datasets/synthetic_20_hub mixed -n 32768 --min 20 --max 20 --ovaldemand
 
-# Evaluate Bee Colony routes
-python main.py --mode baseline --baseline_type evolutionary --alpha 0.3
-python main.py --mode baseline --baseline_type evolutionary --alpha 1.0
+# Train GNN with PPO + hub constraint
+PYTHONPATH=. python learning/inductive_route_learning.py \
+  +run_name=self_trained_hub
 
-# Evaluate Neural Evolutionary routes
-python main.py --mode baseline --baseline_type neural_evolutionary --alpha 0.3
-python main.py --mode baseline --baseline_type neural_evolutionary --alpha 1.0
+# Weights saved to output/inductive_self_trained_hub.pt
+# Then run Steps 1 and 2 above with the new weights
 ```
-The `_HollidayBaseline` class in `__init__.py` loads the pre-computed route pickles and evaluates them through UXsim.
 
 ---
 
