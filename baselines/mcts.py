@@ -20,7 +20,9 @@ Algorithm (per decision step):
 Rollouts are parallelized across --num_mcts_rollout_workers processes.
 Each rollout creates an independent UXsim world (~8s per rollout on
 Bloomington). Uses the same n_iter and c_puct as AlphaTransit for fair
-comparison. Requires route_init='transit_center' (deterministic starts).
+comparison. Requires deterministic route initialization (e.g. 'transit_center'
+or 'highest_demand'). Random init makes successor states path-dependent,
+invalidating tree statistics.
 
 Usage:
     python main.py --mode baseline --baseline_type mcts --alpha 1.0 --n_iter 100
@@ -72,8 +74,9 @@ class PureMCTS:
         from baselines.utils import create_main_save_dir
         if config.get("route_init") == "random":
             raise ValueError(
-                "Pure MCTS requires deterministic route initialization (route_init='transit_center'). "
-                "Random starts produce non-deterministic successor states, invalidating tree statistics."
+                "route_init='random' is incompatible with MCTS. Random starts produce "
+                "non-deterministic successor states, invalidating tree statistics. "
+                "Use 'transit_center' or 'highest_demand' instead."
             )
         self.env = env
         self.config = config
@@ -86,7 +89,7 @@ class PureMCTS:
                              if isinstance(v, (int, float, str, bool, type(None)))}
 
     def run(self):
-        from baselines.utils import execute_runs, print_results
+        from baselines.utils import execute_runs
         from rl.env_utils import write_results_summary
         results, aggregated = execute_runs(self, self.num_runs, self.base_seed)
         write_results_summary(aggregated, self.num_runs, self.eval_root_dir,
@@ -120,7 +123,7 @@ class PureMCTS:
         return reward
 
     def construct_path(self, state):
-        from rl.mcts_utils import MCTSState, MCTSNode, MCTSTree
+        from rl.mcts_utils import MCTSState, MCTSTree
         from rl.env_utils import initialize_route
 
         n_iter = self.config.get("n_iter", 100)
@@ -177,8 +180,7 @@ class PureMCTS:
                     tree.root.expand(priors, value)
 
                 # Collect leaves needing rollouts, then batch-evaluate
-                pending_leaves = []  # (node, leaf_state, path) tuples
-                completed_sims = []  # sims that hit existing nodes (no rollout needed)
+                pending_leaves = []
 
                 for sim_idx in range(n_iter):
                     node = tree.root
