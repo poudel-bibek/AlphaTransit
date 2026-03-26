@@ -1,0 +1,5 @@
+type: 'nikolic'
+kwargs:
+  mean_stop_time_s: 60
+  avg_transfer_wait_time_s: 300
+  unsatisfied_penalty_extra_s: 3000

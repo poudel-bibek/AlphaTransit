@@ -1,5 +1,5 @@
 """
-Shared configuration for PPO and MCTS training.
+Shared configuration for PPO and AlphaTransit training.
 """
 
 import os
@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 # Best hyperparameters found from sweep experiments.
 # PPO: from term_ep_1 (alpha=0.3, 18 runs) and term_ep_2 (alpha=1.0, 32 runs)
-# MCTS: from 3_faster_general (alpha=0.3, 21 runs) and 4_faster_general (alpha=1.0, 24 runs)
+# AlphaTransit: from 3_faster_general (alpha=0.3, 21 runs) and 4_faster_general (alpha=1.0, 24 runs)
 # Best PPO reward mode: terminal_intermediate_delta_no_early_stop (both alphas)
 BEST_PARAMS = {
     "ppo": {
@@ -39,7 +39,7 @@ BEST_PARAMS = {
             "ppo_reward_mode": "terminal_intermediate_delta_no_early_stop",
         },
     },
-    "mcts": {
+    "alphatransit": {
         0.3: {
             "lr": 1e-4,
             "c_puct": 1.5,
@@ -121,7 +121,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     Define common RL, system, and sweepable hyperparameters.
     """
     parser = argparse.ArgumentParser(description="RL training/evaluation entrypoint")
-    parser.add_argument("--algorithm", choices=["ppo", "mcts"], default=None, help="Learning algorithm (required for train/eval modes)")
+    parser.add_argument("--algorithm", choices=["ppo", "alphatransit"], default=None, help="Learning algorithm (required for train/eval modes)")
     parser.add_argument("--apply_best_params", action="store_true", help="Apply best hyperparameters from sweep experiments for the given algorithm+alpha")
 
     # Simulation setup:
@@ -134,7 +134,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world, genetic")
+    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world, genetic, evolutionary, neural_evolutionary, mcts")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of evaluation runs")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
     parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
@@ -160,7 +160,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transit_center_node", type=str, default="96", help="Transit center node identifier")
     parser.add_argument("--ppo_reward_mode", type=str, default="terminal_intermediate_delta_no_early_stop",
         choices=["terminal_only", "terminal_intermediate_raw_early_stop", "terminal_intermediate_delta_early_stop", "terminal_intermediate_delta_no_early_stop"],
-        help="Reward shaping mode (PPO only; MCTS uses terminal reward targets)")
+        help="Reward shaping mode (PPO only; AlphaTransit uses terminal reward targets)")
 
     # Constraints:
     parser.add_argument("--num_routes", type=int, default=16, help="Number of routes")
@@ -168,7 +168,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min_route_length", type=int, default=2, help="Minimum route length")
 
     # PPO hyperparameters:
-    # Training duration: max_steps = 1M env steps (comparable to MCTS with max_iterations=744)
+    # Training duration: max_steps = 1M env steps (comparable to AlphaTransit with max_iterations=744)
     # Eval frequency is update-count based and depends on episode lengths × ppo_episodes_per_update.
     parser.add_argument("--max_steps", type=int, default=1_000_000, help="PPO: Total training steps")
     parser.add_argument("--ppo_eval_every", type=int, default=5, help="PPO: Evaluate every N updates")
@@ -190,24 +190,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--anneal_lr", action="store_true", help="PPO: Anneal learning rate")
     parser.add_argument("--save_policy_ppo", action="store_true", help="PPO: Save policy checkpoints to disk")
     parser.add_argument("--min_lr", type=float, default=1e-5, help="PPO: Minimum learning rate floor when annealing")
-    parser.add_argument("--ppo_eval_temperature", type=float, default=0.1, help="PPO: Temperature for near-greedy eval sampling (matches MCTS eval tau)")
+    parser.add_argument("--ppo_eval_temperature", type=float, default=0.1, help="PPO: Temperature for near-greedy eval sampling (matches AlphaTransit eval tau)")
 
-    # MCTS hyperparameters:
+    # AlphaTransit hyperparameters (MCTS + GNN policy-value network):
     # Training duration: 6 workers × ~224 steps/episode = ~1,344 steps/iteration
     #                    max_iterations=744 × 1,344 ≈ 1M steps (comparable to PPO)
     # Eval frequency: 744 iterations / eval_every=3 → ~248 eval points
-    parser.add_argument("--n_iter", type=int, default=100, help="MCTS: Simulations per move")
-    parser.add_argument("--mcts_batch_size", type=int, default=8, help="MCTS: Leaves to batch per NN forward pass (virtual loss)")
-    parser.add_argument("--c_puct", type=float, default=1.0, help="MCTS: PUCT exploration constant")
-    parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="MCTS: Dirichlet noise concentration")
-    parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="MCTS: Dirichlet noise weight")
-    parser.add_argument("--buffer_capacity", type=int, default=50000, help="MCTS: Replay buffer capacity")
-    parser.add_argument("--num_mcts_workers", type=int, default=16, help="MCTS: Number of parallel workers")
-    parser.add_argument("--episodes_per_iter", type=int, default=16, help="MCTS: Episodes to collect per iteration")
-    parser.add_argument("--train_steps_per_iter", type=int, default=200, help="MCTS: Training steps per iteration")
-    parser.add_argument("--max_iterations", type=int, default=308, help="MCTS: Max iterations (308 × 16 eps × ~203 steps ≈ 1.0M steps)")
-    parser.add_argument("--mcts_eval_every", type=int, default=5, help="MCTS: Evaluate every N iterations")
-    parser.add_argument("--temp_schedule", type=str, default="0.7:1.0,0.9:0.7,1.0:0.5", help="MCTS: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
+    parser.add_argument("--n_iter", type=int, default=100, help="AlphaTransit: MCTS simulations per move")
+    parser.add_argument("--mcts_batch_size", type=int, default=8, help="AlphaTransit: Leaves to batch per NN forward pass (virtual loss)")
+    parser.add_argument("--c_puct", type=float, default=1.0, help="AlphaTransit: PUCT exploration constant")
+    parser.add_argument("--dirichlet_alpha", type=float, default=0.3, help="AlphaTransit: Dirichlet noise concentration")
+    parser.add_argument("--dirichlet_eps", type=float, default=0.25, help="AlphaTransit: Dirichlet noise weight")
+    parser.add_argument("--buffer_capacity", type=int, default=50000, help="AlphaTransit: Replay buffer capacity")
+    parser.add_argument("--num_mcts_workers", type=int, default=16, help="AlphaTransit: Number of parallel episode workers")
+    parser.add_argument("--episodes_per_iter", type=int, default=16, help="AlphaTransit: Episodes to collect per iteration")
+    parser.add_argument("--train_steps_per_iter", type=int, default=200, help="AlphaTransit: Training steps per iteration")
+    parser.add_argument("--max_iterations", type=int, default=308, help="AlphaTransit: Max iterations (308 × 16 eps × ~203 steps ≈ 1.0M steps)")
+    parser.add_argument("--mcts_eval_every", type=int, default=5, help="AlphaTransit: Evaluate every N iterations")
+    parser.add_argument("--temp_schedule", type=str, default="0.7:1.0,0.9:0.7,1.0:0.5", help="AlphaTransit: Temperature schedule as 'progress:tau' pairs (e.g., '0.7:1.0,0.9:0.7,1.0:0.5')")
+
+    # Pure MCTS baseline hyperparameters (ablation: MCTS without learned network):
+    # Uses the same n_iter and c_puct as AlphaTransit for fair comparison.
+    # Replaces GNN policy with uniform priors and GNN value with full UXsim rollouts.
+    parser.add_argument("--num_mcts_rollout_workers", type=int, default=8, help="Pure MCTS baseline: parallel rollout workers")
 
     # Model:
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")

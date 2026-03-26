@@ -1,0 +1,36 @@
+ppo:
+  n_iterations: 200
+  val_period: 10
+  n_epochs: 1
+  minibatch_size: 256
+  horizon: 120
+  epsilon: 0.2
+  use_gae: true
+  gae_lambda: 0.95
+
+discount_rate: 0.95
+diff_reward: true
+baseline_lr: 0.0005
+entropy_weight: 0.0
+batch_size: 256
+reward_scale: 1.0
+lr: 0.0016134816080499328
+decay: 0.0008404361781997002
+optimizer: Adam
+
+eval:
+  n_routes: 10
+  min_route_len: 2
+  max_route_len: 12
+
+dataset:
+  type: pickle
+  kwargs:
+    path: datasets/synthetic_20_hub
+    space_scale: 0.6
+    demand_scale: 0.2
+
+defaults:
+  - _self_
+  - experiment: standard
+  - model: bestsofar_feb2023

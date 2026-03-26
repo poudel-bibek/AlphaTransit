@@ -1,0 +1,6 @@
+type: 'multi'
+kwargs:
+  mean_stop_time_s: 0
+  avg_transfer_wait_time_s: 300
+  # weights will vary only during training
+  variable_weights: true

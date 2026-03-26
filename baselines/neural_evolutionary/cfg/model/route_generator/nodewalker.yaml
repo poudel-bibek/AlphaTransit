@@ -1,0 +1,5 @@
+type: NodeWalker
+kwargs:
+  n_heads: 4
+  # this doesn't do anything
+  n_nodepair_layers: 1

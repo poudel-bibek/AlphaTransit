@@ -1,0 +1,9 @@
+logdir: 'training_logs'
+anomaly: False
+cpu: False
+seed: 0
+symmetric_routes: True
+
+defaults:
+  - _self_
+  - cost_function: mine

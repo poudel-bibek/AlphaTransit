@@ -1,0 +1,31 @@
+common:
+  dropout: 0.25459279
+  embed_dim: 56
+  nonlin_type: ELU
+
+route_generator:
+  feat_alpha: 0.006442153
+  n_nodepair_layers: 2
+  n_scorelenfn_layers: 2
+  scorelenfn_hidden_dim: 25
+
+env_gn:
+  # net_type: edge graph
+  net_type: graph attn
+  kwargs:
+    n_heads: 4
+    n_layers: 1
+    in_edge_dim: 2
+    in_node_dim: 8
+    # layer_kwargs:
+    #   n_edge_layers: 2
+
+route_gn:
+  net_type: graph attn
+  kwargs:
+    n_heads: 4
+    n_layers: 3
+    recurrent: False
+    residual: False
+    dense: True
+    in_edge_dim: 1
