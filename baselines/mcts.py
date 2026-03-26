@@ -174,6 +174,8 @@ class PureMCTS:
                     # SELECT: walk down tree using PUCT
                     while node.expanded and not sim_state.is_terminal():
                         action = node.select_action(c_puct)
+                        if action is None:
+                            break  # Dead-end node (no valid actions)
                         path.append((node, action))
                         child = node.get_child(action)
                         sim_state = child.state
