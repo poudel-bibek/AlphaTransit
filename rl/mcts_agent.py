@@ -523,7 +523,8 @@ class MCTSAgent:
 
             for _ in range(batch):
                 result = self._result_queue.get()
-                assert result["type"] == "collect", f"Expected collect result, got {result['type']}"
+                if result["type"] != "collect":
+                    raise RuntimeError(f"Expected collect result, got {result['type']}")
                 results.append(result["data"])
 
             episode_idx += batch
@@ -806,84 +807,34 @@ class MCTSAgent:
         else:
             self.model.load_state_dict(state_dict)
 
-    def _run_single_eval_episode(self, seed: int) -> Dict[str, Any]:
-        """
-        Run a single evaluation episode with given seed.
-        Returns metrics dict with routes.
-        """
-        # Set seed for reproducibility
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.manual_seed(seed)
-
-        self.model.eval()
-        eval_tau = 0.1  # Near-greedy (matches training minimum)
-
-        state_dict, _ = self.env.reset(seed=seed)
-        mcts_state = self._create_mcts_state()
-        tree = MCTSTree(mcts_state)
-        actions = []
-
-        while not mcts_state.is_terminal():
-            valid_actions = mcts_state.get_valid_actions()
-            if not valid_actions:
-                # Record NO_VALID_ACTION to keep MCTSState and real env in sync
-                actions.append(self.env.NO_VALID_ACTION)
-                mcts_state = mcts_state.force_route_end()
-                tree = MCTSTree(mcts_state)
-                continue
-
-            policy = self._run_mcts(tree, tau=eval_tau, add_noise=False)
-            valid_policy = policy[valid_actions]
-            if valid_policy.sum() > 0:
-                action = valid_actions[np.argmax(valid_policy)]
-            else:
-                action = valid_actions[0]
-
-            actions.append(action)
-            mcts_state = mcts_state.apply_action(action)
-            tree.advance(action)
-
-        # Compute terminal reward directly from final route set (single simulation).
-        reward, sim_result = self.env.simulate_routes_mcts(mcts_state.all_routes)
-        metrics = {
-            'episode_terminal_reward': reward,
-            'episode_total_reward': reward,  # Same as terminal for MCTS; needed for aggregate_results
-            'episode_length': len(actions),
-            'routes': [list(r) for r in self.env.all_routes],
-            'seed': seed,
-            **sim_result
-        }
-        return metrics
-
-    def _dispatch_parallel_eval(self, num_eval: int, seed_offset: int = 0) -> List[Dict[str, Any]]:
+    def _dispatch_parallel_eval(self, num_eval: int) -> List[Dict[str, Any]]:
         """
         Dispatch eval episodes to workers in rounds and collect results.
+        Caller must call _publish_policy_snapshot() first to ensure workers
+        use the correct weights.
 
         Args:
             num_eval: Number of eval episodes to run
-            seed_offset: Added to base eval seed for each episode
 
         Returns:
-            List of metrics dicts (same shape as _run_single_eval_episode output)
+            List of metrics dicts (flat keys matching aggregate_results policy-eval branch)
         """
-        policy_version = self._publish_policy_snapshot()
-
         results = []
         eval_idx = 0
         while eval_idx < num_eval:
             dispatch_count = min(self.num_workers, num_eval - eval_idx)
             for i in range(dispatch_count):
-                seed = self.seed + self.eval_seed_offset + seed_offset + eval_idx + i
+                seed = self.seed + self.eval_seed_offset + eval_idx + i
                 self._cmd_queues[i].put({
                     "type": "eval",
                     "seed": seed,
-                    "policy_version": policy_version,
+                    "policy_version": self.policy_version,
                 })
 
             for _ in range(dispatch_count):
                 result = self._result_queue.get()
-                assert result["type"] == "eval", f"Expected eval result, got {result['type']}"
+                if result["type"] != "eval":
+                    raise RuntimeError(f"Expected eval result, got {result['type']}")
                 results.append(result["data"])
 
             eval_idx += dispatch_count
@@ -896,6 +847,11 @@ class MCTSAgent:
         Dispatches eval episodes to idle workers in parallel.
         """
         eval_start = time.time()
+
+        # Push post-training weights to inference server (learner model is
+        # ahead after gradient steps; collection already published earlier
+        # in this iteration, so this is the second publish).
+        self._publish_policy_snapshot()
 
         episode_dir = ensure_eval_step_update_dir(
             str(self.training_save_dir),
@@ -963,6 +919,7 @@ class MCTSAgent:
         if policy_path and os.path.exists(policy_path):
             self._load_policy(policy_path)
             print(f"Loaded policy from {policy_path}")
+        self._publish_policy_snapshot()
 
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
