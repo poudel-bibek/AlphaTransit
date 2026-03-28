@@ -170,7 +170,8 @@ class PureMCTS:
         from rl.mcts_utils import MCTSState, MCTSTree
 
         # Keep worker-side simulator seeds aligned with the active eval run.
-        self._config_dict["seed"] = self.env.config.get("seed", self.config.get("seed", 42))
+        # env.reset(seed=X) updates env.config["seed"] per run (rl/env.py:583).
+        self._config_dict["seed"] = self.env.config.get("seed", 42)
 
         n_iter, c_puct = self._resolve_search_params()
         num_routes = self.config.get("num_routes", 16)
