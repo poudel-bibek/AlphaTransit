@@ -15,14 +15,21 @@ Algorithm (per decision step):
    b. EXPAND leaf: uniform priors + full UXsim rollout for value.
    c. BACKUP: propagate reward up the path.
 3. Pick action with highest visit count (near-greedy, tau=0.1).
-4. Advance tree, repeat until all 16 routes are built.
+4. Advance the same tree across the full episode; when a route reaches max
+   length, MCTSState.apply_action() transitions into the next route state.
 
 Rollouts are parallelized across --num_mcts_rollout_workers processes.
 Each rollout creates an independent UXsim world (~8s per rollout on
-Bloomington). Uses the same n_iter and c_puct as AlphaTransit for fair
-comparison. Requires deterministic route initialization (e.g. 'transit_center'
-or 'highest_demand'). Random init makes successor states path-dependent,
+Bloomington). By default, the baseline matches AlphaTransit's tuned n_iter and
+c_puct for the current alpha unless the caller supplies non-default overrides.
+Requires deterministic route initialization (e.g. 'transit_center' or
+'highest_demand'). Random init makes successor states path-dependent,
 invalidating tree statistics.
+
+Note: unlike AlphaTransit's batched MCTS, this baseline does not use virtual
+loss to diversify leaves within a rollout batch. That makes the baseline
+slightly weaker than an optimized batched pure-MCTS implementation, which is a
+conservative choice for ablation.
 
 Usage:
     python main.py --mode baseline --baseline_type mcts --alpha 1.0 --n_iter 100
@@ -31,6 +38,7 @@ Usage:
 import os
 import csv
 import random
+import sys
 import time
 import numpy as np
 import multiprocessing as mp
@@ -122,12 +130,49 @@ class PureMCTS:
         reward, _ = self.env.simulate_routes_mcts(routes)
         return reward
 
+    def _resolve_search_params(self):
+        """
+        Match AlphaTransit's tuned search settings for the active alpha.
+
+        Explicit CLI values take precedence over the tuned values.
+        """
+        from config import BEST_PARAMS
+
+        cli_args = sys.argv[1:]
+        cli_overrode_n_iter = any(
+            arg == "--n_iter" or arg.startswith("--n_iter=")
+            for arg in cli_args
+        )
+        cli_overrode_c_puct = any(
+            arg == "--c_puct" or arg.startswith("--c_puct=")
+            for arg in cli_args
+        )
+
+        config_n_iter = self.config.get("n_iter", 100)
+        config_c_puct = self.config.get("c_puct", 1.0)
+
+        alpha = self.config.get("alpha", 0.3)
+        at_params = BEST_PARAMS.get("alphatransit", {}).get(alpha, {})
+
+        if cli_overrode_n_iter:
+            n_iter = config_n_iter
+        else:
+            n_iter = at_params.get("n_iter", config_n_iter)
+
+        if cli_overrode_c_puct:
+            c_puct = config_c_puct
+        else:
+            c_puct = at_params.get("c_puct", config_c_puct)
+
+        return n_iter, c_puct
+
     def construct_path(self, state):
         from rl.mcts_utils import MCTSState, MCTSTree
-        from rl.env_utils import initialize_route
 
-        n_iter = self.config.get("n_iter", 100)
-        c_puct = self.config.get("c_puct", 1.0)
+        # Keep worker-side simulator seeds aligned with the active eval run.
+        self._config_dict["seed"] = self.env.config.get("seed", self.config.get("seed", 42))
+
+        n_iter, c_puct = self._resolve_search_params()
         num_routes = self.config.get("num_routes", 16)
         max_len = self.config.get("max_route_length", 14)
         n_nodes = len(self.env.node_to_idx)
@@ -138,141 +183,147 @@ class PureMCTS:
         log_file = None
         log_writer = None
         if log_path:
-            log_file = open(log_path, "w", newline="")
+            write_header = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
+            log_file = open(log_path, "a", newline="")
             log_writer = csv.DictWriter(log_file, fieldnames=[
                 "route_idx", "step", "route_length", "action_node",
                 "n_valid_actions", "root_visits", "root_max_visits",
                 "root_q_mean", "root_q_max", "n_rollouts", "step_time_s",
             ])
-            log_writer.writeheader()
+            if write_header:
+                log_writer.writeheader()
 
-        all_routes = []
+        print(f"  Pure MCTS search params: alpha={self.config.get('alpha')}, n_iter={n_iter}, c_puct={c_puct}")
+
+        mcts_state = MCTSState(
+            current_route=list(self.env.current_route),
+            all_routes=[list(r) for r in self.env.all_routes],
+            current_route_index=self.env.current_route_index,
+            num_routes=num_routes,
+            max_route_length=max_len,
+            adj=self.env.adj,
+            node_to_idx=self.env.node_to_idx,
+            idx_to_node=self.env.idx_to_node,
+            env=self.env,
+        )
+        tree = MCTSTree(mcts_state)
         episode_start = time.time()
 
-        for k in range(num_routes):
-            current_route = initialize_route(self.env)
-            self.env.all_routes = [list(r) for r in all_routes]
+        while not mcts_state.is_terminal():
+            route_idx = mcts_state.current_route_index
+            route_step = max(len(mcts_state.current_route) - 1, 0)
+            step_start = time.time()
+            valid = mcts_state.get_valid_actions()
 
-            mcts_state = MCTSState(
-                current_route=list(current_route),
-                all_routes=[list(r) for r in all_routes],
-                current_route_index=k,
-                num_routes=num_routes,
-                max_route_length=max_len,
-                adj=self.env.adj,
-                node_to_idx=self.env.node_to_idx,
-                idx_to_node=self.env.idx_to_node,
-                env=self.env,
-            )
-            tree = MCTSTree(mcts_state)
-            step = 0
+            if not valid:
+                dead_route = list(mcts_state.current_route)
+                mcts_state = mcts_state.force_route_end()
+                tree = MCTSTree(mcts_state)
+                elapsed = time.time() - episode_start
+                print(f"  Route {route_idx+1}/{num_routes} forced end: {len(dead_route)} nodes, "
+                      f"elapsed {elapsed:.0f}s")
+                continue
 
-            while len(current_route) < max_len:
-                step_start = time.time()
-                valid = mcts_state.get_valid_actions()
-                if not valid:
-                    break
+            # Expand root with uniform priors + rollout value
+            if not tree.root.expanded:
+                priors = {a: 1.0 / len(valid) for a in valid}
+                value = self._single_rollout(mcts_state)
+                tree.root.expand(priors, value)
 
-                # Expand root with uniform priors + rollout value
-                if not tree.root.expanded:
-                    priors = {a: 1.0 / len(valid) for a in valid}
-                    value = self._single_rollout(mcts_state)
-                    tree.root.expand(priors, value)
+            # Collect leaves needing rollouts, then batch-evaluate
+            pending_leaves = []
 
-                # Collect leaves needing rollouts, then batch-evaluate
-                pending_leaves = []
+            for sim_idx in range(n_iter):
+                node = tree.root
+                sim_state = mcts_state.clone()
+                path = []
 
-                for sim_idx in range(n_iter):
-                    node = tree.root
-                    sim_state = mcts_state.clone()
-                    path = []
+                # SELECT: walk down tree using PUCT
+                while node.expanded and not sim_state.is_terminal():
+                    action = node.select_action(c_puct)
+                    if action is None:
+                        break  # Dead-end node (no valid actions)
+                    path.append((node, action))
+                    child = node.get_child(action)
+                    sim_state = child.state
+                    node = child
+                    if not node.expanded:
+                        break
 
-                    # SELECT: walk down tree using PUCT
-                    while node.expanded and not sim_state.is_terminal():
-                        action = node.select_action(c_puct)
-                        if action is None:
-                            break  # Dead-end node (no valid actions)
-                        path.append((node, action))
-                        child = node.get_child(action)
-                        sim_state = child.state
-                        node = child
-                        if not node.expanded:
-                            break
-
-                    if not node.expanded and not sim_state.is_terminal():
-                        leaf_valid = sim_state.get_valid_actions()
-                        if leaf_valid:
-                            # Queue for batch rollout
-                            pending_leaves.append((node, sim_state, path, leaf_valid))
-                        else:
-                            # Dead end — still need rollout for value
-                            pending_leaves.append((node, sim_state, path, None))
-                    elif node.expanded:
-                        # Re-visited an existing node — use its value
-                        for parent, act in reversed(path):
-                            parent.update(act, node.value)
+                if not node.expanded and not sim_state.is_terminal():
+                    leaf_valid = sim_state.get_valid_actions()
+                    if leaf_valid:
+                        # Queue for batch rollout
+                        pending_leaves.append((node, sim_state, path, leaf_valid))
                     else:
-                        # Terminal state
+                        # Dead end — still need rollout for value
                         pending_leaves.append((node, sim_state, path, None))
+                elif node.expanded:
+                    # Re-visited an existing node — use its value
+                    for parent, act in reversed(path):
+                        parent.update(act, node.value)
+                else:
+                    # Terminal state
+                    pending_leaves.append((node, sim_state, path, None))
 
-                    # Batch rollout when we have enough pending or at end
-                    if len(pending_leaves) >= self.n_workers or sim_idx == n_iter - 1:
-                        if pending_leaves:
-                            leaf_states = [s for _, s, _, _ in pending_leaves]
-                            rewards = self._batch_rollout(leaf_states)
+                # Batch rollout when we have enough pending or at end
+                if len(pending_leaves) >= self.n_workers or sim_idx == n_iter - 1:
+                    if pending_leaves:
+                        leaf_states = [s for _, s, _, _ in pending_leaves]
+                        rewards = self._batch_rollout(leaf_states)
 
-                            for (node, sim_state, path, leaf_valid), reward in zip(pending_leaves, rewards):
-                                if leaf_valid and not node.expanded:
-                                    leaf_priors = {a: 1.0 / len(leaf_valid) for a in leaf_valid}
-                                    node.expand(leaf_priors, reward)
-                                elif not node.expanded:
-                                    node.value = reward
-                                    node.expanded = True
+                        for (node, sim_state, path, leaf_valid), reward in zip(pending_leaves, rewards):
+                            if leaf_valid and not node.expanded:
+                                leaf_priors = {a: 1.0 / len(leaf_valid) for a in leaf_valid}
+                                node.expand(leaf_priors, reward)
+                            elif not node.expanded:
+                                node.value = reward
+                                node.expanded = True
 
-                                for parent, act in reversed(path):
-                                    parent.update(act, reward)
+                            for parent, act in reversed(path):
+                                parent.update(act, reward)
 
-                            pending_leaves = []
+                        pending_leaves = []
 
-                # Select action from visit counts
-                policy = tree.root.get_visit_count_policy(tau, n_nodes)
-                action = max(valid, key=lambda a: policy[a])
-                action_node = self.env.idx_to_node[action]
+            # Select action from visit counts
+            policy = tree.root.get_visit_count_policy(tau, n_nodes)
+            action = max(valid, key=lambda a: policy[a])
+            action_node = self.env.idx_to_node[action]
 
-                # Log step
-                step_time = time.time() - step_start
-                n_rollouts_this_step = sum(tree.root.N.values()) if tree.root.N else 0
-                if log_writer:
-                    q_vals = list(tree.root.Q.values()) if tree.root.Q else [0]
-                    log_writer.writerow({
-                        "route_idx": k,
-                        "step": step,
-                        "route_length": len(current_route),
-                        "action_node": action_node,
-                        "n_valid_actions": len(valid),
-                        "root_visits": sum(tree.root.N.values()) if tree.root.N else 0,
-                        "root_max_visits": max(tree.root.N.values()) if tree.root.N else 0,
-                        "root_q_mean": f"{np.mean(q_vals):.6f}",
-                        "root_q_max": f"{max(q_vals):.6f}",
-                        "n_rollouts": n_rollouts_this_step,
-                        "step_time_s": f"{step_time:.2f}",
-                    })
-                    log_file.flush()
+            # Log step
+            step_time = time.time() - step_start
+            n_rollouts_this_step = sum(tree.root.N.values()) if tree.root.N else 0
+            if log_writer:
+                q_vals = list(tree.root.Q.values()) if tree.root.Q else [0]
+                log_writer.writerow({
+                    "route_idx": route_idx,
+                    "step": route_step,
+                    "route_length": len(mcts_state.current_route),
+                    "action_node": action_node,
+                    "n_valid_actions": len(valid),
+                    "root_visits": sum(tree.root.N.values()) if tree.root.N else 0,
+                    "root_max_visits": max(tree.root.N.values()) if tree.root.N else 0,
+                    "root_q_mean": f"{np.mean(q_vals):.6f}",
+                    "root_q_max": f"{max(q_vals):.6f}",
+                    "n_rollouts": n_rollouts_this_step,
+                    "step_time_s": f"{step_time:.2f}",
+                })
+                log_file.flush()
 
-                print(f"    Route {k+1} step {step}: {action_node}, "
-                      f"visits={n_rollouts_this_step}, "
-                      f"time={step_time:.1f}s")
+            print(f"    Route {route_idx+1} step {route_step}: {action_node}, "
+                  f"visits={n_rollouts_this_step}, "
+                  f"time={step_time:.1f}s")
 
-                # Advance
-                current_route.append(action_node)
-                mcts_state = mcts_state.apply_action(action)
-                tree.advance(action)
-                step += 1
+            # Advance the same tree across route boundaries.
+            prev_route_idx = mcts_state.current_route_index
+            prev_route_len = len(mcts_state.current_route) + 1
+            mcts_state = mcts_state.apply_action(action)
+            tree.advance(action)
 
-            all_routes.append(current_route)
-            elapsed = time.time() - episode_start
-            print(f"  Route {k+1}/{num_routes} done: {len(current_route)} nodes, "
-                  f"elapsed {elapsed:.0f}s")
+            if mcts_state.current_route_index > prev_route_idx:
+                elapsed = time.time() - episode_start
+                print(f"  Route {prev_route_idx+1}/{num_routes} done: {prev_route_len} nodes, "
+                      f"elapsed {elapsed:.0f}s")
 
         if log_file:
             log_file.close()
@@ -281,4 +332,5 @@ class PureMCTS:
         print(f"  Pure MCTS episode complete: {num_routes} routes in {total_time:.0f}s "
               f"({total_time/3600:.1f}h)")
 
-        return all_routes
+        self.env.all_routes = [list(r) for r in mcts_state.all_routes]
+        return mcts_state.all_routes
