@@ -242,28 +242,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
     # =====================================================================
     # 7. n_iter Scaling Sweep for MCTS Alpha 0.3
     # All other params come from BEST_PARAMS via apply_best_params
-    # Ran as 3 sweeps: lpg2ifh2 (n=100), j5ns6bh8 (n=200,300,400), 466yjq3q (n=500)
-    # =====================================================================
-    # return {
-    #     "method": "grid",
-    #     "metric": {
-    #         "name": "eval/episode_terminal_reward",
-    #         "goal": "maximize"
-    #     },
-    #     "parameters": {
-    #         "n_iter": {"values": [100, 200, 300, 400, 500]},
-    #         "alpha": {"value": 0.3},
-    #         "algorithm": {"value": "alphatransit"},
-    #         "gpu": {"value": True},
-    #         "apply_best_params": {"value": True},
-    #         "num_mcts_workers": {"value": 8},
-    #     },
-    # }
-
-    # =====================================================================
-    # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
-    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
-    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
+    # Old (8 blocks): lpg2ifh2 (n=100), j5ns6bh8 (n=200,300,400), 466yjq3q (n=500)
     # =====================================================================
     return {
         "method": "grid",
@@ -272,8 +251,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "episodes_per_iter": {"values": [8, 16, 24]},
-            "n_iter": {"value": 200},
+            "n_iter": {"values": [100, 200, 300, 400, 500]},
             "alpha": {"value": 0.3},
             "algorithm": {"value": "alphatransit"},
             "gpu": {"value": True},
@@ -281,6 +259,28 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
             "num_mcts_workers": {"value": 8},
         },
     }
+
+    # =====================================================================
+    # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
+    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
+    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
+    # =====================================================================
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "episodes_per_iter": {"values": [8, 16, 24]},
+    #         "n_iter": {"value": 200},
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "alphatransit"},
+    #         "gpu": {"value": True},
+    #         "apply_best_params": {"value": True},
+    #         "num_mcts_workers": {"value": 8},
+    #     },
+    # }
 
     # =====================================================================
     # 11. Model Size Sweep for MCTS Alpha 0.3
