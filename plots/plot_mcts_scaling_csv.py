@@ -116,11 +116,9 @@ def _style_ax(ax):
 
 
 def _save(fig, out_path: Path):
-    fig.savefig(out_path)
-    print(f'Saved {out_path}')
-    if SAVE_PDF:
-        fig.savefig(out_path.with_suffix('.pdf'))
-        print(f'Saved {out_path.with_suffix(".pdf")}')
+    pdf_path = out_path.with_suffix('.pdf')
+    fig.savefig(pdf_path)
+    print(f'Saved {pdf_path}')
 
 
 def plot_training_curves(alpha: str, sweep_dir: Path, outdir: Path, smooth_window: int = 5):

@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import os
+import os, argparse
 
 # ---------------------------------------------------------------------------
 # Style from plots.md
@@ -127,7 +127,10 @@ ax.legend(handles=legend_elements, loc='upper left', framealpha=0.9,
 
 fig.tight_layout()
 
-outpath = os.path.join(OUTDIR, 'laval_network')
+parser = argparse.ArgumentParser()
+parser.add_argument('--outdir', type=str, default=OUTDIR)
+args, _ = parser.parse_known_args()
+outpath = os.path.join(args.outdir, 'laval_network')
 fig.savefig(outpath + '.pdf')
 print(f'Saved {outpath}.pdf')
 plt.close(fig)

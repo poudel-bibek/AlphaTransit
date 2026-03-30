@@ -73,11 +73,9 @@ SMOOTH_WINDOW = 10
 
 
 def _save(fig, out_path: Path):
-    fig.savefig(out_path)
-    print(f'Saved {out_path}')
-    if SAVE_PDF:
-        fig.savefig(out_path.with_suffix('.pdf'))
-        print(f'Saved {out_path.with_suffix(".pdf")}')
+    pdf_path = out_path.with_suffix('.pdf')
+    fig.savefig(pdf_path)
+    print(f'Saved {pdf_path}')
 
 
 def _plot_ablation_on_ax(ax, data_path: Path):

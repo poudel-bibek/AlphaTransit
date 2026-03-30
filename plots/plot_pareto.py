@@ -40,7 +40,7 @@ plt.rcParams.update({
     'savefig.pad_inches': 0.15,
 })
 
-import os
+import os, argparse
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
 # ---------------------------------------------------------------------------
@@ -48,28 +48,28 @@ OUTDIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 data = {
     '0.3': {
-        'Real-World':    (42.91, 89),
-        'Random Walk':   (40.91, 37.20),
-        'Demand Cover':  (39.72, 37.80),
-        'Shortest Path': (39.69, 20.60),
-        'Genetic Alg.':  (53.39, 67),
+        'Real-World':    (42.77, 89),
+        'Random Walk':   (36.41, 35.40),
+        'Demand Cover':  (40.11, 40.10),
+        'Shortest Path': (37.89, 21.60),
+        'Genetic Alg.':  (50.42, 79),
         'Bee Colony':    (39.83, 94),
         'Neural Evol.':  (47.85, 101),
-        'Pure MCTS':     (50.44, 76),
-        'End-to-End RL': (55.86, 46),
-        'AlphaTransit':  (61.34, 55),
+        # 'Pure MCTS':   pending
+        'End-to-End RL': (49.72, 111.90),
+        # 'AlphaTransit': pending (re-running with 4 blocks)
     },
     '1.0': {
-        'Real-World':    (58.78, 281),
-        'Random Walk':   (60.39, 113.40),
-        'Demand Cover':  (65.50, 128.20),
-        'Shortest Path': (59.55, 48.60),
-        'Genetic Alg.':  (81.05, 202),
+        'Real-World':    (58.44, 281),
+        'Random Walk':   (62.79, 109.40),
+        'Demand Cover':  (58.03, 124.60),
+        'Shortest Path': (56.50, 48.00),
+        'Genetic Alg.':  (81.17, 254),
         'Bee Colony':    (64.74, 301),
         'Neural Evol.':  (70.51, 320),
-        'Pure MCTS':     (72.04, 185),
-        'End-to-End RL': (66.10, 193),
-        'AlphaTransit':  (85.50, 167),
+        # 'Pure MCTS':   pending
+        'End-to-End RL': (73.70, 346.50),
+        'AlphaTransit':  (82.19, 267),
     },
 }
 
@@ -170,7 +170,10 @@ for col, (alpha, alpha_label) in enumerate([
 
 fig.subplots_adjust(wspace=0.2)
 
-outpath = os.path.join(OUTDIR, 'pareto_service_fleet')
+parser = argparse.ArgumentParser()
+parser.add_argument('--outdir', type=str, default=OUTDIR)
+args, _ = parser.parse_known_args()
+outpath = os.path.join(args.outdir, 'pareto_service_fleet')
 fig.savefig(outpath + '.pdf')
 print(f'Saved {outpath}.pdf')
 plt.close(fig)
