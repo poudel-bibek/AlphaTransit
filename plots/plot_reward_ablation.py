@@ -86,7 +86,7 @@ def _plot_ablation_on_ax(ax, data_path: Path):
         ax.text(0.5, 0.5, r'\textit{Pending}',
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=13, color='#999999')
-        ax.set_xlabel(r'Eval Step')
+        ax.set_xlabel(r'Environment Steps')
         ax.set_ylabel(r'Eval Terminal Reward')
         ax.grid(True)
         return False
@@ -94,19 +94,24 @@ def _plot_ablation_on_ax(ax, data_path: Path):
     with open(data_path) as f:
         runs = json.load(f)
 
-    mode_histories = {}
+    mode_data = {}
     for run in runs:
         mode = run.get('ppo_reward_mode', run.get('config', {}).get('ppo_reward_mode', '?'))
-        mode_histories.setdefault(mode, []).append(run['history'])
+        mode_data.setdefault(mode, []).append({
+            'history': run['history'],
+            'steps': run.get('steps', list(range(len(run['history'])))),
+        })
 
     for mode in MODE_ORDER:
-        histories = mode_histories.get(mode, [])
-        if not histories:
+        entries = mode_data.get(mode, [])
+        if not entries:
             continue
 
         style = MODE_STYLES[mode]
-        min_len = min(len(h) for h in histories)
-        trimmed = np.array([h[:min_len] for h in histories])
+        min_len = min(len(e['history']) for e in entries)
+        trimmed = np.array([e['history'][:min_len] for e in entries])
+        # Use env steps from first run as x-axis
+        x = np.array(entries[0]['steps'][:min_len])
         mean_curve = trimmed.mean(axis=0)
         std_curve = trimmed.std(axis=0)
 
@@ -118,13 +123,14 @@ def _plot_ablation_on_ax(ax, data_path: Path):
             mean_curve = mean_series.rolling(window=SMOOTH_WINDOW, min_periods=1).mean().values
             std_curve = std_series.rolling(window=SMOOTH_WINDOW, min_periods=1).mean().values
 
-        x = np.arange(len(mean_curve))
         ax.plot(x, mean_curve, label=style['label'], color=style['color'], linewidth=1.8)
         ax.fill_between(x, mean_curve - std_curve, mean_curve + std_curve,
                         alpha=0.15, color=style['color'])
 
-    ax.set_xlabel(r'Eval Step')
+    ax.set_xlabel(r'Environment Steps')
     ax.set_ylabel(r'Eval Terminal Reward')
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(
+        lambda v, _: rf'{v/1e6:.1f}M' if v >= 1e6 else rf'{v/1e3:.0f}K'))
     ax.grid(True)
     return True
 
@@ -144,9 +150,9 @@ def plot_ablation(outdir: Path, sweep_0_3: Path = None, sweep_1_0: Path = None):
             break
 
     if handles:
-        fig.legend(handles, labels, loc='lower center', ncol=2,
+        fig.legend(handles, labels, loc='lower center', ncol=4,
                   frameon=True, fancybox=False, edgecolor='#CCCCCC',
-                  bbox_to_anchor=(0.5, -0.06))
+                  bbox_to_anchor=(0.5, -0.02))
 
     fig.subplots_adjust(wspace=0.25, bottom=0.18)
 
