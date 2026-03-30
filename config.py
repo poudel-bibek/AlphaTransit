@@ -44,7 +44,7 @@ BEST_PARAMS = {
             "lr": 1e-4,
             "c_puct": 1.5,
             "n_iter": 100,
-            "num_gat_blocks": 8,
+            "num_gat_blocks": 4,
             "batch_size": 256,
             "buffer_capacity": 50000,
             "activation": "tanh",
