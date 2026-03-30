@@ -42,6 +42,7 @@ def set_global_seeds(seed: int) -> None:
 def create_main_save_dir(config):
     """
     Create main save directory for baseline results.
+    Saves the effective config as JSON for reproducibility.
     """
     now = datetime.now()
     main_save_dir = os.path.join(
@@ -49,6 +50,14 @@ def create_main_save_dir(config):
         f"{config.get('baseline_type')}_{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
     )
     os.makedirs(main_save_dir, exist_ok=True)
+
+    # Save effective config for reproducibility
+    import json
+    config_path = os.path.join(main_save_dir, "run_config.json")
+    serializable = {k: v for k, v in config.items() if isinstance(v, (int, float, str, bool, list, type(None)))}
+    with open(config_path, "w") as f:
+        json.dump(serializable, f, indent=2)
+
     return main_save_dir, main_save_dir
 
 def create_initial_network_plot(env, config, img_dir):
