@@ -1,12 +1,11 @@
 """
 Wall-clock scaling experiment: Pure MCTS vs AlphaTransit.
 
-Controlled single-route CPU benchmark. Measures wall-clock time for designing
-1 transit route using both methods across MCTS n_iter values {100..500} and
-alpha values {0.3, 1.0}. All runs are single-process, threads capped to 1.
+Measures wall-clock time for designing 1 transit route (14 nodes) using both
+methods across MCTS n_iter values {100..500} and alpha values {0.3, 1.0}.
+All runs single-process, threads capped to 1.
 
-Pure MCTS: sequential UXsim rollouts (~8s each per leaf evaluation).
-AlphaTransit: sequential neural network forward passes on CPU (~0.1s each).
+If a run produces a route shorter than 14 nodes, it retries with the next seed.
 
 Output:
     plots/wall_clock_scaling/results.csv
@@ -33,9 +32,7 @@ for _var in [
 import sys
 import csv
 import time
-import random
 import argparse
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -59,27 +56,21 @@ from alpha import get_policy_kwargs_alpha
 # ── Constants ───────────────────────────────────────────────────────────────
 ALPHA_VALUES = [0.3, 1.0]
 N_ITER_VALUES = [100, 200, 300, 400, 500]
-SEED = 42
+TARGET_ROUTE_LENGTH = 14
+MAX_RETRIES = 50
+BASE_SEED = 42
 OUTPUT_DIR = ROOT / "plots" / "wall_clock_scaling"
 RESULTS_CSV = OUTPUT_DIR / "results.csv"
 
-NUM_WARMUP_ROUTES = 5  # Design 5 routes total; only the last is timed.
-BENCHMARK_ROUTE_IDX = NUM_WARMUP_ROUTES - 1  # 0-indexed
-
-CSV_FIELDS = ["method", "alpha", "n_iter", "seed", "total_seconds", "route_length", "num_steps", "benchmark_route_idx"]
+CSV_FIELDS = ["method", "alpha", "n_iter", "seed", "total_seconds", "route_length", "num_steps"]
 
 
 # ── Config builder ──────────────────────────────────────────────────────────
 
-def build_config(alpha: float, n_iter: int, workers: int = 8) -> dict:
-    """Build a config dict programmatically (no argparse dependency).
-
-    Designs NUM_WARMUP_ROUTES routes so the MCTS tree is deep enough to avoid
-    dead ends; only the last route is timed for the benchmark.
-    """
+def build_config(alpha: float, n_iter: int, seed: int, workers: int = 8) -> dict:
+    """Build a config dict. Always designs 1 route."""
     at_params = BEST_PARAMS.get("alphatransit", {}).get(alpha, {})
     return {
-        # Network & simulation
         "network": "bloomington",
         "alpha": alpha,
         "horizon": 10000,
@@ -92,28 +83,21 @@ def build_config(alpha: float, n_iter: int, workers: int = 8) -> dict:
         "comfort_threshold": 1.0,
         "radius": 0.5,
         "demand_warmup": 0.15,
-        # Route constraints
-        "num_routes": NUM_WARMUP_ROUTES,
-        "max_route_length": 14,
+        "num_routes": 1,
+        "max_route_length": TARGET_ROUTE_LENGTH,
         "min_route_length": 2,
-        "route_init": "transit_center",
-        "transit_center_node": "96",
-        # MCTS — keep mcts_batch_size at algorithm default (8) for fair timing
+        "route_init": "random",
         "n_iter": n_iter,
         "c_puct": at_params.get("c_puct", 1.0),
         "mcts_batch_size": 8,
         "dirichlet_alpha": 0.3,
         "dirichlet_eps": 0.25,
-        # Workers
         "num_mcts_rollout_workers": workers,
-        # Seed & logging
-        "seed": SEED,
+        "seed": seed,
         "wandb_off": True,
         "gpu": False,
-        # Paths (PureMCTS needs save_dir and baseline_type)
         "save_dir": str(OUTPUT_DIR / "tmp_runs"),
         "baseline_type": "mcts",
-        # Model
         "num_gat_blocks": at_params.get("num_gat_blocks", 4),
         "activation": at_params.get("activation", "tanh"),
         "concat_heads": False,
@@ -126,14 +110,10 @@ def build_config(alpha: float, n_iter: int, workers: int = 8) -> dict:
     }
 
 
-# ── Local inference client (CPU-only, replaces GPU server) ──────────────────
+# ── Local inference client (CPU-only) ─────────────────────────────────────
 
 class LocalInferenceClient:
-    """CPU-only neural network inference for MCTS leaf evaluation.
-
-    Drop-in replacement for RemoteInferenceClient that runs the GATv2
-    forward pass locally on CPU instead of delegating to a GPU server.
-    """
+    """CPU-only neural network inference for MCTS leaf evaluation."""
 
     def __init__(self, model: GATV2ActorCritic, device: str = "cpu"):
         self.model = model
@@ -141,7 +121,6 @@ class LocalInferenceClient:
         self.policy_version = 0
 
     def infer_batch(self, payloads: list) -> list:
-        """Evaluate a batch of MCTS leaf states through the neural network."""
         state_dicts = [p["state_dict"] for p in payloads]
         valid_actions_list = [p["valid_actions"] for p in payloads]
         return batch_network_forward(
@@ -149,7 +128,6 @@ class LocalInferenceClient:
         )
 
     def infer_single(self, state_key, state_dict, valid_actions):
-        """Evaluate a single MCTS leaf state."""
         return self.infer_batch([{
             "state_key": state_key,
             "state_dict": state_dict,
@@ -160,37 +138,31 @@ class LocalInferenceClient:
 # ── Model loading ───────────────────────────────────────────────────────────
 
 def create_alphatransit_model(config: dict, env: TransitEnv):
-    """Create a randomly initialized AlphaTransit policy-value network on CPU.
+    """Create a randomly initialized AlphaTransit model on CPU.
 
-    Trained weights are not needed for wall-clock benchmarking — the forward
-    pass cost through GATv2 is identical regardless of weight values.
+    Trained weights not needed — forward pass cost is identical regardless.
     """
     policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
     model = GATV2ActorCritic(**policy_kwargs)
     model.eval()
-    print(f"  Created AlphaTransit model (random init, {sum(p.numel() for p in model.parameters()):,} params)")
+    print(f"  Created AlphaTransit model ({sum(p.numel() for p in model.parameters()):,} params)")
     return model
 
 
-# ── AlphaTransit timed evaluation ──────────────────────────────────────────
+# ── AlphaTransit timed run ────────────────────────────────────────────────
 
 def run_alphatransit_timed(config: dict, env: TransitEnv, model: GATV2ActorCritic) -> dict:
-    """Design NUM_WARMUP_ROUTES routes using AlphaTransit on CPU, time only the last.
-
-    Routes 0..N-2 warm up the MCTS tree so the last route avoids dead ends.
-    Only the wall-clock time of route N-1 is recorded.
-
-    Returns dict with total_seconds, route_length, num_steps.
-    """
-    set_global_seeds(SEED)
-    env.reset(seed=SEED)
+    """Design 1 route using AlphaTransit on CPU, return timing."""
+    seed = config["seed"]
+    set_global_seeds(seed)
+    env.reset(seed=seed)
     client = LocalInferenceClient(model, device="cpu")
 
     mcts_state = _create_mcts_state(env)
     tree = MCTSTree(mcts_state)
-    last_route_steps = 0
-    last_route_start = None
+    num_steps = 0
 
+    t0 = time.perf_counter()
     while not mcts_state.is_terminal():
         valid_actions = mcts_state.get_valid_actions()
         if not valid_actions:
@@ -198,58 +170,35 @@ def run_alphatransit_timed(config: dict, env: TransitEnv, model: GATV2ActorCriti
             tree = MCTSTree(mcts_state)
             continue
 
-        # Start timing when we enter the last route
-        if mcts_state.current_route_index == BENCHMARK_ROUTE_IDX and last_route_start is None:
-            last_route_start = time.perf_counter()
-
         policy = run_mcts_simulations(
-            env=env,
-            tree=tree,
-            tau=0.1,
-            config=config,
-            inference_client=client,
-            add_noise=False,
+            env=env, tree=tree, tau=0.1, config=config,
+            inference_client=client, add_noise=False,
         )
 
         valid_policy = policy[valid_actions]
-        if valid_policy.sum() > 0:
-            action = valid_actions[np.argmax(valid_policy)]
-        else:
-            action = valid_actions[0]
-
+        action = valid_actions[np.argmax(valid_policy)] if valid_policy.sum() > 0 else valid_actions[0]
         mcts_state = mcts_state.apply_action(action)
         tree.advance(action)
+        num_steps += 1
 
-        if mcts_state.current_route_index >= BENCHMARK_ROUTE_IDX:
-            last_route_steps += 1
-
-    elapsed = time.perf_counter() - last_route_start if last_route_start else 0.0
-    route_length = len(mcts_state.all_routes[BENCHMARK_ROUTE_IDX]) if len(mcts_state.all_routes) > BENCHMARK_ROUTE_IDX else 0
-    print(f"    AlphaTransit: {elapsed:.1f}s ({elapsed/60:.1f} min), "
-          f"route_len={route_length}, steps={last_route_steps} (route {BENCHMARK_ROUTE_IDX})")
-    return {"total_seconds": elapsed, "route_length": route_length, "num_steps": last_route_steps}
+    elapsed = time.perf_counter() - t0
+    route_length = len(mcts_state.all_routes[0]) if mcts_state.all_routes else 0
+    return {"total_seconds": elapsed, "route_length": route_length, "num_steps": num_steps}
 
 
-# ── Pure MCTS timed evaluation ──────────────────────────────────────────────
+# ── Pure MCTS timed run ──────────────────────────────────────────────────
 
 def run_pure_mcts_timed(config: dict, env: TransitEnv) -> dict:
-    """Design NUM_WARMUP_ROUTES routes using Pure MCTS on CPU, time only the last.
-
-    Uses MCTS_LOG_CSV env var to capture per-step timing from construct_path(),
-    then extracts step_time_s for route_idx == BENCHMARK_ROUTE_IDX.
-    No modifications to baselines/mcts.py needed.
-
-    Returns dict with total_seconds, route_length, num_steps.
-    """
+    """Design 1 route using Pure MCTS on CPU, return timing."""
     import tempfile
     from baselines.mcts import PureMCTS
 
-    set_global_seeds(SEED)
-    env.reset(seed=SEED)
-    baseline = PureMCTS(env, config, num_runs=1, base_seed=SEED)
+    seed = config["seed"]
+    set_global_seeds(seed)
+    env.reset(seed=seed)
+    baseline = PureMCTS(env, config, num_runs=1, base_seed=seed)
     baseline._resolve_search_params = lambda: (config["n_iter"], config["c_puct"])
 
-    # Enable per-step CSV logging to extract last-route timing
     log_file = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, dir=str(OUTPUT_DIR))
     log_path = log_file.name
     log_file.close()
@@ -258,19 +207,16 @@ def run_pure_mcts_timed(config: dict, env: TransitEnv) -> dict:
     try:
         baseline.construct_path(None)
 
-        # Parse the CSV: sum step_time_s for the benchmark route
         import pandas as pd
         df = pd.read_csv(log_path)
-        last_route = df[df["route_idx"] == BENCHMARK_ROUTE_IDX]
-        elapsed = last_route["step_time_s"].astype(float).sum()
-        num_steps = len(last_route)
+        route = df[df["route_idx"] == 0]
+        elapsed = route["step_time_s"].astype(float).sum()
+        num_steps = len(route)
         route_length = num_steps + 1  # steps + initial node
     finally:
         os.environ.pop("MCTS_LOG_CSV", None)
         os.unlink(log_path)
 
-    print(f"    Pure MCTS:    {elapsed:.1f}s ({elapsed/60:.1f} min), "
-          f"route_len={route_length}, steps={num_steps} (route {BENCHMARK_ROUTE_IDX})")
     return {"total_seconds": elapsed, "route_length": route_length, "num_steps": num_steps}
 
 
@@ -281,14 +227,13 @@ def load_completed() -> set:
     completed = set()
     if RESULTS_CSV.exists():
         with open(RESULTS_CSV, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+            for row in csv.DictReader(f):
                 completed.add((row["method"], float(row["alpha"]), int(row["n_iter"])))
     return completed
 
 
-def append_result(method: str, alpha: float, n_iter: int, result: dict) -> None:
-    """Append one result row to the CSV (creates file + header if needed)."""
+def append_result(method: str, alpha: float, n_iter: int, seed: int, result: dict) -> None:
+    """Append one result row to the CSV."""
     write_header = not RESULTS_CSV.exists() or RESULTS_CSV.stat().st_size == 0
     with open(RESULTS_CSV, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -298,60 +243,38 @@ def append_result(method: str, alpha: float, n_iter: int, result: dict) -> None:
             "method": method,
             "alpha": alpha,
             "n_iter": n_iter,
-            "seed": SEED,
+            "seed": seed,
             "total_seconds": f"{result['total_seconds']:.2f}",
             "route_length": result["route_length"],
             "num_steps": result["num_steps"],
-            "benchmark_route_idx": BENCHMARK_ROUTE_IDX,
         })
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    """Run the wall-clock scaling experiment."""
     parser = argparse.ArgumentParser(description="Wall-clock scaling experiment")
-    parser.add_argument("--alpha", type=float, choices=[0.3, 1.0], default=None,
-                        help="Run only this alpha value")
-    parser.add_argument("--n-iter", type=int, choices=N_ITER_VALUES, default=None,
-                        help="Run only this n_iter value")
-    parser.add_argument("--method", choices=["pure_mcts", "alphatransit"], default=None,
-                        help="Run only this method")
-    parser.add_argument("--workers", type=int, default=8,
-                        help="Rollout workers for Pure MCTS (default 8)")
-    parser.add_argument("--parallel", action="store_true",
-                        help="Run all grid cells as parallel subprocesses")
-    parser.add_argument("--resume", action="store_true",
-                        help="Skip (method, alpha, n_iter) combos already in results.csv")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print experiment grid without running")
+    parser.add_argument("--alpha", type=float, choices=[0.3, 1.0])
+    parser.add_argument("--n-iter", type=int, choices=N_ITER_VALUES)
+    parser.add_argument("--method", choices=["pure_mcts", "alphatransit"])
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     alphas = [args.alpha] if args.alpha else ALPHA_VALUES
     n_iters = [args.n_iter] if args.n_iter else N_ITER_VALUES
     methods = [args.method] if args.method else ["pure_mcts", "alphatransit"]
 
-    # Build experiment grid
-    grid = []
-    for alpha in alphas:
-        for n_iter in n_iters:
-            for method in methods:
-                grid.append((method, alpha, n_iter))
-
+    grid = [(m, a, n) for a in alphas for n in n_iters for m in methods]
     completed = load_completed() if args.resume else set()
 
     print(f"Wall-clock scaling experiment")
-    print(f"  Methods:  {methods}")
-    print(f"  Alphas:   {alphas}")
-    print(f"  N_iters:  {n_iters}")
-    print(f"  Seed:     {SEED}")
-    print(f"  Routes:   {NUM_WARMUP_ROUTES} total, timing route {BENCHMARK_ROUTE_IDX} only")
-    print(f"  Rollout workers: {args.workers} (Pure MCTS only)")
-    print(f"  Parallel: {args.parallel}")
-    print(f"  Grid:     {len(grid)} runs")
+    print(f"  Grid: {len(grid)} runs ({methods} × alpha={alphas} × n_iter={n_iters})")
+    print(f"  Target route length: {TARGET_ROUTE_LENGTH} (retry up to {MAX_RETRIES}x)")
+    print(f"  Workers: {args.workers}")
     if args.resume:
-        skip = sum(1 for m, a, n in grid if (m, a, n) in completed)
-        print(f"  Skipping: {skip} already completed")
+        print(f"  Skipping: {sum(1 for g in grid if g in completed)} completed")
     print()
 
     if args.dry_run:
@@ -362,34 +285,6 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Parallel mode: launch each grid cell as a separate subprocess
-    if args.parallel:
-        todo = [(m, a, n) for m, a, n in grid if (m, a, n) not in completed]
-        if not todo:
-            print("All runs already completed.")
-            return
-        print(f"Launching {len(todo)} parallel subprocesses...")
-        procs = []
-        for method, alpha, n_iter in todo:
-            cmd = [
-                sys.executable, str(Path(__file__).resolve()),
-                "--method", method,
-                "--alpha", str(alpha),
-                "--n-iter", str(n_iter),
-                "--workers", str(args.workers),
-                "--resume",
-            ]
-            print(f"  {method} alpha={alpha} n_iter={n_iter} (pid launching...)")
-            procs.append((method, alpha, n_iter, subprocess.Popen(cmd)))
-        print()
-        for method, alpha, n_iter, p in procs:
-            p.wait()
-            status = "OK" if p.returncode == 0 else f"FAIL (rc={p.returncode})"
-            print(f"  [{status}] {method} alpha={alpha} n_iter={n_iter}")
-        print(f"\nAll done. Results in {RESULTS_CSV}")
-        return
-
-    # Sequential mode
     envs = {}
     models = {}
 
@@ -399,24 +294,36 @@ def main():
             continue
 
         print(f"[{i+1}/{len(grid)}] {method} alpha={alpha} n_iter={n_iter}")
-        config = build_config(alpha, n_iter, workers=args.workers)
 
-        # Reuse env for same alpha
         if alpha not in envs:
             print(f"  Creating TransitEnv for alpha={alpha}...")
-            envs[alpha] = TransitEnv(config)
+            envs[alpha] = TransitEnv(build_config(alpha, n_iter, BASE_SEED, args.workers))
 
         env = envs[alpha]
-        env.config.update({"n_iter": n_iter, "c_puct": config["c_puct"]})
 
-        if method == "alphatransit":
-            if alpha not in models:
-                models[alpha] = create_alphatransit_model(config, env)
-            result = run_alphatransit_timed(config, env, models[alpha])
+        # Retry with different seeds until route has TARGET_ROUTE_LENGTH nodes
+        for attempt in range(MAX_RETRIES):
+            seed = BASE_SEED + attempt
+            config = build_config(alpha, n_iter, seed, args.workers)
+            env.config.update({"n_iter": n_iter, "c_puct": config["c_puct"], "seed": seed})
+
+            if method == "alphatransit":
+                if alpha not in models:
+                    models[alpha] = create_alphatransit_model(config, env)
+                result = run_alphatransit_timed(config, env, models[alpha])
+            else:
+                result = run_pure_mcts_timed(config, env)
+
+            rl = result["route_length"]
+            if rl == TARGET_ROUTE_LENGTH:
+                print(f"    {method}: {result['total_seconds']:.1f}s, "
+                      f"route_len={rl}, steps={result['num_steps']}, seed={seed}")
+                append_result(method, alpha, n_iter, seed, result)
+                break
+            else:
+                print(f"    attempt {attempt+1}: route_len={rl} != {TARGET_ROUTE_LENGTH}, retrying seed={seed+1}...")
         else:
-            result = run_pure_mcts_timed(config, env)
-
-        append_result(method, alpha, n_iter, result)
+            print(f"    WARNING: no {TARGET_ROUTE_LENGTH}-node route after {MAX_RETRIES} attempts")
         print()
 
     print(f"Done. Results saved to {RESULTS_CSV}")
