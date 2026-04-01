@@ -28,7 +28,7 @@ from matplotlib.gridspec import GridSpec
 # ---------------------------------------------------------------------------
 # Style
 # ---------------------------------------------------------------------------
-FS = 18
+FS = 20
 plt.rcParams.update({
     'text.usetex': True,
     'font.family': 'serif',
@@ -248,10 +248,16 @@ def draw_transit_center(ax: plt.Axes,
     pin_path = Path(__file__).resolve().parent / 'pin_red.png'
     if not pin_path.exists():
         return
-    pin_img = plt.imread(pin_path)
+    pin_img = plt.imread(pin_path).copy()
+    if pin_img.shape[2] == 4:
+        pin_img[:, :, 3] = pin_img[:, :, 3] * 0.9
+    else:
+        import numpy as np
+        alpha_ch = np.ones((*pin_img.shape[:2], 1), dtype=pin_img.dtype) * 0.9
+        pin_img = np.concatenate([pin_img, alpha_ch], axis=2)
     pt = coords[TRANSIT_CENTER_NODE]
     ab = AnnotationBbox(
-        OffsetImage(pin_img, zoom=0.12, resample=True),
+        OffsetImage(pin_img, zoom=0.162, resample=True),
         (pt["x"], pt["y"]), frameon=False,
         box_alignment=(0.5, 0.0), pad=0, zorder=10)
     ax.add_artist(ab)
