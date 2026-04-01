@@ -21,7 +21,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Style (from plots.md, with white background per user feedback)
 # ---------------------------------------------------------------------------
-FS = 18  # Base font size — adjust this single value to scale all text
+FS = 20  # Base font size — adjust this single value to scale all text
 plt.rcParams.update({
     'text.usetex': True,
     'font.family': 'serif',
@@ -381,42 +381,67 @@ def _plot_mcts_scaling_panel(ax, alpha_dir, title):
     ax.set_xlim(-20_000, 1_020_000)
 
 
-def _plot_wall_clock_panel(ax):
-    """Bar chart: Pure MCTS vs AlphaTransit wall-clock time at both alphas."""
-    mcts_03 = _get_per_route_times(str(WALL_CLOCK_DIR / 'pure_mcts_alpha0.3_log.csv'))
-    mcts_10 = _get_per_route_times(str(WALL_CLOCK_DIR / 'pure_mcts_alpha1.0_log.csv'))
+WALL_CLOCK_SCALING_CSV = OUTDIR / 'wall_clock_scaling' / 'results.csv'
 
-    at_03_min = 15.4 * 60 / (308 * 16)
-    at_10_min = 9.5 * 60 / (308 * 16)
 
-    x = np.array([0.35, 0.85])
-    width = 0.18
+def _load_wall_clock_scaling():
+    """Load wall-clock scaling data from experiment CSV.
 
-    mcts_means = [mcts_03.mean(), mcts_10.mean()]
-    mcts_stds = [mcts_03.std(), mcts_10.std()]
-    bars1 = ax.bar(x - width / 2, mcts_means, width, yerr=mcts_stds,
-                   color=COLOR_MCTS, alpha=0.85, label='Pure MCTS',
-                   capsize=5, error_kw={'linewidth': 1.5}, zorder=3)
+    Returns a pandas DataFrame with columns:
+    method, alpha, n_iter, seed, total_seconds, route_length, num_steps.
+    Raises FileNotFoundError if results.csv is missing.
+    """
+    if not WALL_CLOCK_SCALING_CSV.exists():
+        raise FileNotFoundError(
+            f"Wall-clock scaling data not found: {WALL_CLOCK_SCALING_CSV}\n"
+            f"Run: python plots/experiment_wall_clock.py"
+        )
+    return pd.read_csv(WALL_CLOCK_SCALING_CSV)
 
-    at_means = [at_03_min, at_10_min]
-    bars2 = ax.bar(x + width / 2, at_means, width,
+
+def _plot_wall_clock_scaling_panel(ax, alpha):
+    """Grouped bar chart: Pure MCTS vs AlphaTransit wall-clock time across n_iter values.
+
+    Reads from plots/wall_clock_scaling/results.csv. Plots 5 groups
+    (n_iter=100..500) with 2 bars each (Pure MCTS, AlphaTransit).
+    """
+    df = _load_wall_clock_scaling()
+    df = df[df['alpha'] == alpha]
+
+    n_iters = sorted(df['n_iter'].unique())
+    x = np.arange(len(n_iters))
+    width = 0.32
+
+    mcts_times = []
+    at_times = []
+    for n in n_iters:
+        mcts_row = df[(df['method'] == 'pure_mcts') & (df['n_iter'] == n)]
+        at_row = df[(df['method'] == 'alphatransit') & (df['n_iter'] == n)]
+        mcts_times.append(mcts_row['total_seconds'].values[0] / 60 if len(mcts_row) else 0)
+        at_times.append(at_row['total_seconds'].values[0] / 60 if len(at_row) else 0)
+
+    bars1 = ax.bar(x - width / 2, mcts_times, width,
+                   color=COLOR_MCTS, alpha=0.85, label='Pure MCTS', zorder=3)
+    bars2 = ax.bar(x + width / 2, at_times, width,
                    color=COLOR_ALPHA, alpha=0.85, label='AlphaTransit', zorder=3)
 
-    for bar, val, std in zip(bars1, mcts_means, mcts_stds):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + std + 0.5,
-                f'{val:.1f}', ha='center', va='bottom', fontsize=FS - 2, color='#333333')
+    for bar, val in zip(bars1, mcts_times):
+        if val > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                    f'{val:.1f}', ha='center', va='bottom', fontsize=FS - 3, color='#333333')
 
-    for bar, val in zip(bars2, at_means):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
-                f'{val:.2f}', ha='center', va='bottom', fontsize=FS - 2, color='#333333')
+    for bar, val in zip(bars2, at_times):
+        if val > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                    f'{val:.1f}', ha='center', va='bottom', fontsize=FS - 3, color='#333333')
 
-    ax.set_xlim(0, 1.2)
     ax.set_xticks(x)
-    ax.set_xticklabels([r'$\alpha=0.3$', r'$\alpha=1.0$'], fontsize=FS)
-    ax.tick_params(axis='x', direction='out', bottom=True, top=False)
+    ax.set_xticklabels([str(n) for n in n_iters], fontsize=FS - 1)
+    ax.set_xlabel(r'$n_{\mathrm{iter}}$')
     ax.set_ylabel(r'Time per Route (minutes)')
     ax.grid(True, axis='y', zorder=0)
-    ax.set_ylim(0, max(mcts_means) * 1.4)
+    if mcts_times:
+        ax.set_ylim(0, max(mcts_times) * 1.25)
 
 
 def plot_mcts_scaling_and_wallclock():
@@ -429,8 +454,8 @@ def plot_mcts_scaling_and_wallclock():
     # MIDDLE: MCTS scaling alpha=1.0
     _plot_mcts_scaling_panel(axes[1], str(MCTS_DATA / '1_0'), r'$\alpha=1.0$')
 
-    # RIGHT: Wall clock bar chart
-    _plot_wall_clock_panel(axes[2])
+    # RIGHT: Wall clock scaling (alpha=0.3 only)
+    _plot_wall_clock_scaling_panel(axes[2], alpha=0.3)
 
     # Shared legend for n_iter at bottom, spanning LEFT+MIDDLE panels
     seen = {}
@@ -458,6 +483,25 @@ def plot_mcts_scaling_and_wallclock():
     fig.subplots_adjust(wspace=0.28, bottom=0.20)
 
     outpath = OUTDIR / 'mcts_scaling_and_wallclock'
+    fig.savefig(str(outpath) + '.pdf')
+    print(f'Saved {outpath}.pdf')
+    plt.close(fig)
+
+
+def plot_wall_clock_alpha1_0():
+    """Standalone wall-clock scaling figure for alpha=1.0 (appendix).
+
+    Single-panel grouped bar chart showing Pure MCTS vs AlphaTransit
+    wall-clock time across n_iter values at alpha=1.0.
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    _plot_wall_clock_scaling_panel(ax, alpha=1.0)
+
+    ax.legend(loc='upper left', frameon=True, fancybox=False,
+              edgecolor='#CCCCCC', fontsize=FS - 2)
+
+    fig.tight_layout()
+    outpath = OUTDIR / 'wall_clock_alpha1_0'
     fig.savefig(str(outpath) + '.pdf')
     print(f'Saved {outpath}.pdf')
     plt.close(fig)
@@ -609,14 +653,25 @@ def main():
                    frameon=True, fancybox=False, edgecolor='#CCCCCC',
                    bbox_to_anchor=(0.35, 0.08), fontsize=FS - 1)
 
-    # RIGHT legend centered under third panel
-    # Third panel center = (2*wspace_adjusted + 2 panel widths + 0.5 panel width) / total
+    # RIGHT legend: grouped by alpha headers, centered under third panel
     right_center = (axes[2].get_position().x0 + axes[2].get_position().x1) / 2
-    handles_right, labels_right = axes[2].get_legend_handles_labels()
-    if handles_right:
-        fig.legend(handles_right, labels_right, loc='upper center', ncol=2,
-                   frameon=True, fancybox=False, edgecolor='#CCCCCC',
-                   bbox_to_anchor=(right_center, 0.08), fontsize=FS - 1)
+    import matplotlib.lines as mlines
+    # Row 1: alpha headers (invisible handles)
+    hdr_03 = mlines.Line2D([], [], color='none', label=r'\textbf{$\alpha{=}0.3$}')
+    hdr_10 = mlines.Line2D([], [], color='none', label=r'\textbf{$\alpha{=}1.0$}')
+    # Row 2: AlphaTransit (solid lines, matching colors)
+    at_03 = mlines.Line2D([], [], color='#4A90D9', ls='-', lw=2.0, label='AlphaTransit')
+    at_10 = mlines.Line2D([], [], color='#2ECC71', ls='-', lw=2.0, label='AlphaTransit')
+    # Row 3: End-to-End RL (dashed lines, matching colors)
+    e2e_03 = mlines.Line2D([], [], color='#E84393', ls='--', lw=2.0, label='End-to-End RL')
+    e2e_10 = mlines.Line2D([], [], color='#9B59B6', ls='--', lw=2.0, label='End-to-End RL')
+    # ncol=2 fills row-first: [hdr_03, hdr_10], [at_03, at_10], [e2e_03, e2e_10]
+    leg_handles = [hdr_03, hdr_10, at_03, at_10, e2e_03, e2e_10]
+    leg_labels = [h.get_label() for h in leg_handles]
+    fig.legend(leg_handles, leg_labels, loc='upper center', ncol=2,
+               frameon=True, fancybox=False, edgecolor='#CCCCCC',
+               bbox_to_anchor=(right_center, 0.08), fontsize=FS - 1,
+               handlelength=1.5, columnspacing=1.2, handletextpad=0.5)
 
     fig.subplots_adjust(wspace=0.28, bottom=0.20)
 
@@ -626,10 +681,13 @@ def main():
     print(f'Saved {outpath}.pdf')
     plt.close(fig)
 
-    # Figure 2: MCTS scaling + wall clock
+    # Figure 2: MCTS scaling + wall clock (alpha=0.3 in RIGHT panel)
     plot_mcts_scaling_and_wallclock()
 
-    # Figure 3: Pareto analysis
+    # Figure 3: Wall clock alpha=1.0 (appendix)
+    plot_wall_clock_alpha1_0()
+
+    # Figure 4: Pareto analysis
     plot_pareto()
 
 
