@@ -59,6 +59,7 @@ N_ITER_VALUES = [100, 200, 300, 400, 500]
 TARGET_ROUTE_LENGTH = 14
 MAX_RETRIES = 50
 BASE_SEED = 42
+ROUTES_BY_ALPHA = {0.3: 1, 1.0: 3}
 OUTPUT_DIR = ROOT / "plots" / "wall_clock_scaling"
 RESULTS_CSV = OUTPUT_DIR / "results.csv"
 
@@ -83,7 +84,7 @@ def build_config(alpha: float, n_iter: int, seed: int, workers: int = 8) -> dict
         "comfort_threshold": 1.0,
         "radius": 0.5,
         "demand_warmup": 0.15,
-        "num_routes": 1,
+        "num_routes": ROUTES_BY_ALPHA[alpha],
         "max_route_length": TARGET_ROUTE_LENGTH,
         "min_route_length": 2,
         "route_init": "transit_center",
@@ -153,7 +154,8 @@ def create_alphatransit_model(config: dict, env: TransitEnv):
 # ── AlphaTransit timed run ────────────────────────────────────────────────
 
 def run_alphatransit_timed(config: dict, env: TransitEnv, model: GATV2ActorCritic) -> dict:
-    """Design 1 route using AlphaTransit on CPU, return timing."""
+    """Design route(s) using AlphaTransit on CPU, time only the last route."""
+    benchmark_idx = config["num_routes"] - 1
     seed = config["seed"]
     set_global_seeds(seed)
     env.reset(seed=seed)
@@ -162,14 +164,17 @@ def run_alphatransit_timed(config: dict, env: TransitEnv, model: GATV2ActorCriti
     mcts_state = _create_mcts_state(env)
     tree = MCTSTree(mcts_state)
     num_steps = 0
+    t0 = None
 
-    t0 = time.perf_counter()
     while not mcts_state.is_terminal():
         valid_actions = mcts_state.get_valid_actions()
         if not valid_actions:
             mcts_state = mcts_state.force_route_end()
             tree = MCTSTree(mcts_state)
             continue
+
+        if mcts_state.current_route_index == benchmark_idx and t0 is None:
+            t0 = time.perf_counter()
 
         policy = run_mcts_simulations(
             env=env, tree=tree, tau=0.1, config=config,
@@ -180,17 +185,19 @@ def run_alphatransit_timed(config: dict, env: TransitEnv, model: GATV2ActorCriti
         action = valid_actions[np.argmax(valid_policy)] if valid_policy.sum() > 0 else valid_actions[0]
         mcts_state = mcts_state.apply_action(action)
         tree.advance(action)
-        num_steps += 1
+        if mcts_state.current_route_index >= benchmark_idx:
+            num_steps += 1
 
-    elapsed = time.perf_counter() - t0
-    route_length = len(mcts_state.all_routes[0]) if mcts_state.all_routes else 0
+    elapsed = time.perf_counter() - t0 if t0 else 0.0
+    route_length = len(mcts_state.all_routes[benchmark_idx]) if len(mcts_state.all_routes) > benchmark_idx else 0
     return {"total_seconds": elapsed, "route_length": route_length, "num_steps": num_steps}
 
 
 # ── Pure MCTS timed run ──────────────────────────────────────────────────
 
 def run_pure_mcts_timed(config: dict, env: TransitEnv) -> dict:
-    """Design 1 route using Pure MCTS on CPU, return timing."""
+    """Design route(s) using Pure MCTS on CPU, time only the last route."""
+    benchmark_idx = config["num_routes"] - 1
     import tempfile
     from baselines.mcts import PureMCTS
 
@@ -210,7 +217,7 @@ def run_pure_mcts_timed(config: dict, env: TransitEnv) -> dict:
 
         import pandas as pd
         df = pd.read_csv(log_path)
-        route = df[df["route_idx"] == 0]
+        route = df[df["route_idx"] == benchmark_idx]
         elapsed = route["step_time_s"].astype(float).sum()
         num_steps = len(route)
         route_length = num_steps + 1  # steps + initial node
