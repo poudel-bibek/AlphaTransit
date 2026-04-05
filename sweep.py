@@ -262,8 +262,9 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
 
     # =====================================================================
     # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
-    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
-    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
+    # n_iter=200, fixed 616 iterations (= eps=8 baseline) so all configs
+    # get the same number of gradient updates. Total env steps scale with eps.
+    # eps=8: ~1M steps, eps=16: ~2M, eps=24: ~3M, eps=32: ~4M
     # =====================================================================
     return {
         "method": "grid",
@@ -272,7 +273,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "episodes_per_iter": {"values": [8, 16, 24]},
+            "episodes_per_iter": {"values": [8, 16, 24, 32]},
             "n_iter": {"value": 200},
             "alpha": {"value": 0.3},
             "algorithm": {"value": "alphatransit"},
@@ -385,8 +386,9 @@ def build_sweep_config_alpha_1_0() -> Dict[str, Any]:
 
     # =====================================================================
     # 10. episodes_per_iter Scaling Sweep for MCTS Alpha 1.0
-    # n_iter=200, ~1M env steps. max_iterations auto-computed in create_agent_train.
-    # eps=8: 616 iters, eps=16: 308 iters, eps=24: 206 iters
+    # n_iter=200, fixed 616 iterations (= eps=8 baseline) so all configs
+    # get the same number of gradient updates. Total env steps scale with eps.
+    # eps=8: ~1M steps, eps=16: ~2M, eps=24: ~3M, eps=32: ~4M
     # =====================================================================
     return {
         "method": "grid",
@@ -395,7 +397,7 @@ def build_sweep_config_alpha_1_0() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "episodes_per_iter": {"values": [8, 16, 24]},
+            "episodes_per_iter": {"values": [8, 16, 24, 32]},
             "n_iter": {"value": 200},
             "alpha": {"value": 1.0},
             "algorithm": {"value": "alphatransit"},
@@ -488,10 +490,11 @@ def create_agent_train(algorithm: str):
             if sampled_params.get("apply_best_params"):
                 config = apply_best_params(config, explicitly_set=set(sampled_params.keys()))
 
-            # Auto-compute max_iterations for episodes_per_iter scaling sweeps (~1M env steps)
+            # Auto-compute max_iterations for episodes_per_iter scaling sweeps
+            # Fixed at 616 iterations (eps=8 baseline) so all configs get
+            # the same number of gradient updates. Env steps scale with eps.
             if 'episodes_per_iter' in sampled_params:
-                eps = config['episodes_per_iter']
-                config['max_iterations'] = -(-1_000_000 // (eps * 203))  # ceil division
+                config['max_iterations'] = 616
 
             # Set seeds and device
             set_global_seeds(config["seed"])
