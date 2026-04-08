@@ -286,7 +286,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
     # =====================================================================
     # 11. Model Size Sweep for MCTS Alpha 0.3
     # n_iter=200, eps=16 (308 iters, ~1M env steps)
-    # Vary num_gat_blocks: 2, 4, 8
+    # Vary num_gat_blocks: 2, 4, 8, 16
     # =====================================================================
     # return {
     #     "method": "grid",
@@ -295,7 +295,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
     #         "goal": "maximize"
     #     },
     #     "parameters": {
-    #         "num_gat_blocks": {"values": [8, 4, 2]},
+    #         "num_gat_blocks": {"values": [16, 8, 4, 2]},
     #         "n_iter": {"value": 200},
     #         "episodes_per_iter": {"value": 16},
     #         "alpha": {"value": 0.3},
@@ -410,7 +410,7 @@ def build_sweep_config_alpha_1_0() -> Dict[str, Any]:
     # =====================================================================
     # 12. Model Size Sweep for MCTS Alpha 1.0
     # n_iter=200, eps=16 (308 iters, ~1M env steps)
-    # Vary num_gat_blocks: 2, 4, 8
+    # Vary num_gat_blocks: 2, 4, 8, 16
     # =====================================================================
     # return {
     #     "method": "grid",
@@ -419,7 +419,7 @@ def build_sweep_config_alpha_1_0() -> Dict[str, Any]:
     #         "goal": "maximize"
     #     },
     #     "parameters": {
-    #         "num_gat_blocks": {"values": [8, 4, 2]},
+    #         "num_gat_blocks": {"values": [16, 8, 4, 2]},
     #         "n_iter": {"value": 200},
     #         "episodes_per_iter": {"value": 16},
     #         "alpha": {"value": 1.0},
