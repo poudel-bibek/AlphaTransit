@@ -58,7 +58,7 @@ ABLATION_0_3 = NEURIPS_DATA / 'nips_5_ppo_rew_abl_alpha_0_3' / 'wandb_data' / 'a
 ABLATION_1_0 = NEURIPS_DATA / 'nips_6_ppo_rew_abl_alpha_1_0' / 'wandb_data' / 'all_runs.json'
 
 # MCTS training data (from rebuttal work — wandb JSON files)
-MCTS_DATA = ROOT.parent / 'Reviewer 4' / 'MCTS scaling'
+MCTS_DATA = ROOT.parent / 'ICML' / 'Reviewer 4' / 'MCTS scaling'
 
 OUTDIR = ROOT / 'plots'
 
