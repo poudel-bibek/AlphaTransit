@@ -585,8 +585,8 @@ def plot_pareto():
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
     for col, (alpha, alpha_label) in enumerate([
-        ('0.3', r'$\alpha=0.3$'),
-        ('1.0', r'$\alpha=1.0$'),
+        ('0.3', r'Low Demand'),
+        ('1.0', r'High Demand'),
     ]):
         ax = axes[col]
         ax.set_title(alpha_label, fontsize=FS + 1)

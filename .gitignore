@@ -137,6 +137,10 @@ plots/routes_*.pdf
 plots/routes_*.png
 ./plots/routes_*.pdf
 ./plots/routes_*.png
+
+# Local-only dummy plot scripts/data
+plots/dummy_plot/
+./plots/dummy_plot/
 # Keep plots/plots.md (style guide) tracked
 
 CLAUDE.md

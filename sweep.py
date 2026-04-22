@@ -520,20 +520,25 @@ def main() -> None:
                         help="Algorithm to sweep (required)")
     parser.add_argument("--alpha", type=float, choices=[0.3, 1.0], required=True,
                         help="Modal split alpha value (required)")
+    parser.add_argument("--resume_sweep_id", type=str, default=None,
+                        help="If set, join existing sweep instead of creating a new one. "
+                             "Pass either bare ID (e.g. 'oq81en7b') or fully-qualified "
+                             "'entity/project/sweep_id'. Useful for multi-PC continuation.")
     args = parser.parse_args()
 
-    # Get configs
-    sweep_config = get_sweep_config(args.algorithm, args.alpha)
     base_config = get_config()
 
-    print(f"Starting {args.algorithm.upper()} alpha={args.alpha} {sweep_config['method']} sweep (Ctrl+C to stop)...")
-
-    # Create and run sweep
-    sweep_id = wandb.sweep(
-        sweep=sweep_config,
-        project=base_config["wandb_project"],
-        entity=base_config["wandb_entity"]
-    )
+    if args.resume_sweep_id:
+        sweep_id = args.resume_sweep_id
+        print(f"Joining existing sweep {sweep_id} as agent for {args.algorithm.upper()} alpha={args.alpha}...")
+    else:
+        sweep_config = get_sweep_config(args.algorithm, args.alpha)
+        print(f"Starting {args.algorithm.upper()} alpha={args.alpha} {sweep_config['method']} sweep (Ctrl+C to stop)...")
+        sweep_id = wandb.sweep(
+            sweep=sweep_config,
+            project=base_config["wandb_project"],
+            entity=base_config["wandb_entity"]
+        )
 
     agent_train_fn = create_agent_train(args.algorithm)
     wandb.agent(sweep_id, function=agent_train_fn)  # No count = runs indefinitely
