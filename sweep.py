@@ -251,7 +251,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "n_iter": {"values": [300, 400]},  # COM2136; use [100, 200] on Hanuman
+            "n_iter": {"values": [100, 200, 300, 400, 500]},
             "alpha": {"value": 0.3},
             "algorithm": {"value": "alphatransit"},
             "gpu": {"value": True},
