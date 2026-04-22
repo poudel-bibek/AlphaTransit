@@ -244,21 +244,21 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
     # All other params come from BEST_PARAMS via apply_best_params
     # Old (8 blocks): lpg2ifh2 (n=100), j5ns6bh8 (n=200,300,400), 466yjq3q (n=500)
     # =====================================================================
-    # return {
-    #     "method": "grid",
-    #     "metric": {
-    #         "name": "eval/episode_terminal_reward",
-    #         "goal": "maximize"
-    #     },
-    #     "parameters": {
-    #         "n_iter": {"values": [100, 200, 300, 400, 500]},
-    #         "alpha": {"value": 0.3},
-    #         "algorithm": {"value": "alphatransit"},
-    #         "gpu": {"value": True},
-    #         "apply_best_params": {"value": True},
-    #         "num_mcts_workers": {"value": 8},
-    #     },
-    # }
+    return {
+        "method": "grid",
+        "metric": {
+            "name": "eval/episode_terminal_reward",
+            "goal": "maximize"
+        },
+        "parameters": {
+            "n_iter": {"values": [300, 400]},  # COM2136; use [100, 200] on Hanuman
+            "alpha": {"value": 0.3},
+            "algorithm": {"value": "alphatransit"},
+            "gpu": {"value": True},
+            "apply_best_params": {"value": True},
+            "num_mcts_workers": {"value": 8},
+        },
+    }
 
     # =====================================================================
     # 9. episodes_per_iter Scaling Sweep for MCTS Alpha 0.3
@@ -288,23 +288,23 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
     # n_iter=200, eps=16 (308 iters, ~1M env steps)
     # Vary num_gat_blocks: 2, 4, 8, 16
     # =====================================================================
-    return {
-        "method": "grid",
-        "metric": {
-            "name": "eval/episode_terminal_reward",
-            "goal": "maximize"
-        },
-        "parameters": {
-            "num_gat_blocks": {"values": [16, 8, 4, 2]},
-            "n_iter": {"value": 200},
-            "episodes_per_iter": {"value": 16},
-            "alpha": {"value": 0.3},
-            "algorithm": {"value": "alphatransit"},
-            "gpu": {"value": True},
-            "apply_best_params": {"value": True},
-            "num_mcts_workers": {"value": 8},
-        },
-    }
+    # return {
+    #     "method": "grid",
+    #     "metric": {
+    #         "name": "eval/episode_terminal_reward",
+    #         "goal": "maximize"
+    #     },
+    #     "parameters": {
+    #         "num_gat_blocks": {"values": [16, 8, 4, 2]},
+    #         "n_iter": {"value": 200},
+    #         "episodes_per_iter": {"value": 16},
+    #         "alpha": {"value": 0.3},
+    #         "algorithm": {"value": "alphatransit"},
+    #         "gpu": {"value": True},
+    #         "apply_best_params": {"value": True},
+    #         "num_mcts_workers": {"value": 8},
+    #     },
+    # }
 
 
 def build_sweep_config_alpha_1_0() -> Dict[str, Any]:
