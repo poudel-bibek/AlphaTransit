@@ -251,7 +251,7 @@ def build_sweep_config_alpha_0_3() -> Dict[str, Any]:
             "goal": "maximize"
         },
         "parameters": {
-            "n_iter": {"values": [100, 200, 300, 400, 500]},
+            "n_iter": {"values": [100, 200, 300, 400]},  # n=500 already done elsewhere
             "alpha": {"value": 0.3},
             "algorithm": {"value": "alphatransit"},
             "gpu": {"value": True},
@@ -524,12 +524,18 @@ def main() -> None:
                         help="If set, join existing sweep instead of creating a new one. "
                              "Pass either bare ID (e.g. 'oq81en7b') or fully-qualified "
                              "'entity/project/sweep_id'. Useful for multi-PC continuation.")
-    args = parser.parse_args()
-
+    args, remaining = parser.parse_known_args()
+    # get_config() uses argparse.parse_args() on sys.argv — strip our flags so it doesn't choke
+    import sys
+    sys.argv = [sys.argv[0]] + remaining
     base_config = get_config()
 
     if args.resume_sweep_id:
-        sweep_id = args.resume_sweep_id
+        # Accept bare ID and qualify it with entity/project so wandb.agent finds it.
+        if "/" in args.resume_sweep_id:
+            sweep_id = args.resume_sweep_id
+        else:
+            sweep_id = f"{base_config['wandb_entity']}/{base_config['wandb_project']}/{args.resume_sweep_id}"
         print(f"Joining existing sweep {sweep_id} as agent for {args.algorithm.upper()} alpha={args.alpha}...")
     else:
         sweep_config = get_sweep_config(args.algorithm, args.alpha)
