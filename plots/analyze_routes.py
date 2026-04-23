@@ -2,13 +2,14 @@
 Structural analysis of transit route designs.
 
 Computes coverage, distance, edge structure, interchange, and comparative
-overlap metrics for all methods defined in figure_routes.py. Output feeds
+overlap metrics for all methods defined in routes.py. Output feeds
 directly into figure captions.
 
 Usage:
-    cd AlphaTransit && python plots/analyze_routes.py
-    cd AlphaTransit && python plots/analyze_routes.py --alpha 1_0
-    cd AlphaTransit && python plots/analyze_routes.py --csv /tmp/routes.csv
+    python plots/analyze_routes.py
+    python plots/analyze_routes.py --alpha 1_0
+    python plots/analyze_routes.py --csv /tmp/routes.csv
+    python plots/main.py analyze-routes --alpha 1_0
 """
 
 from __future__ import annotations
@@ -21,13 +22,10 @@ from typing import Dict, FrozenSet, List, Set, Tuple
 
 import pandas as pd
 
-from figure_routes import (
-    METHODS,
-    NETWORKS_DIR,
-    load_links,
-    load_nodes,
-    load_routes,
-)
+try:
+    from .routes import NETWORKS_DIR, get_methods, load_links, load_nodes, load_routes
+except ImportError:
+    from routes import NETWORKS_DIR, get_methods, load_links, load_nodes, load_routes
 
 TRANSIT_CENTER = "96"
 
@@ -261,13 +259,13 @@ def print_findings(rows: List[Dict[str, object]]) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Structural route analysis")
     parser.add_argument("--csv", type=str, default=None, help="Save results CSV")
     parser.add_argument(
         "--alpha", choices=["0_3", "1_0"], default="0_3", help="Alpha value"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     nodes_df = load_nodes()
     links_df = load_links()
@@ -276,7 +274,7 @@ def main() -> None:
     path_key = f"path_{args.alpha}"
 
     rows: List[Dict[str, object]] = []
-    for m in METHODS:
+    for m in get_methods():
         routes = load_routes(m[path_key])
         row = analyze(m["name"], routes, total_nodes, edge_lengths)
         rows.append(row)

@@ -20,10 +20,10 @@ Algorithm (per decision step):
 
 Rollouts are parallelized across --num_mcts_rollout_workers processes.
 Each rollout creates an independent UXsim world (~8s per rollout on
-Bloomington). By default, the baseline matches AlphaTransit's tuned n_iter and
-c_puct for the current alpha unless the caller supplies non-default overrides.
-Requires deterministic route initialization (e.g. 'transit_center' or
-'highest_demand'). Random init makes successor states path-dependent,
+Bloomington). Pass --apply_best_params to use AlphaTransit's tuned n_iter and
+c_puct for the current alpha; otherwise the CLI / config values are used
+directly. Requires deterministic route initialization (e.g. 'transit_center'
+or 'highest_demand'). Random init makes successor states path-dependent,
 invalidating tree statistics.
 
 Note: unlike AlphaTransit's batched MCTS, this baseline does not use virtual
@@ -38,7 +38,6 @@ Usage:
 import os
 import csv
 import random
-import sys
 import time
 import numpy as np
 import multiprocessing as mp
@@ -130,42 +129,6 @@ class PureMCTS:
         reward, _ = self.env.simulate_routes_mcts(routes)
         return reward
 
-    def _resolve_search_params(self):
-        """
-        Match AlphaTransit's tuned search settings for the active alpha.
-
-        Explicit CLI values take precedence over the tuned values.
-        """
-        from config import BEST_PARAMS
-
-        cli_args = sys.argv[1:]
-        cli_overrode_n_iter = any(
-            arg == "--n_iter" or arg.startswith("--n_iter=")
-            for arg in cli_args
-        )
-        cli_overrode_c_puct = any(
-            arg == "--c_puct" or arg.startswith("--c_puct=")
-            for arg in cli_args
-        )
-
-        config_n_iter = self.config.get("n_iter", 100)
-        config_c_puct = self.config.get("c_puct", 1.0)
-
-        alpha = self.config.get("alpha", 0.3)
-        at_params = BEST_PARAMS.get("alphatransit", {}).get(alpha, {})
-
-        if cli_overrode_n_iter:
-            n_iter = config_n_iter
-        else:
-            n_iter = at_params.get("n_iter", config_n_iter)
-
-        if cli_overrode_c_puct:
-            c_puct = config_c_puct
-        else:
-            c_puct = at_params.get("c_puct", config_c_puct)
-
-        return n_iter, c_puct
-
     def construct_path(self, state):
         from rl.mcts_utils import MCTSState, MCTSTree
 
@@ -173,7 +136,8 @@ class PureMCTS:
         # env.reset(seed=X) updates env.config["seed"] per run (rl/env.py:583).
         self._config_dict["seed"] = self.env.config.get("seed", 42)
 
-        n_iter, c_puct = self._resolve_search_params()
+        n_iter = self.config.get("n_iter", 100)
+        c_puct = self.config.get("c_puct", 1.0)
         num_routes = self.config.get("num_routes", 16)
         max_len = self.config.get("max_route_length", 14)
         n_nodes = len(self.env.node_to_idx)

@@ -42,7 +42,7 @@ week_2
 week_3
 week_8
 
-./demos_and_examples/.ipynb_checkpoints/
+demos_and_examples/
 
 ./uxsim.egg-info/
 uxsim.egg-info/__pycache__/
