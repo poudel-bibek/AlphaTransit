@@ -118,15 +118,11 @@ class MCTSAgent:
         self.seed = config.get('seed', 42)
         self.eval_seed_offset = config.get('eval_seed_offset', 2)
 
-        # Create timestamped save directory (like PPO)
         now = datetime.now()
         base_save_dir = config.get('save_dir', './training_data')
         self.training_save_dir = Path(base_save_dir) / f"{now.strftime('%b')}_{now.strftime('%d')}_{now.strftime('%H')}_{now.strftime('%M')}_{now.strftime('%S')}"
-        self.training_save_dir.mkdir(parents=True, exist_ok=True)
-
-        # Policy directory for model weights
         self.policy_dir = self.training_save_dir / "mcts_policies"
-        self.policy_dir.mkdir(parents=True, exist_ok=True)
+        # Dirs created lazily by _save_policy / _save_network_visualization (training only).
 
         # Parallel workers configuration
         self.episodes_per_iter = config.get('episodes_per_iter', 8)
@@ -145,9 +141,6 @@ class MCTSAgent:
         if self.collectors_enabled:
             self._start_inference_service()
             self._start_persistent_workers()
-
-        # Save initial network visualization
-        self._save_network_visualization()
 
     def _start_inference_service(self) -> None:
         """Start the centralized inference process and shared policy tensors."""
@@ -234,6 +227,7 @@ class MCTSAgent:
 
     def _save_network_visualization(self) -> None:
         """Save initial network and demand visualization."""
+        self.training_save_dir.mkdir(parents=True, exist_ok=True)
         temp_world = self.env.build_world(self.config.get("network"))
         self.env.load_demand_for_plotting(temp_world)
         output_path = self.training_save_dir / f"00_{self.config.get('network')}_demand_network.png"
@@ -677,6 +671,7 @@ class MCTSAgent:
         if not self.collectors_enabled:
             raise RuntimeError("MCTS training requires parallel collectors")
 
+        self._save_network_visualization()
         print(f"Starting MCTS training for {self.max_iterations} iterations")
         print(f"  Parallel workers: {self.num_workers}")
         print(f"  Episodes per iteration: {self.episodes_per_iter}")
@@ -794,6 +789,7 @@ class MCTSAgent:
         Save model weights (consistent with PPO naming).
         Returns path to saved policy.
         """
+        self.policy_dir.mkdir(parents=True, exist_ok=True)
         filename = f"policy_up_{update}_step_{steps}.pth"
         path = self.policy_dir / filename
         torch.save(self._get_clean_state_dict(), path)
@@ -824,7 +820,7 @@ class MCTSAgent:
         while eval_idx < num_eval:
             dispatch_count = min(self.num_workers, num_eval - eval_idx)
             for i in range(dispatch_count):
-                seed = self.seed + self.eval_seed_offset + eval_idx + i
+                seed = self.seed + (eval_idx + i) * self.eval_seed_offset
                 self._cmd_queues[i].put({
                     "type": "eval",
                     "seed": seed,
@@ -903,11 +899,7 @@ class MCTSAgent:
     def evaluate(self, policy_path: str, save_dir: str) -> Dict[str, Any]:
         """
         Standalone evaluation entry point (like ppo_eval).
-        Uses parallel workers + inference server.
-
-        Args:
-            policy_path: Path to saved policy weights
-            save_dir: Directory to save results
+        Writes seed dirs + summary directly into save_dir (caller picks the path).
         """
         if not self.collectors_enabled:
             raise RuntimeError(
@@ -921,15 +913,8 @@ class MCTSAgent:
             print(f"Loaded policy from {policy_path}")
         self._publish_policy_snapshot()
 
-        save_path = Path(save_dir)
-        save_path.mkdir(parents=True, exist_ok=True)
-
-        episode_dir = ensure_eval_step_update_dir(
-            str(save_path),
-            update="final",
-            steps=0,
-            folder_name="eval_results"
-        )
+        episode_dir = save_dir
+        Path(episode_dir).mkdir(parents=True, exist_ok=True)
 
         try:
             results = self._dispatch_parallel_eval(self.num_eval_runs)

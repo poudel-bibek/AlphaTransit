@@ -331,8 +331,8 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
             # Evaluate the policy after a certain number of updates
             if config.get("ppo_eval_every") > 0 and update_count % config["ppo_eval_every"] == 0:
-                # print(f"\n--- Running evaluation at update {update_count} (steps {steps_elapsed}) ---")
-                eval(config, update_count, steps_elapsed, training_save_dir, env_manager, policy_path=policy_path, model=model)
+                episode_dir = ensure_eval_step_update_dir(training_save_dir, update=update_count, steps=steps_elapsed, folder_name="eval_results")
+                eval(config, episode_dir, env_manager, policy_path=policy_path, model=model, log_step=steps_elapsed)
                 
     finally:
         # Always stop workers, even if an exception occurred
@@ -345,21 +345,15 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
         wandb.finish()
 
 
-def eval(config: Dict[str, Any], update_count: int | str, steps_elapsed: int, save_dir: str, env_manager: ParallelEnvManager, policy_path: str = None, model: torch.nn.Module = None) -> Dict[str, float]:
+def eval(config: Dict[str, Any], episode_dir: str, env_manager: ParallelEnvManager, policy_path: str = None, model: torch.nn.Module = None, log_step: int = 0) -> Dict[str, float]:
     """
-    Evaluate a trained policy using parallel workers.
+    Evaluate a trained policy using parallel workers. Caller picks the output dir layout.
 
     Args:
-        config: Configuration dict
-        update_count: Policy update number (or 'final' for standalone eval)
-        steps_elapsed: Global steps elapsed at the time of evaluation
-        save_dir: Directory to save results
-        env_manager: ParallelEnvManager for parallel eval
-        policy_path: Path to saved policy (used when save_policy_ppo is on)
-        model: Model to evaluate (used when save_policy_ppo is off)
+        episode_dir: Directory where seed_X/ subdirs and eval_results_summary.json are written
+        log_step: Wandb step counter (steps_elapsed during training, 0 for standalone eval)
     """
     num_runs = config["num_eval_runs"]
-    episode_dir = ensure_eval_step_update_dir(save_dir, update=update_count, steps=steps_elapsed, folder_name="eval_results")
 
     # Run parallel evaluations
     eval_results = env_manager.run_parallel_eval(
@@ -408,7 +402,7 @@ def eval(config: Dict[str, Any], update_count: int | str, steps_elapsed: int, sa
             "eval/route_efficiency": aggregated['route_efficiency'],
             "eval/fleet_size": aggregated['fleet_size'],
             "eval/bus_utilization": aggregated['bus_utilization'],
-        }, step=steps_elapsed)
+        }, step=log_step)
 
     return aggregated
 
@@ -458,9 +452,12 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     """
     Entry point for standalone PPO evaluation mode (without training).
     Sets up environment manager, loads policy, runs parallel evaluation.
+    Output goes to <save_dir>_<timestamp>/ (matches MCTS/baseline convention).
     """
     import os
-    os.makedirs(config["save_dir"], exist_ok=True)
+    ts = datetime.now().strftime('%b_%d_%H_%M_%S')
+    eval_save_dir = f"{config['save_dir']}_{ts}"
+    os.makedirs(eval_save_dir, exist_ok=True)
     config["wandb_off"] = True
     policy_path = config["saved_policy_path"]
     
@@ -481,8 +478,7 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     env_manager = ParallelEnvManager(config=config, num_workers=num_workers)
     env_manager.start(model, policy_kwargs)
     
-    # Use new step/update-keyed saving. For standalone eval, mark update='final' and steps=0.
-    eval(config, update_count="final", steps_elapsed=0, save_dir=config["save_dir"], env_manager=env_manager, policy_path=policy_path)
+    eval(config, episode_dir=eval_save_dir, env_manager=env_manager, policy_path=policy_path)
     env_manager.stop()
     
     # print(f"Evaluation completed. Results saved to: {config['save_dir']}")

@@ -235,14 +235,12 @@ def alpha_eval(config: Dict[str, Any]) -> None:
             "Use 'transit_center' or 'highest_demand' instead."
         )
 
-    import os
-    os.makedirs(config["save_dir"], exist_ok=True)
     config["wandb_off"] = True
 
     env = TransitEnv(config)
     policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
     mcts_agent = MCTSAgent(env, config, policy_kwargs, spawn_workers=True)
-    mcts_agent.evaluate(
-        policy_path=config.get("saved_policy_path", ""),
-        save_dir=config["save_dir"]
-    )
+    from datetime import datetime
+    ts = datetime.now().strftime('%b_%d_%H_%M_%S')
+    eval_save_dir = f"{config['save_dir']}_{ts}"
+    mcts_agent.evaluate(policy_path=config.get("saved_policy_path", ""), save_dir=eval_save_dir)

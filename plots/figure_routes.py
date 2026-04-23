@@ -245,7 +245,7 @@ def draw_transit_center(ax: plt.Axes,
     from matplotlib.offsetbox import AnnotationBbox, OffsetImage
     if TRANSIT_CENTER_NODE not in coords:
         return
-    pin_path = Path(__file__).resolve().parent / 'pin_red.png'
+    pin_path = Path(__file__).resolve().parent / 'assets' / 'pin_red.png'
     if not pin_path.exists():
         return
     pin_img = plt.imread(pin_path).copy()

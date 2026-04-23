@@ -64,7 +64,7 @@ plt.rcParams.update({
 ROOT = Path(__file__).resolve().parent.parent
 OUTDIR = ROOT / 'plots'
 
-PIN_PATH = OUTDIR / 'google_map_pin_256.png'
+PIN_PATH = OUTDIR / 'assets' / 'pin_red.png'
 PIN_IMAGE = plt.imread(PIN_PATH) if PIN_PATH.exists() else None
 PIN_ZOOM = 0.12
 
@@ -298,7 +298,7 @@ def _bloom_panel_routes(ax, d):
 def _draw_pin(ax, coords, node_id):
     """Place a red pin at the given node."""
     from matplotlib.offsetbox import AnnotationBbox, OffsetImage
-    pin_path = Path(__file__).resolve().parent / 'pin_red.png'
+    pin_path = Path(__file__).resolve().parent / 'assets' / 'pin_red.png'
     if not pin_path.exists() or node_id not in coords:
         return
     pin_img = plt.imread(pin_path)
