@@ -69,13 +69,24 @@ BEST_PARAMS = {
 def apply_best_params(config: Dict[str, Any], explicitly_set: set = None) -> Dict[str, Any]:
     """
     Override argparse defaults with best sweep params based on algorithm and alpha.
-    Only applies if --algorithm and --alpha are set and a match exists in BEST_PARAMS.
+    Pure MCTS baseline reuses AlphaTransit's best search params.
     Keys explicitly passed on the CLI are never overridden.
     """
     algo = config.get("algorithm")
     alpha = config.get("alpha")
-    if algo in BEST_PARAMS and alpha in BEST_PARAMS[algo]:
+    best = None
+
+    if config.get("mode") == "baseline" and config.get("baseline_type") == "mcts":
+        at_best = BEST_PARAMS.get("alphatransit", {}).get(alpha)
+        if at_best:
+            best = {
+                "n_iter": at_best["n_iter"],
+                "c_puct": at_best["c_puct"],
+            }
+    elif algo in BEST_PARAMS and alpha in BEST_PARAMS[algo]:
         best = BEST_PARAMS[algo][alpha]
+
+    if best is not None:
         for k, v in best.items():
             if explicitly_set and k in explicitly_set:
                 continue  # CLI override takes precedence

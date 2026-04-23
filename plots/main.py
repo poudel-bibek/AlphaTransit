@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-try:
+if __package__:
     from .common import FIGURES_DIR
     from . import analyze_routes, networks, routes, training
-except ImportError:
+else:
     from common import FIGURES_DIR
     import analyze_routes
     import networks
@@ -213,9 +213,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "experiment":
-        try:
+        if __package__:
             from . import experiment
-        except ImportError:
+        else:
             import experiment
         forwarded: list[str] = []
         if args.alpha is not None:

@@ -122,12 +122,12 @@ def get_pareto_summary_paths(alpha_key: str) -> Dict[str, Path]:
         "Bee Colony": _resolve_summary_base(alpha_key, "bee_colony_"),
         "Neural Evol.": _resolve_summary_base(alpha_key, "neural_evolutionary_"),
         "Pure MCTS": _resolve_summary_base(alpha_key, "mcts_pure_"),
-        "End-to-End RL": _resolve_summary_base(alpha_key, "end_to_end_rl_", "train_seed_123"),
+        "RL": _resolve_summary_base(alpha_key, "end_to_end_rl_", "train_seed_123"),
         "AlphaTransit": NEURIPS_RESULTS_DIR / alpha_key / "alphatransit" / niter_dir / "n_iter_500",
     }
 PARETO_STYLES = {
     "AlphaTransit": {"color": "#2ECC71", "marker": "*", "size": 350, "zorder": 10},
-    "End-to-End RL": {"color": "#7B68EE", "marker": "s", "size": 130, "zorder": 5},
+    "RL": {"color": "#7B68EE", "marker": "s", "size": 130, "zorder": 5},
     "Pure MCTS": {"color": "#E84393", "marker": "D", "size": 130, "zorder": 5},
     "Neural Evol.": {"color": "#3498DB", "marker": "^", "size": 150, "zorder": 5},
     "Bee Colony": {"color": "#E74C3C", "marker": "v", "size": 150, "zorder": 5},
@@ -136,6 +136,18 @@ PARETO_STYLES = {
     "Random Walk": {"color": "#95A5A6", "marker": "h", "size": 140, "zorder": 3},
     "Demand Cover": {"color": "#1ABC9C", "marker": "o", "size": 120, "zorder": 3},
     "Shortest Path": {"color": "#F39C12", "marker": "P", "size": 130, "zorder": 3},
+}
+PARETO_ABBREV = {
+    "AlphaTransit": "AT",
+    "RL": "RL",
+    "Pure MCTS": "MCTS",
+    "Neural Evol.": "NE",
+    "Bee Colony": "BC",
+    "Genetic Alg.": "GA",
+    "Real-World": "Real",
+    "Random Walk": "RW",
+    "Demand Cover": "DC",
+    "Shortest Path": "SP",
 }
 
 
@@ -565,12 +577,17 @@ def _resolve_summary_path(path: Path) -> Path:
     return matches[-1]
 
 
-def _pareto_point(summary_path: Path) -> tuple[float, float]:
+def _pareto_point(summary_path: Path) -> tuple[float, float, float, float]:
     results = load_results_summary(summary_path)
-    return float(results["service_rate"]["avg"] * 100.0), float(results["fleet_size"]["avg"])
+    return (
+        float(results["service_rate"]["avg"] * 100.0),
+        float(results["service_rate"]["std"] * 100.0),
+        float(results["fleet_size"]["avg"]),
+        float(results["fleet_size"]["std"]),
+    )
 
 
-def _load_pareto_data(alpha_key: str) -> Dict[str, tuple[float, float]]:
+def _load_pareto_data(alpha_key: str) -> Dict[str, tuple[float, float, float, float]]:
     return {
         method: _pareto_point(_resolve_summary_path(path))
         for method, path in get_pareto_summary_paths(alpha_key).items()
@@ -583,11 +600,24 @@ def plot_pareto(output_path: Path = FIGURES_DIR / "pareto_analysis.pdf") -> None
     for ax, alpha_key, title in zip(axes, ["0_3", "1_0"], [r"Low Demand", r"High Demand"]):
         points = _load_pareto_data(alpha_key)
         ax.set_title(title, fontsize=FS + 1)
-        for method, (service_rate, fleet_size) in points.items():
+        for method, (sr_avg, sr_std, fs_avg, fs_std) in points.items():
             style = PARETO_STYLES[method]
+            label = PARETO_ABBREV.get(method, method)
+            ax.errorbar(
+                fs_avg,
+                sr_avg,
+                xerr=fs_std,
+                yerr=sr_std,
+                fmt="none",
+                ecolor=style["color"],
+                elinewidth=1.0,
+                capsize=3,
+                alpha=0.55,
+                zorder=style["zorder"] - 1,
+            )
             ax.scatter(
-                fleet_size,
-                service_rate,
+                fs_avg,
+                sr_avg,
                 color=style["color"],
                 marker=style["marker"],
                 s=style["size"],
@@ -596,8 +626,8 @@ def plot_pareto(output_path: Path = FIGURES_DIR / "pareto_analysis.pdf") -> None
                 linewidth=0.5,
             )
             ax.annotate(
-                r"\textbf{" + method + "}" if method == "AlphaTransit" else method,
-                (fleet_size, service_rate),
+                r"\textbf{" + label + "}" if method == "AlphaTransit" else label,
+                (fs_avg, sr_avg),
                 xytext=(0, -12 if method != "Random Walk" else 12),
                 textcoords="offset points",
                 fontsize=FS - 4,
