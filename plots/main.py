@@ -4,11 +4,12 @@ import argparse
 from pathlib import Path
 
 if __package__:
-    from .common import FIGURES_DIR
-    from . import analyze_routes, networks, routes, training
+    from .common import FIGURES_DIR, NEURIPS_RESULTS_DIR
+    from . import analyze_routes, final_plots, networks, routes, training
 else:
-    from common import FIGURES_DIR
+    from common import FIGURES_DIR, NEURIPS_RESULTS_DIR
     import analyze_routes
+    import final_plots
     import networks
     import routes
     import training
@@ -90,16 +91,46 @@ def build_parser() -> argparse.ArgumentParser:
     scaling.add_argument("--alpha", choices=["0_3", "1_0"], default="0_3")
     scaling.add_argument("--output", type=Path)
 
+    method_comparison = subparsers.add_parser(
+        "method-comparison",
+        help="Build the three-panel final method-comparison figure.",
+    )
+    method_comparison.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
+    method_comparison.add_argument("--output", type=Path)
+
+    combined_scaling = subparsers.add_parser(
+        "combined-scaling",
+        help="Build the three-panel final scaling summary figure.",
+    )
+    combined_scaling.add_argument("--output", type=Path)
+
+    sweep_behavior = subparsers.add_parser(
+        "sweep-behavior",
+        help="Build the 2x3 sweep behavior and quality-vs-compute dashboard.",
+    )
+    sweep_behavior.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
+    sweep_behavior.add_argument("--output", type=Path)
+
+    scaling_overview = subparsers.add_parser(
+        "scaling-overview",
+        help="Build the combined scaling and sweep overview figure for one alpha setting.",
+    )
+    scaling_overview.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
+    scaling_overview.add_argument("--output", type=Path)
+
+    learning_overview = subparsers.add_parser(
+        "learning-overview",
+        help="Build the final RL, AlphaTransit, and wall-clock overview figure for one alpha setting.",
+    )
+    learning_overview.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
+    learning_overview.add_argument("--output", type=Path)
+
+    final_all = subparsers.add_parser("final-all", help="Build the default final-paper figure bundle.")
+    final_all.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
+    final_all.add_argument("--output-dir", type=Path, default=NEURIPS_RESULTS_DIR)
+
     training_all = subparsers.add_parser("training-all", help="Build the default training/results figure bundle.")
     training_all.add_argument("--output-dir", type=Path, default=FIGURES_DIR)
-
-    experiment_cmd = subparsers.add_parser("experiment", help="Run the wall-clock experiment.")
-    experiment_cmd.add_argument("--alpha", type=float, choices=[0.3, 1.0])
-    experiment_cmd.add_argument("--n-iter", type=int, choices=[100, 200, 300, 400, 500])
-    experiment_cmd.add_argument("--method", choices=["pure_mcts", "alphatransit"])
-    experiment_cmd.add_argument("--workers", type=int, default=8)
-    experiment_cmd.add_argument("--resume", action="store_true")
-    experiment_cmd.add_argument("--dry-run", action="store_true")
 
     all_cmd = subparsers.add_parser("all", help="Build the default network, route, and training bundles.")
     all_cmd.add_argument("--output-dir", type=Path, default=FIGURES_DIR)
@@ -208,29 +239,37 @@ def main(argv: list[str] | None = None) -> None:
         training.plot_scaling_laws(output, alpha_key=args.alpha)
         return
 
-    if args.command == "training-all":
-        training.generate_default(args.output_dir)
+    if args.command == "method-comparison":
+        output = args.output or (NEURIPS_RESULTS_DIR / f"final_comparison_alpha_{args.alpha}.pdf")
+        final_plots.plot_method_comparison_triptych(output, alpha_key=args.alpha)
         return
 
-    if args.command == "experiment":
-        if __package__:
-            from . import experiment
-        else:
-            import experiment
-        forwarded: list[str] = []
-        if args.alpha is not None:
-            forwarded.extend(["--alpha", str(args.alpha)])
-        if args.n_iter is not None:
-            forwarded.extend(["--n-iter", str(args.n_iter)])
-        if args.method:
-            forwarded.extend(["--method", args.method])
-        if args.workers != 8:
-            forwarded.extend(["--workers", str(args.workers)])
-        if args.resume:
-            forwarded.append("--resume")
-        if args.dry_run:
-            forwarded.append("--dry-run")
-        experiment.main(forwarded)
+    if args.command == "combined-scaling":
+        output = args.output or (NEURIPS_RESULTS_DIR / "final_scaling_summary.pdf")
+        final_plots.plot_combined_scaling_summary(output)
+        return
+
+    if args.command == "sweep-behavior":
+        output = args.output or (NEURIPS_RESULTS_DIR / f"final_sweep_behavior_alpha_{args.alpha}.pdf")
+        final_plots.plot_sweep_behavior_dashboard(output, alpha_key=args.alpha)
+        return
+
+    if args.command == "scaling-overview":
+        output = args.output or (NEURIPS_RESULTS_DIR / f"final_scaling_behavior_alpha_{args.alpha}.pdf")
+        final_plots.plot_scaling_behavior_overview(output, alpha_key=args.alpha)
+        return
+
+    if args.command == "learning-overview":
+        output = args.output or (NEURIPS_RESULTS_DIR / f"final_learning_overview_alpha_{args.alpha}.pdf")
+        final_plots.plot_learning_overview(output, alpha_key=args.alpha)
+        return
+
+    if args.command == "final-all":
+        final_plots.generate_default(args.output_dir, alpha_key=args.alpha)
+        return
+
+    if args.command == "training-all":
+        training.generate_default(args.output_dir)
         return
 
     if args.command == "all":

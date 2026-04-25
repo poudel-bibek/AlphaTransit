@@ -84,9 +84,40 @@ class MCTSState:
         if not self.current_route:
             self._valid_actions_cache = []
             return []
+        if len(self.current_route) >= self.max_route_length:
+            self._valid_actions_cache = []
+            return []
         frontier = self.current_route[-1]
         route_set = set(self.current_route)
         valid_neighbors = self.adj.get(frontier, set()) - route_set
+        if self.env.config.get("force_full_route_length", False):
+            remaining_after_action = self.max_route_length - len(self.current_route) - 1
+            if remaining_after_action > 0:
+                memo: Dict[Tuple[str, frozenset[str], int], bool] = {}
+
+                def can_complete(node: str, blocked: frozenset[str], depth: int) -> bool:
+                    if depth <= 0:
+                        return True
+                    key = (node, blocked, depth)
+                    if key in memo:
+                        return memo[key]
+                    for nxt in self.adj.get(node, set()) - set(blocked):
+                        if can_complete(nxt, blocked | {nxt}, depth - 1):
+                            memo[key] = True
+                            return True
+                    memo[key] = False
+                    return False
+
+                valid_neighbors = [
+                    n
+                    for n in valid_neighbors
+                    if can_complete(n, frozenset(route_set | {n}), remaining_after_action)
+                ]
+                if not valid_neighbors and self.env.config.get("strict_full_route_length", False):
+                    raise RuntimeError(
+                        "No feasible action can complete route to "
+                        f"{self.max_route_length} stops from route {self.current_route}."
+                    )
         self._valid_actions_cache = [self.node_to_idx[n] for n in valid_neighbors]
         return self._valid_actions_cache
 

@@ -59,7 +59,7 @@ MCTS_BLOCK_HISTORY_DIRS = {
     "0_3": NEURIPS_SWEEPS_DIR / "nips_11_mcts_model_size_alpha_0_3" / "wandb_data" / "wandb_scan_history",
     "1_0": NEURIPS_SWEEPS_DIR / "nips_12_mcts_model_size_alpha_1_0" / "wandb_data" / "wandb_scan_history",
 }
-WALL_CLOCK_RESULTS_CSV = FIGURES_DIR / "wall_clock_scaling" / "results.csv"
+WALL_CLOCK_DIR = NEURIPS_RESULTS_DIR / "wall_clock_scaling"
 SWEEP_CONVERGENCE_EXPORTS = {
     "0.3": FIGURE_DATA_DIR / "sweep_alpha0.3_history.csv",
     "1.0": FIGURE_DATA_DIR / "sweep_alpha1.0_history.csv",
@@ -158,10 +158,14 @@ def _find_unique_csv(directory: Path, prefix: str) -> Path:
     return matches[0]
 
 
-def _load_history_csv(path: Path, metric_key: str) -> tuple[np.ndarray, np.ndarray]:
+def _load_history_csv(
+    path: Path,
+    metric_key: str,
+    x_key: str = "_step",
+) -> tuple[np.ndarray, np.ndarray]:
     df = read_wandb_scan_csv(path)
-    df = df.dropna(subset=[metric_key]).copy()
-    return df["_step"].to_numpy(dtype=float), df[metric_key].to_numpy(dtype=float)
+    df = df.dropna(subset=[metric_key, x_key]).copy()
+    return df[x_key].to_numpy(dtype=float), df[metric_key].to_numpy(dtype=float)
 
 
 def _smooth(values: np.ndarray, window: int = SMOOTH_WINDOW) -> tuple[np.ndarray, np.ndarray]:
@@ -355,7 +359,7 @@ def plot_training_curves(output_path: Path = FIGURES_DIR / "training_curves.pdf"
                 ppo_values,
                 {
                     "color": "#E84393" if alpha_key == "0_3" else "#9B59B6",
-                    "label": "End-to-End RL",
+                    "label": "RL",
                     "ls": "-",
                 },
                 window=RIGHT_SMOOTH_WINDOW,
@@ -436,12 +440,42 @@ def _plot_mcts_scaling_panel(ax: plt.Axes, alpha_key: str, title: str) -> None:
 
 
 def _load_wall_clock_scaling() -> pd.DataFrame:
-    if not WALL_CLOCK_RESULTS_CSV.exists():
+    logs = sorted(WALL_CLOCK_DIR.glob("*_log.csv"))
+    if not logs:
         raise FileNotFoundError(
             "Wall-clock scaling data not found: "
-            f"{WALL_CLOCK_RESULTS_CSV}\nRun: python plots/main.py experiment"
+            f"{WALL_CLOCK_DIR}\nProvide the four raw *_log.csv files before building wall-clock panels."
         )
-    return pd.read_csv(WALL_CLOCK_RESULTS_CSV)
+    rows = []
+    for log_path in logs:
+        df = pd.read_csv(log_path)
+        required = {"method", "alpha", "n_iter", "route_idx", "step_time_s", "step", "route_length"}
+        missing = required - set(df.columns)
+        if missing:
+            raise KeyError(f"{log_path} missing required wall-clock columns: {sorted(missing)}")
+        route_totals = (
+            df.groupby(["method", "alpha", "n_iter", "route_idx"], as_index=False)
+            .agg(
+                total_seconds=("step_time_s", "sum"),
+                num_steps=("step", "count"),
+                route_length=("route_length", "max"),
+            )
+        )
+        for (method, alpha, n_iter), group in route_totals.groupby(["method", "alpha", "n_iter"]):
+            rows.append(
+                {
+                    "method": method,
+                    "alpha": float(alpha),
+                    "n_iter": int(n_iter),
+                    "total_seconds": float(group["total_seconds"].mean()),
+                    "std_seconds": float(group["total_seconds"].std(ddof=1)) if len(group) > 1 else 0.0,
+                    "route_length": float((group["route_length"] + 1).mean()),
+                    "num_steps": float(group["num_steps"].mean()),
+                    "num_routes": int(len(group)),
+                    "raw_log": log_path.name,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _plot_wall_clock_scaling_panel(ax: plt.Axes, alpha_value: float) -> None:
@@ -697,29 +731,36 @@ def _plot_family(
     metric_key: str,
     color_lookup: Dict[int, str],
     label_fmt: str,
+    x_key: str = "_step",
+    x_label: str = "Environment Steps",
 ) -> None:
     curves = []
     for csv_path in sorted(directory.glob(f"{prefix}_*.csv")):
-        try:
-            value = int(csv_path.stem.split("_")[2])
-        except (IndexError, ValueError):
+        stem = csv_path.stem
+        if not stem.startswith(f"{prefix}_"):
             continue
-        steps, values = _load_history_csv(csv_path, metric_key)
+        try:
+            value = int(stem[len(prefix) + 1 :].split("_", 1)[0])
+        except ValueError:
+            continue
+        steps, values = _load_history_csv(csv_path, metric_key, x_key=x_key)
         if len(steps) == 0:
             continue
-        mask = steps <= 1_000_000
-        curves.append((value, steps[mask], values[mask]))
+        curves.append((value, steps, values))
 
     for value, steps, values in sorted(curves):
-        mean_curve, _ = _smooth(values, 15)
+        mean_curve, _ = _smooth(values, 5)
         color = color_lookup.get(value, "#333333")
         ax.plot(steps, mean_curve, color=color, linewidth=1.2, alpha=0.85, label=label_fmt.format(value))
 
-    ax.set_xlabel(r"Environment Steps")
+    ax.set_xlabel(x_label)
     ax.set_ylabel(r"Total Loss")
-    format_steps_axis(ax)
+    if x_key == "_step":
+        format_steps_axis(ax)
     ax.grid(True)
-    ax.set_xlim(-20_000, 1_020_000)
+    if curves:
+        max_step = max(steps.max() for _, steps, _ in curves)
+        ax.set_xlim(-0.02 * max_step, 1.02 * max_step)
 
 
 def plot_scaling_laws(output_path: Path = FIGURES_DIR / "scaling_laws.pdf", alpha_key: str = "0_3") -> None:
@@ -740,6 +781,8 @@ def plot_scaling_laws(output_path: Path = FIGURES_DIR / "scaling_laws.pdf", alph
         "mcts/total_loss",
         {8: "#A8D8EA", 16: "#4A90D9", 24: "#7B68EE", 32: "#E84393"},
         r"$\mathrm{{eps}}={}$",
+        x_key="mcts/iteration",
+        x_label="Policy Iterations",
     )
     _plot_family(
         axes[2],
@@ -748,6 +791,8 @@ def plot_scaling_laws(output_path: Path = FIGURES_DIR / "scaling_laws.pdf", alph
         "mcts/total_loss",
         {2: "#A8D8EA", 4: "#4A90D9", 8: "#7B68EE", 16: "#E84393"},
         r"$\mathrm{{blocks}}={}$",
+        x_key="mcts/iteration",
+        x_label="Policy Iterations",
     )
     axes[0].set_title(r"MCTS search scaling", fontsize=FS + 1)
     axes[1].set_title(r"Data scaling", fontsize=FS + 1)

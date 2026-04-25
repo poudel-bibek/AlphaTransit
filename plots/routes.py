@@ -252,7 +252,7 @@ def draw_routes(
         )
 
 
-def draw_transit_center(ax: plt.Axes, coords: CoordMap, *, zoom: float = 0.162) -> None:
+def draw_transit_center(ax: plt.Axes, coords: CoordMap, *, zoom: float = 0.1458) -> None:
     if TRANSIT_CENTER_NODE not in coords:
         return
     pin_path = ASSETS_DIR / "pin_red.png"
@@ -273,8 +273,8 @@ def draw_transit_center(ax: plt.Axes, coords: CoordMap, *, zoom: float = 0.162) 
     ax.add_artist(artist)
 
 
-def build_route_figure(alpha_key: str, output_path: Path, max_cols: int = 5) -> None:
-    apply_plot_style(FS)
+def build_route_figure(alpha_key: str, output_path: Path, max_cols: int = 5, fs: int = FS) -> None:
+    apply_plot_style(fs)
     active = list(get_methods())
     if not active:
         return
@@ -319,6 +319,7 @@ def build_route_figure(alpha_key: str, output_path: Path, max_cols: int = 5) -> 
         remaining -= row_count
 
     for ax, (label, routes, color) in zip(axes, method_data):
+        display_label = "Reinforcement Learning" if label == "End-to-End RL" else label
         ax.set_facecolor("#FFFFFF")
         draw_basemap(ax, links, coords)
         draw_routes(ax, routes, coords, color)
@@ -330,11 +331,11 @@ def build_route_figure(alpha_key: str, output_path: Path, max_cols: int = 5) -> 
         ax.text(
             0.5,
             -0.04,
-            label,
+            display_label,
             transform=ax.transAxes,
             ha="center",
             va="top",
-            fontsize=FS,
+            fontsize=fs,
             color="#111827",
             weight="semibold",
             clip_on=False,
