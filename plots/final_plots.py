@@ -7,13 +7,18 @@ from typing import Sequence
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 from matplotlib.colors import to_rgba
-from matplotlib.patches import FancyBboxPatch
-from matplotlib.ticker import FuncFormatter
+from matplotlib.legend_handler import HandlerBase
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+from matplotlib.ticker import FuncFormatter, NullFormatter
+from matplotlib.transforms import Affine2D
 import numpy as np
+import pandas as pd
 
 try:
     from .common import (
         NEURIPS_RESULTS_DIR,
+        NETWORKS_DIR,
+        ASSETS_DIR,
         apply_plot_style,
         format_steps_axis,
         load_results_summary,
@@ -37,10 +42,21 @@ try:
         _load_wall_clock_scaling,
         get_pareto_summary_paths,
     )
-    from .routes import build_route_figure as build_route_design_figure
+    from .routes import (
+        TRANSIT_CENTER_NODE,
+        _coords_dict,
+        build_route_figure as build_route_design_figure,
+        draw_basemap,
+        draw_transit_center,
+        load_links,
+        load_nodes,
+        load_routes,
+    )
 except ImportError:
     from common import (
         NEURIPS_RESULTS_DIR,
+        NETWORKS_DIR,
+        ASSETS_DIR,
         apply_plot_style,
         format_steps_axis,
         load_results_summary,
@@ -64,12 +80,44 @@ except ImportError:
         _load_wall_clock_scaling,
         get_pareto_summary_paths,
     )
-    from routes import build_route_figure as build_route_design_figure
+    from routes import (
+        TRANSIT_CENTER_NODE,
+        _coords_dict,
+        build_route_figure as build_route_design_figure,
+        draw_basemap,
+        draw_transit_center,
+        load_links,
+        load_nodes,
+        load_routes,
+    )
+
+try:
+    import contextily as _ctx
+
+    _HAS_CTX = True
+except ImportError:
+    _ctx = None
+    _HAS_CTX = False
+
+try:
+    from scipy.stats import gaussian_kde as _gaussian_kde
+
+    _HAS_KDE = True
+except ImportError:
+    _gaussian_kde = None
+    _HAS_KDE = False
+
+try:
+    from pyproj import Transformer as _Transformer
+
+    _HAS_PYPROJ = True
+except ImportError:
+    _Transformer = None
+    _HAS_PYPROJ = False
 
 
 METHOD_COMPARISON_FS = 18
 COMBINED_SCALING_FS = 18
-SWEEP_BEHAVIOR_FS = 18
 SCALING_OVERVIEW_FS = 20
 LEARNING_OVERVIEW_FS = 20
 ROUTE_DESIGN_FS = 21
@@ -78,6 +126,7 @@ LEARNING_DATA_STEP_LIMIT = 1_020_000
 LEARNING_AXIS_STEP_LIMIT = 1_040_000
 ROUTE_DESIGN_ALPHA_KEYS = ("0_3", "1_0")
 BACKGROUND = "#FFFFFF"
+BLOOMINGTON_MAP_BACKGROUND = "#F7F8FA"
 ANNOTATION_OFFSETS = [
     (0, 10),
     (0, -12),
@@ -155,11 +204,30 @@ METHOD_DISPLAY_NAMES = {
     "Neural Evol.": "Neural Evolutionary",
     "RL": "Reinforcement Learning",
 }
+METHOD_COMPARISON_ALPHATRANSIT_OVERRIDES = {
+    "1_0": NEURIPS_RESULTS_DIR
+    / "1_0"
+    / "alphatransit"
+    / "nips_10_ep_per_iter"
+    / "ep_per_iter_24",
+}
 LEARNING_MODE_LABELS = {
     "terminal_only": "Terminal",
     "terminal_intermediate_raw_early_stop": "Raw + ES",
     "terminal_intermediate_delta_early_stop": r"$\Delta$ + ES",
     "terminal_intermediate_delta_no_early_stop": r"$\Delta$ + No ES",
+}
+LEARNING_MODE_COLORS = {
+    "terminal_only": "#4A90D9",
+    "terminal_intermediate_raw_early_stop": "#E84393",
+    "terminal_intermediate_delta_early_stop": "#F16913",
+    "terminal_intermediate_delta_no_early_stop": "#1B9E77",
+}
+LEARNING_MODE_LINESTYLES = {
+    "terminal_only": "-",
+    "terminal_intermediate_raw_early_stop": "--",
+    "terminal_intermediate_delta_early_stop": ":",
+    "terminal_intermediate_delta_no_early_stop": "-.",
 }
 SCALING_BACKGROUND = "#F5F5F2"
 SCALING_ALPHA_STYLES = {
@@ -214,6 +282,8 @@ SWEEP_BEHAVIOR_STYLES = {
 }
 SWEEP_TRAINING_REWARD_METRIC = "mcts/avg_reward"
 SWEEP_TRAINING_REWARD_LABEL = "Avg Reward"
+SWEEP_STEP_SCALE = 1e6
+SWEEP_STEP_SCALE_LABEL = r"$\times 10^{6}$"
 SWEEP_RUNTIME_SCALE = 1e5
 SWEEP_RUNTIME_SCALE_LABEL = r"$\times 10^{5}$"
 SWEEP_LINESTYLES = ["solid", "dashed", "dotted", "dashdot", (0, (5, 2, 1, 2))]
@@ -250,8 +320,12 @@ def _combined_stats(first: dict, second: dict) -> tuple[float, float]:
 
 def _load_method_points(alpha_key: str) -> dict[str, dict[str, tuple[float, float]]]:
     points: dict[str, dict[str, tuple[float, float]]] = {}
+    summary_paths = dict(get_pareto_summary_paths(alpha_key))
+    alphatransit_override = METHOD_COMPARISON_ALPHATRANSIT_OVERRIDES.get(alpha_key)
+    if alphatransit_override is not None:
+        summary_paths["AlphaTransit"] = alphatransit_override
 
-    for method, path in get_pareto_summary_paths(alpha_key).items():
+    for method, path in summary_paths.items():
         results = load_results_summary(_resolve_summary_path(path))
         points[method] = {
             "service_rate": _metric_stats(results["service_rate"], scale=100.0),
@@ -814,446 +888,6 @@ def plot_method_comparison_triptych(
     return output_path
 
 
-def plot_combined_scaling_summary(
-    output_path: Path = NEURIPS_RESULTS_DIR / "final_scaling_summary.pdf",
-) -> Path:
-    """
-    Build a 2x3 AlphaTransit scaling figure with one alpha per row.
-
-    Columns correspond to the three scaling axes; rows correspond to alpha settings.
-    Each panel plots top-5 evaluation reward for the available runs on that axis.
-    Search varies MCTS simulations per decision in {100, 200, 300, 400, 500};
-    data diversity varies episodes per policy-update iteration in {8, 16, 24, 32};
-    policy network size varies GAT blocks in {2, 4, 8, 16}. Each point summarizes
-    the top-5 evaluation rewards from the corresponding W&B history CSV.
-    """
-    fs = COMBINED_SCALING_FS
-    apply_plot_style(fs, background=BACKGROUND)
-    fig, axes = plt.subplots(2, 3, figsize=(15.6, 6.2), sharex="col", sharey="row")
-    row_order = ["1_0", "0_3"]
-
-    family_series: dict[str, dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
-    for family_key in SCALING_FAMILY_SPECS:
-        family_series[family_key] = {}
-        for alpha_key in SCALING_ALPHA_STYLES:
-            series = _load_scaling_series(alpha_key, family_key)
-            family_series[family_key][alpha_key] = series
-
-    if not any(len(series[1]) for family in family_series.values() for series in family.values()):
-        raise ValueError("No scaling-summary data found.")
-
-    def row_axis_config(alpha_key: str) -> tuple[np.ndarray, float, float, str]:
-        means: list[float] = []
-        stds: list[float] = []
-        for family_key in SCALING_FAMILY_SPECS:
-            _, family_means, family_stds = family_series[family_key][alpha_key]
-            means.extend(family_means.tolist())
-            stds.extend(family_stds.tolist())
-        if not means:
-            raise ValueError(f"No scaling data for alpha={alpha_key}")
-
-        lows = np.asarray([mean - std for mean, std in zip(means, stds)], dtype=float)
-        highs = np.asarray([mean + std for mean, std in zip(means, stds)], dtype=float)
-        vmin = float(lows.min())
-        vmax = float(highs.max())
-
-        if alpha_key == "1_0":
-            tick_min = 3.0 * np.floor(vmin / 3.0)
-            tick_max = 3.0 * np.floor(vmax / 3.0)
-            if tick_max <= tick_min:
-                tick_max = tick_min + 3.0
-            ticks = np.arange(tick_min, tick_max + 0.1, 3.0)
-            lower = min(vmin - 0.55, ticks[0] - 0.55)
-            upper = max(vmax + 0.55, ticks[-1] + 0.55)
-            fmt = "int"
-        else:
-            tick_min = np.floor(vmin) + 0.5
-            if tick_min - 0.2 > vmin:
-                tick_min -= 1.0
-            tick_max = np.ceil(vmax - 0.5) + 0.5
-            if tick_max + 0.2 < vmax:
-                tick_max += 1.0
-            ticks = np.arange(tick_min, tick_max + 0.1, 1.0)
-            lower = min(vmin - 0.22, ticks[0] - 0.22)
-            upper = max(vmax + 0.22, ticks[-1] + 0.22)
-            fmt = "half"
-        return ticks, float(lower), float(upper), fmt
-
-    legend_handles = []
-    for alpha_key, style in SCALING_ALPHA_STYLES.items():
-        legend_handles.append(
-            mlines.Line2D(
-                [],
-                [],
-                color=style["color"],
-                marker="o",
-                linewidth=2.6,
-                markersize=6.5,
-                markeredgecolor="white",
-                markeredgewidth=0.7,
-                label=style["label"],
-            )
-        )
-
-    row_configs = {alpha_key: row_axis_config(alpha_key) for alpha_key in row_order}
-
-    for row, alpha_key in enumerate(row_order):
-        style = SCALING_ALPHA_STYLES[alpha_key]
-        y_ticks, y_bottom, y_top, y_fmt = row_configs[alpha_key]
-
-        for col, (family_key, spec) in enumerate(SCALING_FAMILY_SPECS.items()):
-            ax = axes[row, col]
-            ax.set_facecolor("#FBFBF9")
-            xs, means, stds = family_series[family_key][alpha_key]
-            if len(xs):
-                ax.fill_between(
-                    xs,
-                    means - stds,
-                    means + stds,
-                    color=style["color"],
-                    alpha=0.10,
-                    linewidth=0.0,
-                    zorder=1,
-                )
-                ax.plot(
-                    xs,
-                    means,
-                    color=style["color"],
-                    linewidth=2.6,
-                    marker="o",
-                    markersize=7.6,
-                    markerfacecolor=style["color"],
-                    markeredgecolor="white",
-                    markeredgewidth=0.9,
-                    solid_capstyle="round",
-                    zorder=3,
-                )
-                ax.errorbar(
-                    xs,
-                    means,
-                    yerr=stds,
-                    fmt="none",
-                    ecolor=style["color"],
-                    elinewidth=1.05,
-                    capsize=3,
-                    alpha=0.85,
-                    zorder=2,
-                )
-
-                best_idx = int(np.argmax(means))
-                ax.annotate(
-                    "best",
-                    (xs[best_idx], means[best_idx] + stds[best_idx]),
-                    xytext=(0, 10),
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                    fontsize=fs - 5,
-                    color="#666666",
-                    fontweight="bold",
-                )
-
-            if row == 0:
-                ax.set_title(spec["title"], fontsize=fs + 1, color="#1F2937")
-                ax.tick_params(labelbottom=False)
-            else:
-                ax.set_xlabel(_bold_label(spec["x_label"]))
-                ax.xaxis.label.set_color("#111111")
-
-            ax.tick_params(axis="both", colors="#666666")
-            ax.grid(True, zorder=0)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.spines["left"].set_color("#CCCCCC")
-            ax.spines["bottom"].set_color("#CCCCCC")
-
-            ax.set_xticks(spec["values"])
-            x_values = spec["values"]
-            x_pad = (max(x_values) - min(x_values)) * 0.06 if len(x_values) > 1 else 1.0
-            ax.set_xlim(min(x_values) - x_pad, max(x_values) + x_pad)
-            ax.set_ylim(y_bottom, y_top)
-            ax.set_yticks(y_ticks)
-            if y_fmt == "int":
-                ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(round(value))}"))
-            else:
-                ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.1f}"))
-
-            if col > 0:
-                ax.tick_params(labelleft=False)
-
-        axes[row, 0].set_ylabel(_bold_label("Top-5 Avg Reward"))
-        axes[row, 0].yaxis.label.set_color("#111111")
-
-    legend = fig.legend(
-        handles=legend_handles,
-        loc="lower center",
-        ncol=2,
-        frameon=True,
-        fancybox=False,
-        edgecolor="#CCCCCC",
-        bbox_to_anchor=(0.5, 0.028),
-        columnspacing=1.2,
-        handlelength=1.8,
-        handletextpad=0.6,
-        borderpad=0.3,
-    )
-    for text in legend.get_texts():
-        text.set_color("#1F2937")
-
-    fig.subplots_adjust(left=0.085, right=0.99, top=0.87, bottom=0.18, wspace=0.18, hspace=0.24)
-
-    for row, alpha_key in enumerate(row_order):
-        bbox = axes[row, 0].get_position()
-        row_center = (bbox.y0 + bbox.y1) / 2.0
-        style = SCALING_ALPHA_STYLES[alpha_key]
-        fig.text(
-            0.036,
-            row_center,
-            style["label"],
-            rotation=90,
-            va="center",
-            ha="center",
-            fontsize=fs - 1,
-            color=style["color"],
-            bbox={
-                "boxstyle": "round,pad=0.28",
-                "facecolor": "#FFFFFF",
-                "edgecolor": style["color"],
-                "linewidth": 1.3,
-            },
-        )
-
-    for ax in axes.ravel():
-        bbox = ax.get_position()
-        panel = FancyBboxPatch(
-            (bbox.x0 - 0.006, bbox.y0 - 0.014),
-            bbox.width + 0.012,
-            bbox.height + 0.028,
-            boxstyle="round,pad=0.012,rounding_size=0.014",
-            transform=fig.transFigure,
-            facecolor="#FBFBF9",
-            edgecolor="#D6DBE3",
-            linewidth=1.2,
-            zorder=-10,
-        )
-        fig.add_artist(panel)
-
-    _save_figure_with_optional_png(fig, output_path, facecolor=SCALING_BACKGROUND)
-    plt.close(fig)
-    return output_path
-
-
-def plot_sweep_behavior_dashboard(
-    output_path: Path = NEURIPS_RESULTS_DIR / "final_sweep_behavior_alpha_1_0.pdf",
-    *,
-    alpha_key: str = "1_0",
-) -> Path:
-    """
-    Build a 2x3 sweep-behavior dashboard for one alpha setting.
-
-    Top row: MCTS reward dynamics for each sweep family.
-    Bottom row: top-5 eval reward versus runtime, with a dashed Pareto-like frontier.
-    The sweep families match SCALING_FAMILY_SPECS: search depth is n_iter
-    {100, 200, 300, 400, 500}, data diversity is ep_per_iter {8, 16, 24, 32},
-    and policy network size is num_gat_blocks {2, 4, 8, 16}. Training curves use
-    the W&B mcts/avg_reward metric, smoothed with rolling mean/std; runtime is
-    taken from the maximum W&B _runtime value for each run.
-    """
-    fs = SWEEP_BEHAVIOR_FS
-    apply_plot_style(fs, background=BACKGROUND)
-    fig, axes = plt.subplots(2, 3, figsize=(16.6, 8.6), gridspec_kw={"height_ratios": [1.15, 1.0]})
-
-    family_runs = {
-        family_key: _load_sweep_behavior_runs(alpha_key, family_key)
-        for family_key in SCALING_FAMILY_SPECS
-    }
-    if not any(family_runs.values()):
-        raise ValueError(f"No sweep behavior data found for alpha={alpha_key}")
-
-    top_rewards: list[float] = []
-    bottom_rewards: list[float] = []
-    for runs in family_runs.values():
-        for run in runs:
-            smooth_reward = np.asarray(run["reward_smooth"], dtype=float)
-            smooth_std = np.asarray(run["reward_smooth_std"], dtype=float)
-            top_rewards.extend((smooth_reward - smooth_std).tolist())
-            top_rewards.extend((smooth_reward + smooth_std).tolist())
-            bottom_rewards.append(float(run["top_mean"]))
-
-    top_ticks, top_bottom, top_top = _five_integer_ticks_and_limits(min(top_rewards), max(top_rewards))
-    bottom_ticks, bottom_bottom, bottom_top = _five_integer_ticks_and_limits(min(bottom_rewards), max(bottom_rewards))
-
-    for col, family_key in enumerate(SCALING_FAMILY_SPECS):
-        style = SWEEP_BEHAVIOR_STYLES[family_key]
-        runs = family_runs[family_key]
-        top_ax = axes[0, col]
-        bottom_ax = axes[1, col]
-
-        top_ax.set_facecolor(SCALING_BACKGROUND)
-        bottom_ax.set_facecolor(SCALING_BACKGROUND)
-
-        legend_handles: list[mlines.Line2D] = []
-        legend_labels: list[str] = []
-
-        for line_idx, run in enumerate(runs):
-            steps = np.asarray(run["steps"], dtype=float)
-            smooth_reward = np.asarray(run["reward_smooth"], dtype=float)
-            smooth_std = np.asarray(run["reward_smooth_std"], dtype=float)
-            color = str(run["color"])
-            linestyle = SWEEP_LINESTYLES[line_idx % len(SWEEP_LINESTYLES)]
-
-            top_ax.fill_between(
-                steps,
-                smooth_reward - smooth_std,
-                smooth_reward + smooth_std,
-                color=color,
-                alpha=0.10,
-                linewidth=0.0,
-                zorder=1,
-            )
-            top_ax.plot(
-                steps,
-                smooth_reward,
-                color=color,
-                linestyle=linestyle,
-                linewidth=2.0,
-                solid_capstyle="round",
-                zorder=3,
-            )
-            legend_handles.append(mlines.Line2D([], [], color=color, linestyle=linestyle, linewidth=2.0))
-            legend_labels.append(str(run["legend_label"]))
-
-        top_ax.set_title(style["title"], color=style["title_color"], fontsize=fs + 1)
-        top_ax.set_xlabel(_bold_label("Training Step"))
-        top_ax.xaxis.label.set_color("#111111")
-        top_ax.tick_params(axis="both", colors="#666666")
-        top_ax.grid(True, zorder=0)
-        top_ax.set_ylim(top_bottom, top_top)
-        top_ax.set_yticks(top_ticks)
-        top_ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(round(value))}"))
-        if col == 0:
-            top_ax.set_ylabel(_bold_label(SWEEP_TRAINING_REWARD_LABEL))
-            top_ax.yaxis.label.set_color("#111111")
-        else:
-            top_ax.tick_params(labelleft=False)
-        format_steps_axis(top_ax)
-
-        if runs:
-            max_step = max(float(np.asarray(run["steps"], dtype=float).max()) for run in runs)
-            top_ax.set_xlim(0.0, max_step * 1.03)
-            if family_key == "search":
-                _draw_search_depth_legend(
-                    top_ax,
-                    legend_handles,
-                    legend_labels,
-                    fontsize=fs - 6,
-                    edgecolor="#D5D8DE",
-                )
-            else:
-                top_ax.legend(
-                    legend_handles,
-                    legend_labels,
-                    loc="lower center",
-                    bbox_to_anchor=(0.5, 1.14),
-                    ncol=min(3, len(legend_labels)),
-                    frameon=True,
-                    fancybox=False,
-                    edgecolor="#D5D8DE",
-                    fontsize=fs - 7,
-                    handlelength=1.6,
-                    columnspacing=0.9,
-                    borderpad=0.28,
-                    handletextpad=0.5,
-                )
-
-        runtimes = np.asarray([float(run["runtime_seconds"]) for run in runs], dtype=float)
-        qualities = np.asarray([float(run["top_mean"]) for run in runs], dtype=float)
-        colors = [str(run["color"]) for run in runs]
-
-        if len(runs):
-            sizes = np.linspace(210, 390, len(runs))
-            order = np.argsort(runtimes)
-            frontier_x = runtimes[order]
-            frontier_y = np.maximum.accumulate(qualities[order])
-
-            bottom_ax.plot(
-                frontier_x,
-                frontier_y,
-                color="#666666",
-                linewidth=1.4,
-                linestyle=(0, (4, 4)),
-                zorder=1,
-            )
-            bottom_ax.scatter(
-                runtimes,
-                qualities,
-                s=sizes,
-                c=colors,
-                edgecolors="white",
-                linewidths=0.9,
-                alpha=0.96,
-                zorder=3,
-            )
-
-            for run, size in zip(runs, sizes):
-                bottom_ax.annotate(
-                    str(run["point_label"]),
-                    (float(run["runtime_seconds"]), float(run["top_mean"])),
-                    xytext=(0, -14),
-                    textcoords="offset points",
-                    ha="center",
-                    va="top",
-                    fontsize=fs - 6,
-                    color="#333333",
-                )
-
-            if len(frontier_x) >= 2:
-                anchor_idx = min(1, len(frontier_x) - 1)
-                bottom_ax.annotate(
-                    "better frontier",
-                    xy=(frontier_x[anchor_idx], frontier_y[anchor_idx]),
-                    xytext=(-4, 28),
-                    textcoords="offset points",
-                    fontsize=fs - 5,
-                    color="#555555",
-                    ha="right",
-                    va="bottom",
-                    arrowprops={
-                        "arrowstyle": "->",
-                        "color": "#777777",
-                        "lw": 1.0,
-                        "shrinkA": 0,
-                        "shrinkB": 4,
-                    },
-                )
-
-        bottom_ax.set_title(style["tradeoff_title"], color=style["title_color"], fontsize=fs)
-        bottom_ax.set_xlabel(_bold_label("Compute Cost (s)"))
-        bottom_ax.xaxis.label.set_color("#111111")
-        bottom_ax.tick_params(axis="both", colors="#666666")
-        bottom_ax.grid(True, zorder=0)
-        bottom_ax.set_xscale("log")
-        bottom_ax.set_ylim(bottom_bottom, bottom_top)
-        bottom_ax.set_yticks(bottom_ticks)
-        bottom_ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(round(value))}"))
-        if col == 0:
-            bottom_ax.set_ylabel(_bold_label("Top-5 Avg Reward"))
-            bottom_ax.yaxis.label.set_color("#111111")
-        else:
-            bottom_ax.tick_params(labelleft=False)
-
-        for ax in (top_ax, bottom_ax):
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.spines["left"].set_color("#CCCCCC")
-            ax.spines["bottom"].set_color("#CCCCCC")
-
-    fig.subplots_adjust(left=0.085, right=0.985, top=0.86, bottom=0.10, wspace=0.26, hspace=0.34)
-    _save_figure_with_optional_png(fig, output_path, facecolor=SCALING_BACKGROUND)
-    plt.close(fig)
-    return output_path
-
-
 def plot_scaling_behavior_overview(
     output_path: Path = NEURIPS_RESULTS_DIR / "final_scaling_behavior_alpha_1_0.pdf",
     *,
@@ -1347,9 +981,7 @@ def plot_scaling_behavior_overview(
             ticks = np.linspace(vmin, vmax, tick_count)
         ax.set_xlim(left, right)
         ax.set_xticks(ticks)
-        ax.xaxis.set_major_formatter(
-            FuncFormatter(lambda value, _: f"{value:.2f}".rstrip("0").rstrip("."))
-        )
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.1f}"))
 
     top_values: list[float] = []
     for runs in family_runs.values():
@@ -1432,10 +1064,14 @@ def plot_scaling_behavior_overview(
         train_ax.set_xlabel(_bold_label("Environment Steps"), labelpad=1)
         train_ax.xaxis.label.set_color("#111111")
         apply_reward_axis(train_ax, top_ticks, top_bottom, top_top, top_fmt)
-        train_ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value / 1e5:g}"))
+        train_ax.xaxis.set_major_formatter(
+            FuncFormatter(
+                lambda value, _: f"{0 if abs(value) < 0.5 else value / SWEEP_STEP_SCALE:g}"
+            )
+        )
         train_ax.xaxis.get_offset_text().set_visible(False)
         train_ax.annotate(
-            r"$\times 10^{5}$",
+            SWEEP_STEP_SCALE_LABEL,
             xy=(1.003, 0.015),
             xycoords="axes fraction",
             ha="left",
@@ -1455,7 +1091,7 @@ def plot_scaling_behavior_overview(
                     train_ax,
                     legend_handles,
                     legend_labels,
-                    fontsize=fs - 1,
+                    fontsize=fs - 2,
                     edgecolor="#CCCCCC",
                 )
             else:
@@ -1467,7 +1103,7 @@ def plot_scaling_behavior_overview(
                     frameon=True,
                     fancybox=False,
                     edgecolor="#CCCCCC",
-                    fontsize=fs - 1,
+                    fontsize=fs - 2,
                     columnspacing=1.0,
                     handlelength=1.5,
                     handletextpad=0.4,
@@ -1496,7 +1132,7 @@ def plot_scaling_behavior_overview(
                 connected_y,
                 color="#777777",
                 linewidth=1.25,
-                linestyle="-",
+                linestyle=(0, (4, 4)),
                 alpha=0.70,
                 zorder=1,
             )
@@ -1561,7 +1197,7 @@ def plot_scaling_behavior_overview(
             tradeoff_ax.set_ylabel(_bold_label("Top 5 Reward"))
             tradeoff_ax.yaxis.label.set_color("#111111")
 
-    fig.subplots_adjust(left=0.078, right=0.985, top=0.920, bottom=0.130, wspace=0.25, hspace=0.44)
+    fig.subplots_adjust(left=0.078, right=0.985, top=0.920, bottom=0.130, wspace=0.30, hspace=0.50)
 
     _save_figure_with_optional_png(fig, output_path, facecolor=BACKGROUND)
     plt.close(fig)
@@ -1671,11 +1307,13 @@ def _plot_final_rl_ablation_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> N
             mean_curve, _ = rolling_mean_std(mean_curve, window=min(LEARNING_SMOOTHING_WINDOW, len(mean_curve)))
             std_curve, _ = rolling_mean_std(std_curve, window=min(LEARNING_SMOOTHING_WINDOW, len(std_curve)))
         style = MODE_STYLES[mode]
+        color = LEARNING_MODE_COLORS.get(mode, style["color"])
         ax.plot(
             steps,
             mean_curve,
-            color=style["color"],
+            color=color,
             linewidth=1.75,
+            linestyle=LEARNING_MODE_LINESTYLES.get(mode, "-"),
             label=LEARNING_MODE_LABELS.get(mode, style["label"]),
             zorder=3,
         )
@@ -1683,7 +1321,7 @@ def _plot_final_rl_ablation_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> N
             steps,
             mean_curve - std_curve,
             mean_curve + std_curve,
-            color=style["color"],
+            color=color,
             alpha=0.12,
             linewidth=0.0,
             zorder=1,
@@ -1741,63 +1379,198 @@ def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: i
 
 def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> None:
     alpha_value = 0.3 if alpha_key == "0_3" else 1.0
-    df = _load_wall_clock_scaling()
-    df = df[np.isclose(df["alpha"].astype(float), alpha_value)]
-    if df.empty:
-        raise ValueError(f"No wall-clock rows found for alpha={alpha_value}.")
-
     n_iters = [100, 200, 300, 400, 500]
-    x = np.arange(len(n_iters), dtype=float)
-    width = 0.34
-    pure_times: list[float] = []
-    alpha_times: list[float] = []
-    pure_stds: list[float] = []
-    alpha_stds: list[float] = []
-    for n_iter in n_iters:
-        pure_row = df[(df["method"] == "pure_mcts") & (df["n_iter"].astype(int) == n_iter)]
-        alpha_row = df[(df["method"] == "alphatransit") & (df["n_iter"].astype(int) == n_iter)]
-        pure_times.append(float(pure_row["total_seconds"].iloc[0]) / 60.0 if len(pure_row) else np.nan)
-        alpha_times.append(float(alpha_row["total_seconds"].iloc[0]) / 60.0 if len(alpha_row) else np.nan)
-        pure_stds.append(float(pure_row["std_seconds"].iloc[0]) / 60.0 if len(pure_row) and "std_seconds" in pure_row else np.nan)
-        alpha_stds.append(float(alpha_row["std_seconds"].iloc[0]) / 60.0 if len(alpha_row) and "std_seconds" in alpha_row else np.nan)
+    log_dir = NEURIPS_RESULTS_DIR / "wall_clock_scaling"
+    time_colors = {
+        "Pure MCTS": "#E84393",
+        "AlphaTransit": WALL_CLOCK_COLORS["alphatransit"],
+    }
 
-    ax.bar(
-        x - width / 2,
-        pure_times,
-        width,
-        yerr=pure_stds,
-        color=WALL_CLOCK_COLORS["pure_mcts"],
-        error_kw={"ecolor": "#111111", "elinewidth": 1.05, "capsize": 4.0, "capthick": 1.05},
-        alpha=0.88,
-        label="MCTS",
-        zorder=3,
+    rows: list[dict[str, float | int | str]] = []
+    for method, path in [
+        ("Pure MCTS", log_dir / f"pure_mcts_alpha_{alpha_key}_log.csv"),
+        ("AlphaTransit", log_dir / f"alphatransit_alpha_{alpha_key}_log.csv"),
+    ]:
+        if not path.exists():
+            continue
+        data = pd.read_csv(path)
+        if data.empty:
+            continue
+        data = data[np.isclose(data["alpha"].astype(float), alpha_value)]
+        for n_iter, group in data.groupby("n_iter"):
+            route_lengths = [
+                int(route_group["route_length"].max()) + 1
+                for _, route_group in group.groupby("route_idx")
+            ]
+            if len(route_lengths) != 5 or any(length != 14 for length in route_lengths):
+                continue
+            values = group["step_time_s"].astype(float).to_numpy()
+            if values.size == 0:
+                continue
+            mean = float(values.mean())
+            rows.append(
+                {
+                    "method": method,
+                    "n_iter": int(n_iter),
+                    "mean": mean,
+                    "std": float(values.std(ddof=1)) if values.size > 1 else 0.0,
+                }
+            )
+
+    plot_df = pd.DataFrame(rows)
+
+    def plot_method(target_ax: plt.Axes, method: str, color: str, zorder: int) -> None:
+        if plot_df.empty:
+            return
+        method_df = plot_df[plot_df["method"] == method].sort_values("n_iter")
+        if method_df.empty:
+            return
+        means = method_df["mean"].to_numpy(dtype=float)
+        stds = method_df["std"].to_numpy(dtype=float)
+        lower = np.minimum(stds, np.maximum(means - 1e-6, 1e-6))
+        upper = stds
+        target_ax.errorbar(
+            method_df["n_iter"].to_numpy(dtype=int),
+            means,
+            yerr=np.vstack([lower, upper]),
+            fmt="o-",
+            color=color,
+            ecolor=color,
+            linewidth=2.0,
+            elinewidth=1.2,
+            capsize=4.0,
+            capthick=1.2,
+            markersize=6.5,
+            label=method,
+            zorder=zorder,
+        )
+
+    if plot_df.empty:
+        ax.set_title(_bold_label("Search Time"), fontsize=fs + 1, color="#111111")
+        ax.set_xlabel(_bold_label("MCTS Simulations"))
+        ax.set_ylabel(_bold_label("Seconds / Decision"))
+        return
+
+    ax.set_axis_off()
+    upper_ax = ax.inset_axes([0.0, 0.53, 1.0, 0.47])
+    lower_ax = ax.inset_axes([0.0, 0.00, 1.0, 0.42], sharex=upper_ax)
+
+    for band_ax in (upper_ax, lower_ax):
+        _style_learning_axis(band_ax)
+        band_ax.set_yscale("log")
+        band_ax.set_xticks(n_iters)
+        band_ax.set_xlim(70, 530)
+        band_ax.grid(True, which="major", axis="both", zorder=0)
+        band_ax.grid(False, which="minor", axis="y")
+        band_ax.tick_params(axis="y", which="major", length=7.0, width=0.85, color="#666666")
+        band_ax.tick_params(axis="y", which="minor", length=4.2, width=0.70, color="#888888")
+
+    plot_method(upper_ax, "Pure MCTS", time_colors["Pure MCTS"], 5)
+    plot_method(lower_ax, "AlphaTransit", time_colors["AlphaTransit"], 5)
+
+    def set_method_ylim(target_ax: plt.Axes, method: str, lower_pad: float, upper_pad: float) -> None:
+        method_df = plot_df[plot_df["method"] == method]
+        if method_df.empty:
+            return
+        low = float((method_df["mean"] - method_df["std"]).clip(lower=1e-6).min()) * lower_pad
+        high = float((method_df["mean"] + method_df["std"]).max()) * upper_pad
+        if np.isfinite(low) and np.isfinite(high) and high > low:
+            target_ax.set_ylim(low, high)
+
+    set_method_ylim(upper_ax, "Pure MCTS", 0.82, 1.18)
+    set_method_ylim(lower_ax, "AlphaTransit", 0.72, 1.32)
+
+    def apply_compact_time_ticks(target_ax: plt.Axes) -> None:
+        low, high = target_ax.get_ylim()
+        powers = np.arange(-1, 6)
+        candidates = np.asarray(
+            [base * (10.0 ** power) for power in powers for base in (1.0, 2.0, 5.0)],
+            dtype=float,
+        )
+        ticks = candidates[(candidates >= low) & (candidates <= high)]
+        if ticks.size > 4:
+            keep = np.linspace(0, ticks.size - 1, 4).round().astype(int)
+            ticks = ticks[keep]
+        target_ax.set_yticks(ticks)
+        target_ax.yaxis.set_minor_formatter(NullFormatter())
+
+        def compact_seconds(value: float, _: int) -> str:
+            if value >= 1000.0:
+                return f"{value / 1000.0:g}K"
+            if value >= 10.0:
+                return f"{value:g}"
+            return f"{value:g}"
+
+        target_ax.yaxis.set_major_formatter(FuncFormatter(compact_seconds))
+
+    apply_compact_time_ticks(upper_ax)
+    apply_compact_time_ticks(lower_ax)
+
+    upper_ax.spines["bottom"].set_visible(False)
+    lower_ax.spines["top"].set_visible(False)
+    upper_ax.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+
+    break_kwargs = dict(color="#666666", linewidth=0.9, clip_on=False)
+    for x_center in (-0.012, 1.012):
+        upper_ax.plot(
+            (x_center - 0.015, x_center + 0.015),
+            (-0.018, 0.018),
+            transform=upper_ax.transAxes,
+            **break_kwargs,
+        )
+        lower_ax.plot(
+            (x_center - 0.015, x_center + 0.015),
+            (0.982, 1.018),
+            transform=lower_ax.transAxes,
+            **break_kwargs,
+        )
+
+    upper_ax.set_title(_bold_label("Search Time"), fontsize=fs + 1, color="#111111")
+    lower_ax.set_xlabel(_bold_label("MCTS Simulations"))
+    lower_ax.xaxis.label.set_color("#111111")
+    ax.text(
+        -0.17,
+        0.50,
+        _bold_label("Seconds / Decision"),
+        transform=ax.transAxes,
+        rotation=90,
+        va="center",
+        ha="center",
+        fontsize=fs + 2,
+        color="#111111",
     )
-    ax.bar(
-        x + width / 2,
-        alpha_times,
-        width,
-        yerr=alpha_stds,
-        color=WALL_CLOCK_COLORS["alphatransit"],
-        error_kw={"ecolor": "#111111", "elinewidth": 1.05, "capsize": 4.0, "capthick": 1.05},
-        alpha=0.88,
-        label="AlphaTransit",
-        zorder=3,
+
+    legend_handles = [
+        mlines.Line2D(
+            [],
+            [],
+            color=time_colors[label],
+            marker="o",
+            linestyle="-",
+            linewidth=2.0,
+            markersize=7.2,
+            label=label,
+        )
+        for label in ("AlphaTransit", "Pure MCTS")
+    ]
+    legend = lower_ax.legend(
+        handles=legend_handles,
+        labels=["AlphaTransit", "Pure MCTS"],
+        loc="lower right",
+        ncol=1,
+        frameon=True,
+        fancybox=False,
+        edgecolor="#CCCCCC",
+        fontsize=fs - 2,
+        columnspacing=0.9,
+        handlelength=1.25,
+        handletextpad=0.4,
+        labelspacing=0.35,
+        borderpad=0.28,
     )
-    max_time = np.nanmax(
-        np.asarray(pure_times + alpha_times, dtype=float)
-        + np.nan_to_num(np.asarray(pure_stds + alpha_stds, dtype=float), nan=0.0)
-    )
-    if np.isfinite(max_time):
-        ax.set_ylim(0.0, max_time * 1.18)
-    _set_five_y_ticks(ax)
-    ax.set_xticks(x)
-    ax.set_xticklabels([str(n_iter) for n_iter in n_iters])
-    ax.set_title(_bold_label("Search Runtime"), fontsize=fs + 1, color="#111111")
-    ax.set_xlabel(_bold_label("MCTS Simulations"))
-    ax.set_ylabel(_bold_label("Time / Route (min)"))
-    ax.xaxis.label.set_color("#111111")
-    ax.yaxis.label.set_color("#111111")
-    ax.grid(True, axis="y", zorder=0)
+    legend.get_frame().set_facecolor("#FFFFFF")
+    for text in legend.get_texts():
+        text.set_color("#111111")
 
 
 def plot_learning_overview(
@@ -1806,17 +1579,17 @@ def plot_learning_overview(
     alpha_key: str = "1_0",
 ) -> Path:
     """
-    Build the final RL/AlphaTransit training and wall-clock overview for one alpha.
+    Build the final RL/AlphaTransit training and search-time overview for one alpha.
 
     Left panel: PPO/RL reward ablation curves grouped by reward mode; curves
     average all available runs for each mode and use the PPO evaluation reward
     histories loaded for the requested alpha.
 
-    Middle panel: wall-clock route-construction timing for MCTS and
-    AlphaTransit over n_iter in {100, 200, 300, 400, 500}. Bars summarize a
-    CPU-only, one-worker benchmark on Bloomington. Each method constructs five
-    fixed-length routes (14 stops each); bars show mean route-construction time
-    over the five routes and error bars show route-level standard deviation.
+    Middle panel: per-decision wall-clock timing for Pure MCTS and
+    AlphaTransit over n_iter in {100, 200, 300, 400, 500}. Curves summarize a
+    CPU-only, one-worker Bloomington benchmark over five fixed-length routes
+    (14 stops each); points show mean decision time and error bars show one
+    standard deviation across route-construction decisions.
 
     Right panel: AlphaTransit versus end-to-end RL training. AlphaTransit uses
     the search-depth run with 500 MCTS simulations per decision via
@@ -1836,11 +1609,39 @@ def plot_learning_overview(
     _plot_final_wall_clock_panel(axes[1], alpha_key, fs=fs)
     _plot_final_training_comparison_panel(axes[2], alpha_key, fs=fs)
 
-    legend_locs = ["lower right", "upper left", "lower right"]
+    legend_locs = ["lower right", "lower right", "lower right"]
     legend_cols = [2, 1, 1]
-    for ax, legend_loc, legend_ncol in zip(axes, legend_locs, legend_cols):
+    for idx, (ax, legend_loc, legend_ncol) in enumerate(zip(axes, legend_locs, legend_cols)):
         handles, labels = ax.get_legend_handles_labels()
         if handles:
+            if idx == 1:
+                color_lookup = {
+                    "Pure MCTS": "#E84393",
+                    "AlphaTransit": WALL_CLOCK_COLORS["alphatransit"],
+                }
+                ordered = [
+                    (handle, label)
+                    for preferred in ("AlphaTransit", "Pure MCTS")
+                    for handle, label in zip(handles, labels)
+                    if label == preferred
+                ]
+                if ordered:
+                    handles, labels = zip(*ordered)
+                    handles = list(handles)
+                    labels = list(labels)
+                handles = [
+                    mlines.Line2D(
+                        [],
+                        [],
+                        color=color_lookup.get(label, "#333333"),
+                        marker="o",
+                        linestyle="-",
+                        linewidth=2.0,
+                        markersize=7.2,
+                        label=label,
+                    )
+                    for label in labels
+                ]
             legend = ax.legend(
                 handles=handles,
                 labels=labels,
@@ -1862,6 +1663,428 @@ def plot_learning_overview(
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.88, bottom=0.16, wspace=0.30)
     _save_figure_with_optional_png(fig, output_path, facecolor=BACKGROUND)
+    plt.close(fig)
+    return output_path
+
+
+# ============================================================================
+# Overview maps: Bloomington (street + demand) + Laval network
+# ============================================================================
+OVERVIEW_MAP_BACKGROUND = "#F7F8FA"
+_DEMAND_COLOR_ORIGIN = "#16A6FF"
+_DEMAND_COLOR_DEST = "#F0447A"
+_TOP_ORIGIN_COLOR = "#1677FF"
+_TOP_DEST_COLOR = "#D92D5C"
+_BLOOMINGTON_HUB_NODE = "96"
+_LAVAL_HUB_NODE = "542"
+_BASEMAP_TILE_ZOOM_BLOOMINGTON = 14
+_BASEMAP_TILE_ZOOM_LAVAL = 13
+_BLOOMINGTON_CRS = "EPSG:32616"
+# Laval source coords are confirmed-meters in an unknown local projection
+# (link `length` column matches Euclidean distance). Graph is placed at 1:1
+# ground-meter scale centered on real Laval; basemap uses its own bbox tuned
+# by hand for the desired framing.
+_LAVAL_CENTER_LONLAT = (-73.71, 45.59)
+_LAVAL_GRAPH_SCALE = 3.0
+_LAVAL_GRAPH_Y_OFFSET_M = 2200.0  # positive = move overlay up (ground meters)
+_LAVAL_GRAPH_X_OFFSET_M = 0.0  # positive = move overlay right (ground meters)
+_LAVAL_GRAPH_ROT_DEG = -2.5  # negative = clockwise rotation of overlay
+_LAVAL_GRAPH_X_STRETCH_LEFT = 1.06  # >1.0 = stretch left, right edge fixed
+_LAVAL_GRAPH_X_STRETCH_RIGHT = 1.04  # >1.0 = stretch right, left edge fixed
+_LAVAL_BASEMAP_ZOOM_FACTOR = 0.95  # <1.0 = zoom basemap in
+_LAVAL_GEO_BBOX = (-73.88, 45.540, -73.55, 45.670)
+_LAVAL_BASEMAP_LON_PAD_DEG = 0.03
+_LAVAL_BASEMAP_LAT_PAD_DEG = 0.0
+_LAVAL_BASEMAP_ROT_DEG = 10.0
+_NODE_DOT_CMAP = "YlOrBr"
+_BLOOMINGTON_NODE_COLOR = "#FE9929"  # mid of YlOrBr (matches center of Laval colorbar)
+_HUB_PIN_ZOOM = 0.056
+_LEGEND_PIN_ZOOM = 0.0375
+_NETWORK_EDGE_ALPHA = 0.32
+_DENSITY_ORIGIN = dict(
+    bw_method=0.09,
+    levels=[0.08, 0.16, 0.28, 0.42, 0.58, 0.76, 0.92],
+    fill_alphas=[0.035, 0.032, 0.028, 0.023, 0.018, 0.013, 0.009],
+    line_alpha=0.68,
+)
+_DENSITY_DEST = dict(
+    bw_method=0.13,
+    levels=[0.035, 0.07, 0.12, 0.20, 0.32, 0.48, 0.66, 0.84],
+    fill_alphas=[0.055, 0.050, 0.043, 0.036, 0.028, 0.020, 0.014, 0.010],
+    line_alpha=0.76,
+)
+_PANEL_LEGEND_KW = dict(
+    frameon=True, fancybox=False, edgecolor="#D6DBE3",
+    handlelength=1.4, handletextpad=0.55, labelspacing=0.35, borderpad=0.35,
+)
+
+
+class _RedPinLegendHandle:
+    pass
+
+
+class _RedPinLegendHandler(HandlerBase):
+    def __init__(self, pin_image, zoom: float = 0.05):
+        super().__init__()
+        self.pin_image = pin_image
+        self.zoom = zoom
+
+    def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
+        artist = AnnotationBbox(
+            OffsetImage(self.pin_image, zoom=self.zoom, resample=True),
+            (xdescent + width / 2.0, ydescent + height / 2.0),
+            xycoords=trans,
+            frameon=False,
+            box_alignment=(0.5, 0.5),
+            pad=0,
+        )
+        return [artist]
+
+
+def _pin_image(filename: str) -> np.ndarray | None:
+    pin_path = ASSETS_DIR / filename
+    if not pin_path.exists():
+        return None
+    pin_img = plt.imread(pin_path).copy()
+    if pin_img.shape[2] == 4:
+        pin_img[:, :, 3] = pin_img[:, :, 3] * 0.9
+    return pin_img
+
+
+def _transit_center_legend_handle(pin_filename: str = "pin_blue.png", fallback_color: str = "#1A73E8") -> tuple[object, dict]:
+    pin_img = _pin_image(pin_filename)
+    if pin_img is None:
+        return (
+            mlines.Line2D([], [], marker="o", linestyle="None", color=fallback_color, markeredgecolor="#FFFFFF", markersize=8.0),
+            {},
+        )
+    handle = _RedPinLegendHandle()
+    return handle, {_RedPinLegendHandle: _RedPinLegendHandler(pin_img, zoom=_LEGEND_PIN_ZOOM)}
+
+
+def _bbox_from_coords(coords: dict) -> tuple[float, float, float, float]:
+    xs = np.fromiter((c[0] for c in coords.values()), dtype=float, count=len(coords))
+    ys = np.fromiter((c[1] for c in coords.values()), dtype=float, count=len(coords))
+    return float(xs.min()), float(xs.max()), float(ys.min()), float(ys.max())
+
+
+def _aggregate_node_demand(demand: pd.DataFrame) -> pd.Series:
+    return (
+        demand.groupby("orig")["volume"].sum()
+        .add(demand.groupby("dest")["volume"].sum(), fill_value=0.0)
+    )
+
+
+def _bloomington_data() -> dict:
+    nodes = load_nodes("bloomington")
+    links = load_links("bloomington")
+    demand = pd.read_csv(
+        NETWORKS_DIR / "bloomington" / "bloomington_demand_standard.csv",
+        dtype={"orig": str, "dest": str},
+    )
+    coords = _coords_dict(nodes)
+    origin_demand = demand.groupby("orig")["volume"].sum()
+    dest_demand = demand.groupby("dest")["volume"].sum()
+    degree = pd.concat([links["start"].astype(str), links["end"].astype(str)]).value_counts()
+    return {
+        "links": links,
+        "coords": coords,
+        "origin_demand": origin_demand,
+        "dest_demand": dest_demand,
+        "top_origin": str(origin_demand.idxmax()),
+        "top_dest": str(dest_demand.idxmax()),
+        "node_demand": _aggregate_node_demand(demand),
+        "degree": degree,
+        "bbox": _bbox_from_coords(coords),
+        "hub_node": _BLOOMINGTON_HUB_NODE,
+        "basemap_crs": _BLOOMINGTON_CRS,
+        "basemap_zoom": _BASEMAP_TILE_ZOOM_BLOOMINGTON,
+        "basemap_rot_deg": 0.0,
+    }
+
+
+def _laval_data() -> dict:
+    """Load Laval graph and remap synthetic coords into web-mercator over real Laval, QC."""
+    nodes = load_nodes("laval")
+    links = load_links("laval")
+    demand = pd.read_csv(
+        NETWORKS_DIR / "laval" / "laval_demand_standard.csv",
+        dtype={"orig": str, "dest": str},
+    )
+    raw_coords = _coords_dict(nodes)
+    src_xmin, src_xmax, src_ymin, src_ymax = _bbox_from_coords(raw_coords)
+
+    if _HAS_PYPROJ:
+        transformer = _Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+        # Place graph at 1:1 ground-meter scale centered on real Laval.
+        center_x_wm, center_y_wm = transformer.transform(*_LAVAL_CENTER_LONLAT)
+        wm_per_ground_meter = 1.0 / np.cos(np.radians(_LAVAL_CENTER_LONLAT[1]))
+        sx_center = (src_xmin + src_xmax) / 2.0
+        sy_center = (src_ymin + src_ymax) / 2.0
+
+        rot_rad = np.radians(_LAVAL_GRAPH_ROT_DEG)
+        cos_r, sin_r = np.cos(rot_rad), np.sin(rot_rad)
+
+        new_xmin_after_left = src_xmax + (src_xmin - src_xmax) * _LAVAL_GRAPH_X_STRETCH_LEFT
+
+        def remap(sx: float, sy: float) -> tuple[float, float]:
+            sx_after_left = src_xmax + (sx - src_xmax) * _LAVAL_GRAPH_X_STRETCH_LEFT
+            sx_eff = new_xmin_after_left + (sx_after_left - new_xmin_after_left) * _LAVAL_GRAPH_X_STRETCH_RIGHT
+            dx = (sx_eff - sx_center) * _LAVAL_GRAPH_SCALE
+            dy = (sy - sy_center) * _LAVAL_GRAPH_SCALE
+            rx = dx * cos_r - dy * sin_r
+            ry = dx * sin_r + dy * cos_r
+            return (
+                center_x_wm + (rx + _LAVAL_GRAPH_X_OFFSET_M) * wm_per_ground_meter,
+                center_y_wm + (ry + _LAVAL_GRAPH_Y_OFFSET_M) * wm_per_ground_meter,
+            )
+
+        coords = {nid: remap(x, y) for nid, (x, y) in raw_coords.items()}
+        # Basemap bbox: hand-tuned lat/lon rectangle plus padding.
+        lon_lo, lat_lo, lon_hi, lat_hi = _LAVAL_GEO_BBOX
+        bm_wm_xmin, bm_wm_ymin = transformer.transform(lon_lo - _LAVAL_BASEMAP_LON_PAD_DEG, lat_lo - _LAVAL_BASEMAP_LAT_PAD_DEG)
+        bm_wm_xmax, bm_wm_ymax = transformer.transform(lon_hi + _LAVAL_BASEMAP_LON_PAD_DEG, lat_hi + _LAVAL_BASEMAP_LAT_PAD_DEG)
+        cx_wm = (bm_wm_xmin + bm_wm_xmax) / 2.0
+        cy_wm = (bm_wm_ymin + bm_wm_ymax) / 2.0
+        half_wm = max(bm_wm_xmax - bm_wm_xmin, bm_wm_ymax - bm_wm_ymin) / 2.0 * _LAVAL_BASEMAP_ZOOM_FACTOR
+        bbox = (cx_wm - half_wm, cx_wm + half_wm, cy_wm - half_wm, cy_wm + half_wm)
+        basemap_crs = "EPSG:3857"
+    else:
+        coords = raw_coords
+        bbox = (src_xmin, src_xmax, src_ymin, src_ymax)
+        basemap_crs = None
+
+    degree = pd.concat([links["start"].astype(str), links["end"].astype(str)]).value_counts()
+    return {
+        "links": links,
+        "coords": coords,
+        "degree": degree,
+        "node_demand": _aggregate_node_demand(demand),
+        "bbox": bbox,
+        "hub_node": _LAVAL_HUB_NODE,
+        "basemap_crs": basemap_crs,
+        "basemap_zoom": _BASEMAP_TILE_ZOOM_LAVAL,
+        "basemap_rot_deg": _LAVAL_BASEMAP_ROT_DEG,
+    }
+
+
+def _setup_map_axis(
+    ax: plt.Axes,
+    bbox: tuple[float, float, float, float],
+    *,
+    pad_frac: float = 0.02,
+) -> None:
+    xmin, xmax, ymin, ymax = bbox
+    cx = (xmin + xmax) / 2.0
+    cy = (ymin + ymax) / 2.0
+    half = max(xmax - xmin, ymax - ymin) / 2.0
+    pad = max(half * pad_frac, 1.0)
+    half += pad
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_box_aspect(1.0)
+    ax.set_xlim(cx - half, cx + half)
+    ax.set_ylim(cy - half, cy + half)
+    ax.set_facecolor("#FFFFFF")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def _boost_basemap_saturation(arr: np.ndarray, sat: float = 1.45, contrast: float = 1.08) -> np.ndarray:
+    """Push saturation and contrast slightly so muted tiles read better."""
+    a = np.asarray(arr).astype(np.float32)
+    if a.max() > 1.5:
+        a = a / 255.0
+    rgb = a[..., :3]
+    luma = 0.299 * rgb[..., 0:1] + 0.587 * rgb[..., 1:2] + 0.114 * rgb[..., 2:3]
+    rgb = luma + (rgb - luma) * sat
+    rgb = (rgb - 0.5) * contrast + 0.5
+    rgb = np.clip(rgb, 0.0, 1.0)
+    if a.shape[-1] == 4:
+        return np.concatenate([rgb, a[..., 3:4]], axis=-1)
+    return rgb
+
+
+def _add_osm_basemap(ax: plt.Axes, *, crs: str | None, zoom: int, rotate_deg: float = 0.0) -> None:
+    if not _HAS_CTX or crs is None:
+        return
+    try:
+        xlim, ylim = ax.get_xlim(), ax.get_ylim()
+        if rotate_deg == 0.0:
+            xpad = (xlim[1] - xlim[0]) * 0.15
+            ypad = (ylim[1] - ylim[0]) * 0.15
+            ax.set_xlim(xlim[0] - xpad, xlim[1] + xpad)
+            ax.set_ylim(ylim[0] - ypad, ylim[1] + ypad)
+            _ctx.add_basemap(ax, source=_ctx.providers.CartoDB.VoyagerNoLabels, alpha=1.0, attribution_size=4, crs=crs, reset_extent=False, zoom=zoom)
+            img_obj = ax.images[-1]
+            img_obj.set_data(_boost_basemap_saturation(img_obj.get_array()))
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        else:
+            xpad = (xlim[1] - xlim[0]) * 0.5
+            ypad = (ylim[1] - ylim[0]) * 0.5
+            west, east = xlim[0] - xpad, xlim[1] + xpad
+            south, north = ylim[0] - ypad, ylim[1] + ypad
+            img, extent = _ctx.bounds2img(west, south, east, north, zoom=zoom, source=_ctx.providers.CartoDB.VoyagerNoLabels, ll=False)
+            img = _boost_basemap_saturation(img)
+            cx = (xlim[0] + xlim[1]) / 2.0
+            cy = (ylim[0] + ylim[1]) / 2.0
+            trans = Affine2D().rotate_deg_around(cx, cy, rotate_deg) + ax.transData
+            ax.imshow(img, extent=extent, interpolation="bilinear", origin="upper", zorder=0, transform=trans)
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+    except Exception as exc:
+        print(f"Skipping basemap: {exc}")
+
+
+def _draw_demand_density(
+    ax: plt.Axes,
+    data: dict,
+    demand_by_node: pd.Series,
+    *,
+    color: str,
+    zorder: int,
+    bw_method: float,
+    levels: list[float],
+    fill_alphas: list[float],
+    line_alpha: float,
+) -> None:
+    if not _HAS_KDE:
+        return
+    coords = data["coords"]
+    node_ids = [str(n) for n in demand_by_node.index if str(n) in coords and demand_by_node[n] > 0]
+    if len(node_ids) < 3:
+        return
+    xs = np.asarray([coords[n][0] for n in node_ids], dtype=float)
+    ys = np.asarray([coords[n][1] for n in node_ids], dtype=float)
+    weights = np.asarray([float(demand_by_node[n]) for n in node_ids], dtype=float)
+    xmin, xmax, ymin, ymax = data["bbox"]
+    xpad = (xmax - xmin) * 0.05
+    ypad = (ymax - ymin) * 0.05
+    grid_x, grid_y = np.meshgrid(
+        np.linspace(xmin - xpad, xmax + xpad, 220),
+        np.linspace(ymin - ypad, ymax + ypad, 220),
+    )
+    kde = _gaussian_kde(np.vstack([xs, ys]), weights=weights, bw_method=bw_method)
+    density = kde(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
+    if density.max() <= 0:
+        return
+    density /= density.max()
+    for level, alpha in zip(levels, fill_alphas):
+        ax.contourf(grid_x, grid_y, density, levels=[level, 1.05], colors=[color], alpha=alpha, zorder=zorder)
+    line_widths = np.linspace(1.9, 0.55, len(levels) - 1)
+    ax.contour(grid_x, grid_y, density, levels=levels[1:], colors=[color], linewidths=line_widths, alpha=line_alpha, zorder=zorder + 1)
+
+
+def _panel_legend(ax: plt.Axes, handles, labels, fs: int, *, loc: str = "upper right", handler_map: dict | None = None) -> None:
+    leg = ax.legend(handles=handles, labels=labels, fontsize=fs - 3, loc=loc, handler_map=handler_map, **_PANEL_LEGEND_KW)
+    leg.get_frame().set_facecolor("#FFFFFF")
+
+
+def _plot_network_panel(
+    ax: plt.Axes,
+    data: dict,
+    fs: int,
+    *,
+    title: str,
+    vmin: float,
+    vmax: float,
+    legend_loc: str = "upper left",
+    pad_frac: float = 0.02,
+    with_overlay: bool = True,
+    cmap=_NODE_DOT_CMAP,
+    solid_color: str | None = None,
+):
+    """Draw a network panel with demand-colored nodes and transit-center pin. Returns the scatter handle (or None)."""
+    _setup_map_axis(ax, data["bbox"], pad_frac=pad_frac)
+    _add_osm_basemap(ax, crs=data["basemap_crs"], zoom=data["basemap_zoom"], rotate_deg=data.get("basemap_rot_deg", 0.0))
+    ax.set_title(_bold_label(title), fontsize=fs + 2, color="#111111", pad=8)
+    if not with_overlay:
+        return None
+
+    coords = data["coords"]
+    draw_basemap(ax, data["links"], coords, color="#3F4654", linewidth=0.55, alpha=_NETWORK_EDGE_ALPHA, zorder=2)
+
+    node_ids = list(coords.keys())
+    nx = np.asarray([coords[n][0] for n in node_ids])
+    ny = np.asarray([coords[n][1] for n in node_ids])
+    if solid_color is None:
+        degrees = np.asarray([data["degree"].get(n, 1) for n in node_ids], dtype=float)
+        demands = np.asarray([data["node_demand"].get(n, 0.0) for n in node_ids], dtype=float)
+        log_demands = np.log1p(demands)
+        deg_range = max(degrees.max() - degrees.min(), 1.0)
+        sizes = 3.0 + (degrees - degrees.min()) / deg_range * 40.0
+        sc = ax.scatter(nx, ny, s=sizes, c=log_demands, cmap=cmap, vmin=vmin, vmax=vmax, edgecolors="none", alpha=0.85, zorder=3)
+        legend_marker_color = "#D95F0E"
+    else:
+        sc = ax.scatter(nx, ny, s=14.0, color=solid_color, edgecolors="none", alpha=0.9, zorder=3)
+        legend_marker_color = solid_color
+
+    draw_transit_center(ax, coords, zoom=_HUB_PIN_ZOOM, node_id=data["hub_node"], pin="pin_blue.png")
+
+    pin_handle, pin_handler_map = _transit_center_legend_handle()
+    edge_handle = mlines.Line2D([], [], color="#3F4654", linewidth=2.0, alpha=0.7)
+    node_handle = mlines.Line2D([], [], marker="o", linestyle="None", color=legend_marker_color, markeredgecolor="#FFFFFF", markersize=8)
+    _panel_legend(
+        ax,
+        handles=[edge_handle, node_handle, pin_handle],
+        labels=[f"{len(data['links'])} edges", f"{len(coords)} nodes", "Transit center"],
+        fs=fs,
+        loc=legend_loc,
+        handler_map=pin_handler_map,
+    )
+    return sc
+
+
+def _plot_bloomington_demand(ax: plt.Axes, data: dict, fs: int, *, pad_frac: float = 0.07) -> None:
+    _setup_map_axis(ax, data["bbox"], pad_frac=pad_frac)
+    _add_osm_basemap(ax, crs=data["basemap_crs"], zoom=data["basemap_zoom"], rotate_deg=data.get("basemap_rot_deg", 0.0))
+    draw_basemap(ax, data["links"], data["coords"], color="#AEB8C4", linewidth=0.46, alpha=0.35, zorder=2)
+    _draw_demand_density(ax, data, data["origin_demand"], color=_DEMAND_COLOR_ORIGIN, zorder=3, **_DENSITY_ORIGIN)
+    _draw_demand_density(ax, data, data["dest_demand"], color=_DEMAND_COLOR_DEST, zorder=7, **_DENSITY_DEST)
+    for node_id, marker, color, size in (
+        (data["top_origin"], "^", _TOP_ORIGIN_COLOR, 170.0),
+        (data["top_dest"], "*", _TOP_DEST_COLOR, 265.0),
+    ):
+        if node_id in data["coords"]:
+            x, y = data["coords"][node_id]
+            ax.scatter([x], [y], s=size, marker=marker, color=color, edgecolors="#FFFFFF", linewidths=1.2, zorder=25)
+    ax.set_title(_bold_label("Bloomington Demand"), fontsize=fs + 2, color="#111111", pad=8)
+    _panel_legend(
+        ax,
+        handles=[
+            mlines.Line2D([], [], color=_DEMAND_COLOR_ORIGIN, linewidth=2.4),
+            mlines.Line2D([], [], color=_DEMAND_COLOR_DEST, linewidth=2.4),
+        ],
+        labels=["Origins", "Destinations"],
+        fs=fs,
+    )
+
+
+def plot_overview_maps(output_path: Path = NEURIPS_RESULTS_DIR / "final_overview_maps.pdf") -> Path:
+    """Three-panel benchmark overview: Bloomington network, Bloomington demand, Laval network."""
+    fs = 17
+    apply_plot_style(fs, background=OVERVIEW_MAP_BACKGROUND)
+    bloomington = _bloomington_data()
+    laval = _laval_data()
+
+    laval_log_demands = np.log1p(np.asarray([laval["node_demand"].get(n, 0.0) for n in laval["coords"]], dtype=float))
+    vmin, vmax = float(laval_log_demands.min()), float(laval_log_demands.max())
+
+    fig, axes = plt.subplots(1, 3, figsize=(17.2, 6.4))
+    _plot_network_panel(axes[0], bloomington, fs, title="Bloomington Network", vmin=vmin, vmax=vmax, legend_loc="upper right", pad_frac=0.07, solid_color=_BLOOMINGTON_NODE_COLOR)
+    _plot_bloomington_demand(axes[1], bloomington, fs)
+    laval_sc = _plot_network_panel(axes[2], laval, fs, title="Laval Network", vmin=vmin, vmax=vmax)
+    fig.subplots_adjust(left=0.025, right=0.93, top=0.92, bottom=0.05, wspace=0.05)
+
+    cbar_ax = fig.add_axes([0.945, 0.18, 0.012, 0.65])
+    cbar = fig.colorbar(laval_sc, cax=cbar_ax)
+    cbar.set_label(r"Demand (log scale)", fontsize=fs - 2, color="#111111")
+    cbar.ax.tick_params(labelsize=fs - 4, colors="#666666")
+    cbar.outline.set_edgecolor("#CCCCCC")
+
+    save_figure(fig, output_path, facecolor=OVERVIEW_MAP_BACKGROUND)
     plt.close(fig)
     return output_path
 
@@ -1898,10 +2121,9 @@ def plot_route_designs(
 
 PLOT_BUILDERS = {
     "method-comparison": plot_method_comparison_triptych,
-    "combined-scaling": plot_combined_scaling_summary,
-    "sweep-behavior": plot_sweep_behavior_dashboard,
     "scaling-overview": plot_scaling_behavior_overview,
     "learning-overview": plot_learning_overview,
+    "overview-maps": plot_overview_maps,
     "route-designs": plot_route_designs,
 }
 
@@ -1924,6 +2146,7 @@ def generate_default(
             output_dir / f"final_learning_overview_alpha_{scaling_alpha_key}.pdf",
             alpha_key=scaling_alpha_key,
         )
+    plot_overview_maps(output_dir / "final_overview_maps.pdf")
     plot_route_designs(output_dir)
 
 
@@ -1937,19 +2160,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     method_comparison.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
     method_comparison.add_argument("--output", type=Path)
-
-    combined_scaling = subparsers.add_parser(
-        "combined-scaling",
-        help="Build the three-panel alpha-overlay scaling summary figure.",
-    )
-    combined_scaling.add_argument("--output", type=Path)
-
-    sweep_behavior = subparsers.add_parser(
-        "sweep-behavior",
-        help="Build the 2x3 sweep behavior and quality-vs-compute dashboard.",
-    )
-    sweep_behavior.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
-    sweep_behavior.add_argument("--output", type=Path)
 
     scaling_overview = subparsers.add_parser(
         "scaling-overview",
@@ -1978,6 +2188,12 @@ def build_parser() -> argparse.ArgumentParser:
     route_designs.add_argument("--max-cols", type=int, default=5)
     route_designs.add_argument("--output-dir", type=Path, default=NEURIPS_RESULTS_DIR)
 
+    overview_maps = subparsers.add_parser(
+        "overview-maps",
+        help="Build the three-panel benchmark overview (Bloomington street + demand + Laval network).",
+    )
+    overview_maps.add_argument("--output", type=Path)
+
     bundle = subparsers.add_parser(
         "all",
         help="Build the default final-paper figure bundle.",
@@ -2001,16 +2217,6 @@ def main(argv: list[str] | None = None) -> None:
         plot_method_comparison_triptych(output, alpha_key=args.alpha)
         return
 
-    if args.command == "combined-scaling":
-        output = args.output or (NEURIPS_RESULTS_DIR / "final_scaling_summary.pdf")
-        plot_combined_scaling_summary(output)
-        return
-
-    if args.command == "sweep-behavior":
-        output = args.output or (NEURIPS_RESULTS_DIR / f"final_sweep_behavior_alpha_{args.alpha}.pdf")
-        plot_sweep_behavior_dashboard(output, alpha_key=args.alpha)
-        return
-
     if args.command == "scaling-overview":
         output = args.output or (NEURIPS_RESULTS_DIR / f"final_scaling_behavior_alpha_{args.alpha}.pdf")
         plot_scaling_behavior_overview(output, alpha_key=args.alpha)
@@ -2023,6 +2229,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "route-designs":
         plot_route_designs(args.output_dir, alpha_keys=tuple(args.alphas), max_cols=args.max_cols)
+        return
+
+    if args.command == "overview-maps":
+        output = args.output or (NEURIPS_RESULTS_DIR / "final_overview_maps.pdf")
+        plot_overview_maps(output)
         return
 
     if args.command == "all":

@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.collections import LineCollection
 from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from PIL import Image
@@ -192,21 +193,26 @@ def _grid_layout(n: int, max_cols: int) -> Tuple[int, int]:
     return math.ceil(n / ncols), ncols
 
 
-def draw_basemap(ax: plt.Axes, links: pd.DataFrame, coords: CoordMap) -> None:
-    for _, row in links.iterrows():
-        start = coords.get(row["start"])
-        end = coords.get(row["end"])
-        if start is None or end is None:
-            continue
-        ax.plot(
-            [start[0], end[0]],
-            [start[1], end[1]],
-            color=BASE_EDGE_COLOR,
-            alpha=BASE_EDGE_ALPHA,
-            linewidth=BASE_EDGE_WIDTH,
-            solid_capstyle="round",
-            zorder=0,
+def draw_basemap(
+    ax: plt.Axes,
+    links: pd.DataFrame,
+    coords: CoordMap,
+    *,
+    color: str = BASE_EDGE_COLOR,
+    alpha: float = BASE_EDGE_ALPHA,
+    linewidth: float = BASE_EDGE_WIDTH,
+    zorder: int = 0,
+) -> None:
+    segments = [
+        ((start[0], start[1]), (end[0], end[1]))
+        for start, end in (
+            (coords.get(row["start"]), coords.get(row["end"]))
+            for _, row in links.iterrows()
         )
+        if start is not None and end is not None
+    ]
+    if segments:
+        ax.add_collection(LineCollection(segments, colors=color, alpha=alpha, linewidths=linewidth, capstyle="round", zorder=zorder))
 
 
 def draw_routes(
@@ -252,16 +258,16 @@ def draw_routes(
         )
 
 
-def draw_transit_center(ax: plt.Axes, coords: CoordMap, *, zoom: float = 0.1458) -> None:
-    if TRANSIT_CENTER_NODE not in coords:
+def draw_transit_center(ax: plt.Axes, coords: CoordMap, *, zoom: float = 0.1458, node_id: str = TRANSIT_CENTER_NODE, pin: str = "pin_red.png") -> None:
+    if node_id not in coords:
         return
-    pin_path = ASSETS_DIR / "pin_red.png"
+    pin_path = ASSETS_DIR / pin
     if not pin_path.exists():
         return
     pin_img = plt.imread(pin_path).copy()
     if pin_img.shape[2] == 4:
         pin_img[:, :, 3] = pin_img[:, :, 3] * 0.9
-    pt = coords[TRANSIT_CENTER_NODE]
+    pt = coords[node_id]
     artist = AnnotationBbox(
         OffsetImage(pin_img, zoom=zoom, resample=True),
         pt,
