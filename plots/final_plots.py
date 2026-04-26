@@ -1670,7 +1670,7 @@ def plot_learning_overview(
 # ============================================================================
 # Overview maps: Bloomington (street + demand) + Laval network
 # ============================================================================
-OVERVIEW_MAP_BACKGROUND = "#F7F8FA"
+OVERVIEW_MAP_BACKGROUND = "#FFFFFF"
 _DEMAND_COLOR_ORIGIN = "#16A6FF"
 _DEMAND_COLOR_DEST = "#F0447A"
 _TOP_ORIGIN_COLOR = "#1677FF"
@@ -1680,24 +1680,15 @@ _LAVAL_HUB_NODE = "542"
 _BASEMAP_TILE_ZOOM_BLOOMINGTON = 14
 _BASEMAP_TILE_ZOOM_LAVAL = 13
 _BLOOMINGTON_CRS = "EPSG:32616"
-# Laval source coords are confirmed-meters in an unknown local projection
-# (link `length` column matches Euclidean distance). Graph is placed at 1:1
-# ground-meter scale centered on real Laval; basemap uses its own bbox tuned
-# by hand for the desired framing.
-_LAVAL_CENTER_LONLAT = (-73.71, 45.59)
-_LAVAL_GRAPH_SCALE = 3.0
-_LAVAL_GRAPH_Y_OFFSET_M = 2200.0  # positive = move overlay up (ground meters)
-_LAVAL_GRAPH_X_OFFSET_M = 0.0  # positive = move overlay right (ground meters)
-_LAVAL_GRAPH_ROT_DEG = -2.5  # negative = clockwise rotation of overlay
-_LAVAL_GRAPH_X_STRETCH_LEFT = 1.06  # >1.0 = stretch left, right edge fixed
-_LAVAL_GRAPH_X_STRETCH_RIGHT = 1.04  # >1.0 = stretch right, left edge fixed
-_LAVAL_BASEMAP_ZOOM_FACTOR = 0.95  # <1.0 = zoom basemap in
-_LAVAL_GEO_BBOX = (-73.88, 45.540, -73.55, 45.670)
-_LAVAL_BASEMAP_LON_PAD_DEG = 0.03
-_LAVAL_BASEMAP_LAT_PAD_DEG = 0.0
-_LAVAL_BASEMAP_ROT_DEG = 10.0
+# Laval graph overlay: source coords are EPSG:3347 meters that the legacy
+# converter mistakenly multiplied by 0.3048 (claiming feet→meters). Undo the
+# scale, then reproject to EPSG:3857 for exact placement on the basemap.
+_LAVAL_SOURCE_CRS = "EPSG:3347"
+_LAVAL_SOURCE_UNSCALE = 1.0 / 0.3048
+_LAVAL_BASEMAP_PAD_FRAC = 0.08  # fraction of graph extent to pad basemap bbox
 _NODE_DOT_CMAP = "YlOrBr"
-_BLOOMINGTON_NODE_COLOR = "#FE9929"  # mid of YlOrBr (matches center of Laval colorbar)
+_BLOOMINGTON_NODE_COLOR = "#EC7014"  # deeper orange (YlOrBr step past mid)
+_LAVAL_NODE_COLOR = "#FF7A00"  # neon orange, brighter than Bloomington
 _HUB_PIN_ZOOM = 0.056
 _LEGEND_PIN_ZOOM = 0.0375
 _NETWORK_EDGE_ALPHA = 0.32
@@ -1804,67 +1795,32 @@ def _bloomington_data() -> dict:
 
 
 def _laval_data() -> dict:
-    """Load Laval graph and remap synthetic coords into web-mercator over real Laval, QC."""
+    """Reproject Laval graph through EPSG:3347 → EPSG:3857; basemap bbox auto-fits the graph."""
+    if not _HAS_PYPROJ:
+        return {"bbox": None, "basemap_crs": None, "basemap_zoom": _BASEMAP_TILE_ZOOM_LAVAL, "basemap_rot_deg": 0.0}
     nodes = load_nodes("laval")
     links = load_links("laval")
-    demand = pd.read_csv(
-        NETWORKS_DIR / "laval" / "laval_demand_standard.csv",
-        dtype={"orig": str, "dest": str},
-    )
     raw_coords = _coords_dict(nodes)
-    src_xmin, src_xmax, src_ymin, src_ymax = _bbox_from_coords(raw_coords)
-
-    if _HAS_PYPROJ:
-        transformer = _Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
-        # Place graph at 1:1 ground-meter scale centered on real Laval.
-        center_x_wm, center_y_wm = transformer.transform(*_LAVAL_CENTER_LONLAT)
-        wm_per_ground_meter = 1.0 / np.cos(np.radians(_LAVAL_CENTER_LONLAT[1]))
-        sx_center = (src_xmin + src_xmax) / 2.0
-        sy_center = (src_ymin + src_ymax) / 2.0
-
-        rot_rad = np.radians(_LAVAL_GRAPH_ROT_DEG)
-        cos_r, sin_r = np.cos(rot_rad), np.sin(rot_rad)
-
-        new_xmin_after_left = src_xmax + (src_xmin - src_xmax) * _LAVAL_GRAPH_X_STRETCH_LEFT
-
-        def remap(sx: float, sy: float) -> tuple[float, float]:
-            sx_after_left = src_xmax + (sx - src_xmax) * _LAVAL_GRAPH_X_STRETCH_LEFT
-            sx_eff = new_xmin_after_left + (sx_after_left - new_xmin_after_left) * _LAVAL_GRAPH_X_STRETCH_RIGHT
-            dx = (sx_eff - sx_center) * _LAVAL_GRAPH_SCALE
-            dy = (sy - sy_center) * _LAVAL_GRAPH_SCALE
-            rx = dx * cos_r - dy * sin_r
-            ry = dx * sin_r + dy * cos_r
-            return (
-                center_x_wm + (rx + _LAVAL_GRAPH_X_OFFSET_M) * wm_per_ground_meter,
-                center_y_wm + (ry + _LAVAL_GRAPH_Y_OFFSET_M) * wm_per_ground_meter,
-            )
-
-        coords = {nid: remap(x, y) for nid, (x, y) in raw_coords.items()}
-        # Basemap bbox: hand-tuned lat/lon rectangle plus padding.
-        lon_lo, lat_lo, lon_hi, lat_hi = _LAVAL_GEO_BBOX
-        bm_wm_xmin, bm_wm_ymin = transformer.transform(lon_lo - _LAVAL_BASEMAP_LON_PAD_DEG, lat_lo - _LAVAL_BASEMAP_LAT_PAD_DEG)
-        bm_wm_xmax, bm_wm_ymax = transformer.transform(lon_hi + _LAVAL_BASEMAP_LON_PAD_DEG, lat_hi + _LAVAL_BASEMAP_LAT_PAD_DEG)
-        cx_wm = (bm_wm_xmin + bm_wm_xmax) / 2.0
-        cy_wm = (bm_wm_ymin + bm_wm_ymax) / 2.0
-        half_wm = max(bm_wm_xmax - bm_wm_xmin, bm_wm_ymax - bm_wm_ymin) / 2.0 * _LAVAL_BASEMAP_ZOOM_FACTOR
-        bbox = (cx_wm - half_wm, cx_wm + half_wm, cy_wm - half_wm, cy_wm + half_wm)
-        basemap_crs = "EPSG:3857"
-    else:
-        coords = raw_coords
-        bbox = (src_xmin, src_xmax, src_ymin, src_ymax)
-        basemap_crs = None
-
+    src_to_wm = _Transformer.from_crs(_LAVAL_SOURCE_CRS, "EPSG:3857", always_xy=True)
+    coords = {
+        nid: src_to_wm.transform(sx * _LAVAL_SOURCE_UNSCALE, sy * _LAVAL_SOURCE_UNSCALE)
+        for nid, (sx, sy) in raw_coords.items()
+    }
+    xs = [x for x, _ in coords.values()]
+    ys = [y for _, y in coords.values()]
+    cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    half = max(max(xs) - min(xs), max(ys) - min(ys)) / 2.0 * (1.0 + _LAVAL_BASEMAP_PAD_FRAC)
     degree = pd.concat([links["start"].astype(str), links["end"].astype(str)]).value_counts()
     return {
+        "bbox": (cx - half, cx + half, cy - half, cy + half),
+        "basemap_crs": "EPSG:3857",
+        "basemap_zoom": _BASEMAP_TILE_ZOOM_LAVAL,
+        "basemap_rot_deg": 0.0,
         "links": links,
         "coords": coords,
         "degree": degree,
-        "node_demand": _aggregate_node_demand(demand),
-        "bbox": bbox,
+        "node_demand": {},
         "hub_node": _LAVAL_HUB_NODE,
-        "basemap_crs": basemap_crs,
-        "basemap_zoom": _BASEMAP_TILE_ZOOM_LAVAL,
-        "basemap_rot_deg": _LAVAL_BASEMAP_ROT_DEG,
     }
 
 
@@ -1888,7 +1844,9 @@ def _setup_map_axis(
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
-        spine.set_visible(False)
+        spine.set_visible(True)
+        spine.set_color("#888888")
+        spine.set_linewidth(0.6)
 
 
 def _boost_basemap_saturation(arr: np.ndarray, sat: float = 1.45, contrast: float = 1.08) -> np.ndarray:
@@ -1916,7 +1874,7 @@ def _add_osm_basemap(ax: plt.Axes, *, crs: str | None, zoom: int, rotate_deg: fl
             ypad = (ylim[1] - ylim[0]) * 0.15
             ax.set_xlim(xlim[0] - xpad, xlim[1] + xpad)
             ax.set_ylim(ylim[0] - ypad, ylim[1] + ypad)
-            _ctx.add_basemap(ax, source=_ctx.providers.CartoDB.VoyagerNoLabels, alpha=1.0, attribution_size=4, crs=crs, reset_extent=False, zoom=zoom)
+            _ctx.add_basemap(ax, source=_ctx.providers.CartoDB.VoyagerNoLabels, alpha=1.0, attribution=False, crs=crs, reset_extent=False, zoom=zoom)
             img_obj = ax.images[-1]
             img_obj.set_data(_boost_basemap_saturation(img_obj.get_array()))
             ax.set_xlim(xlim)
@@ -1978,7 +1936,7 @@ def _draw_demand_density(
 
 
 def _panel_legend(ax: plt.Axes, handles, labels, fs: int, *, loc: str = "upper right", handler_map: dict | None = None) -> None:
-    leg = ax.legend(handles=handles, labels=labels, fontsize=fs - 3, loc=loc, handler_map=handler_map, **_PANEL_LEGEND_KW)
+    leg = ax.legend(handles=handles, labels=labels, fontsize=fs - 1, loc=loc, handler_map=handler_map, **_PANEL_LEGEND_KW)
     leg.get_frame().set_facecolor("#FFFFFF")
 
 
@@ -2063,26 +2021,17 @@ def _plot_bloomington_demand(ax: plt.Axes, data: dict, fs: int, *, pad_frac: flo
 
 
 def plot_overview_maps(output_path: Path = NEURIPS_RESULTS_DIR / "final_overview_maps.pdf") -> Path:
-    """Three-panel benchmark overview: Bloomington network, Bloomington demand, Laval network."""
+    """Three-panel benchmark overview: Bloomington network, Bloomington demand, Laval basemap."""
     fs = 17
     apply_plot_style(fs, background=OVERVIEW_MAP_BACKGROUND)
     bloomington = _bloomington_data()
     laval = _laval_data()
 
-    laval_log_demands = np.log1p(np.asarray([laval["node_demand"].get(n, 0.0) for n in laval["coords"]], dtype=float))
-    vmin, vmax = float(laval_log_demands.min()), float(laval_log_demands.max())
-
     fig, axes = plt.subplots(1, 3, figsize=(17.2, 6.4))
-    _plot_network_panel(axes[0], bloomington, fs, title="Bloomington Network", vmin=vmin, vmax=vmax, legend_loc="upper right", pad_frac=0.07, solid_color=_BLOOMINGTON_NODE_COLOR)
+    _plot_network_panel(axes[0], bloomington, fs, title="Bloomington Network", vmin=0.0, vmax=1.0, legend_loc="upper right", pad_frac=0.07, solid_color=_BLOOMINGTON_NODE_COLOR)
     _plot_bloomington_demand(axes[1], bloomington, fs)
-    laval_sc = _plot_network_panel(axes[2], laval, fs, title="Laval Network", vmin=vmin, vmax=vmax)
-    fig.subplots_adjust(left=0.025, right=0.93, top=0.92, bottom=0.05, wspace=0.05)
-
-    cbar_ax = fig.add_axes([0.945, 0.18, 0.012, 0.65])
-    cbar = fig.colorbar(laval_sc, cax=cbar_ax)
-    cbar.set_label(r"Demand (log scale)", fontsize=fs - 2, color="#111111")
-    cbar.ax.tick_params(labelsize=fs - 4, colors="#666666")
-    cbar.outline.set_edgecolor("#CCCCCC")
+    _plot_network_panel(axes[2], laval, fs, title="Laval Network", vmin=0.0, vmax=1.0, solid_color=_LAVAL_NODE_COLOR)
+    fig.subplots_adjust(left=0.025, right=0.985, top=0.92, bottom=0.05, wspace=0.05)
 
     save_figure(fig, output_path, facecolor=OVERVIEW_MAP_BACKGROUND)
     plt.close(fig)
