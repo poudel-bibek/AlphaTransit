@@ -32,14 +32,13 @@ try:
         MCTS_NITER_HISTORY_DIRS,
         MODE_ORDER,
         MODE_STYLES,
+        NITER_COLORS,
         PARETO_ABBREV,
         PARETO_STYLES,
-        TRAINING_STYLES,
         WALL_CLOCK_COLORS,
         _extract_ppo_mode,
         _load_mcts_metric,
         _load_ppo_runs,
-        _load_wall_clock_scaling,
         get_pareto_summary_paths,
     )
     from .routes import (
@@ -70,14 +69,13 @@ except ImportError:
         MCTS_NITER_HISTORY_DIRS,
         MODE_ORDER,
         MODE_STYLES,
+        NITER_COLORS,
         PARETO_ABBREV,
         PARETO_STYLES,
-        TRAINING_STYLES,
         WALL_CLOCK_COLORS,
         _extract_ppo_mode,
         _load_mcts_metric,
         _load_ppo_runs,
-        _load_wall_clock_scaling,
         get_pareto_summary_paths,
     )
     from routes import (
@@ -202,14 +200,14 @@ LEGEND_METHOD_ORDER = [
 METHOD_DISPLAY_NAMES = {
     "Genetic Alg.": "Genetic Algorithm",
     "Neural Evol.": "Neural Evolutionary",
-    "RL": "Reinforcement Learning",
+    "RL": "End-to-End RL",
 }
 METHOD_COMPARISON_ALPHATRANSIT_OVERRIDES = {
     "1_0": NEURIPS_RESULTS_DIR
     / "1_0"
     / "alphatransit"
-    / "nips_10_ep_per_iter"
-    / "ep_per_iter_24",
+    / "nips_8_n_iter"
+    / "n_iter_500",
 }
 LEARNING_MODE_LABELS = {
     "terminal_only": "Terminal",
@@ -531,6 +529,7 @@ def plot_method_comparison_triptych(
     output_path: Path = NEURIPS_RESULTS_DIR / "final_comparison_alpha_1_0.pdf",
     *,
     alpha_key: str = "1_0",
+    show_titles: bool = True,
 ) -> Path:
     """
     Build the final three-panel method-comparison figure from local eval summaries.
@@ -630,7 +629,7 @@ def plot_method_comparison_triptych(
                 (x, y),
                 xytext=(dx, dy),
                 textcoords="offset points",
-                fontsize=fs - 2,
+                fontsize=fs - 1,
                 color="#111111",
                 ha=ha,
                 va=va,
@@ -762,14 +761,14 @@ def plot_method_comparison_triptych(
                 y_avg,
                 color=style["color"],
                 marker=style["marker"],
-                s=style["size"],
+                s=(np.sqrt(style["size"]) + 1) ** 2,
                 zorder=style["zorder"],
                 edgecolors="white",
                 linewidth=0.5,
             )
 
         if title:
-            ax.set_title(title, fontsize=fs + 1, color="#111111")
+            ax.set_title(title, fontsize=fs + 3, color="#111111")
         ax.set_xlabel(_bold_label(x_label))
         ax.set_ylabel(_bold_label(y_label))
         ax.xaxis.label.set_color("#111111")
@@ -825,7 +824,7 @@ def plot_method_comparison_triptych(
         panel_key="headline",
         x_key="fleet_size",
         y_key="service_rate",
-        title=r"\textbf{Coverage vs Resource}",
+        title=r"\textbf{Passenger vs Operator}" if show_titles else "",
         x_label=r"Fleet Size",
         y_label=r"Service Rate (\%)",
     ))
@@ -834,7 +833,7 @@ def plot_method_comparison_triptych(
         panel_key="passenger",
         x_key="passenger_time",
         y_key="transfer_rate",
-        title=r"\textbf{Passenger Burden}",
+        title=r"\textbf{Passenger Burden}" if show_titles else "",
         x_label=r"Wait + Travel Time (min)",
         y_label=r"Transfer Rate (\%)",
     ))
@@ -843,7 +842,7 @@ def plot_method_comparison_triptych(
         panel_key="operator",
         x_key="bus_utilization",
         y_key="route_efficiency",
-        title=r"\textbf{Operator Efficiency}",
+        title=r"\textbf{Operator Efficiency}" if show_titles else "",
         x_label=r"Bus Utilization (\%)",
         y_label=r"Route Efficiency",
     ))
@@ -856,7 +855,7 @@ def plot_method_comparison_triptych(
             color=PARETO_STYLES[method]["color"],
             marker=PARETO_STYLES[method]["marker"],
             linestyle="None",
-            markersize=np.sqrt(PARETO_STYLES[method]["size"]),
+            markersize=np.sqrt(PARETO_STYLES[method]["size"]) + 1,
             markeredgecolor="white",
             markeredgewidth=0.5,
             label=f"{METHOD_DISPLAY_NAMES.get(method, method)} ({PARETO_ABBREV[method]})",
@@ -1219,21 +1218,44 @@ def _set_learning_step_ticks(ax: plt.Axes) -> None:
     format_steps_axis(ax)
 
 
-def _add_learning_line_axis_buffer(ax: plt.Axes) -> None:
+def _add_learning_line_axis_buffer(ax: plt.Axes, *, top_scale: float = 1.08) -> None:
     ax.set_xlim(0.0, LEARNING_AXIS_STEP_LIMIT)
     y_bottom, y_top = ax.get_ylim()
-    ax.set_ylim(y_bottom, y_bottom + (y_top - y_bottom) * 1.08)
+    ax.set_ylim(y_bottom, y_bottom + (y_top - y_bottom) * top_scale)
 
 
-def _set_five_y_ticks(ax: plt.Axes) -> None:
+def _set_nice_learning_y_ticks(ax: plt.Axes, *, y_top: float | None = None) -> None:
     bottom, top = ax.get_ylim()
-    span = abs(top - bottom)
-    tick_bottom = bottom + 0.05 * span
-    tick_top = top - 0.05 * span
-    ticks = np.linspace(tick_bottom, tick_top, 5)
+    if y_top is not None:
+        top = y_top
+    span = max(top - bottom, 1.0)
+    step = _round_up_to_nice(max(span / 4.0, 1.0))
+    tick_bottom = np.floor(bottom / step) * step
+    tick_top = y_top if y_top is not None else np.ceil(top / step) * step
+    ticks = np.arange(tick_bottom, tick_top + 0.5 * step, step)
+    if y_top is not None and not np.isclose(ticks[-1], y_top):
+        ticks = np.append(ticks[ticks < y_top], y_top)
+    # Keep the outermost labeled ticks slightly inside the frame, matching the
+    # visual breathing room used in the Search Time panel.
+    tick_span = max(tick_top - tick_bottom, step)
+    bottom_pad = max(0.04 * tick_span, 0.5)
+    top_pad = max(0.03 * tick_span, 0.35)
+    ax.set_yticks(ticks)
+    ax.set_ylim(tick_bottom - bottom_pad, tick_top + top_pad)
+    ax.yaxis.set_major_formatter(
+        FuncFormatter(lambda value, _: f"{int(round(value))}" if float(value).is_integer() else f"{value:g}")
+    )
+
+
+def _set_fixed_learning_y_range(ax: plt.Axes, bottom: float, top: float, tick_count: int = 5) -> None:
+    ticks = np.linspace(bottom, top, tick_count)
+    span = max(top - bottom, 1.0)
+    bottom_pad = max(0.04 * span, 0.5)
+    top_pad = max(0.03 * span, 0.35)
+    ax.set_ylim(bottom - bottom_pad, top + top_pad)
     ax.set_yticks(ticks)
     ax.yaxis.set_major_formatter(
-        FuncFormatter(lambda value, _: f"{value:.1f}" if span < 12 else f"{int(round(value))}")
+        FuncFormatter(lambda value, _: f"{int(round(value))}" if float(value).is_integer() else f"{value:g}")
     )
 
 
@@ -1277,6 +1299,44 @@ def _plot_smoothed_line(
         linewidth=0.0,
         zorder=1,
     )
+
+
+_LEARNING_LEGEND_KW = dict(
+    frameon=True, fancybox=False, edgecolor="#CCCCCC",
+    columnspacing=0.9, handlelength=1.25, handletextpad=0.4, labelspacing=0.35, borderpad=0.28,
+)
+
+
+def _learning_panel_legend(ax: plt.Axes, *, fs: int, ncol: int = 1, loc: str = "lower right", handles=None, labels=None) -> None:
+    if handles is None:
+        handles, labels = ax.get_legend_handles_labels()
+    if not handles:
+        return
+    legend = ax.legend(handles=handles, labels=labels, loc=loc, ncol=ncol, fontsize=fs - 2, **_LEARNING_LEGEND_KW)
+    legend.get_frame().set_facecolor("#FFFFFF")
+    for text in legend.get_texts():
+        text.set_color("#111111")
+
+
+def _finalize_learning_panel(
+    ax: plt.Axes,
+    *,
+    title: str,
+    fs: int,
+    top_scale: float = 1.08,
+    y_top: float | None = None,
+) -> None:
+    ax.set_title(_bold_label(title), fontsize=fs + 1, color="#111111", pad=10)
+    ax.set_xlabel(_bold_label("Environment Steps"))
+    ax.set_ylabel(_bold_label("Reward"))
+    ax.xaxis.label.set_color("#111111")
+    ax.yaxis.label.set_color("#111111")
+    _add_learning_line_axis_buffer(ax, top_scale=top_scale)
+    if y_top is not None:
+        y_bottom, _ = ax.get_ylim()
+        ax.set_ylim(y_bottom, y_top)
+    _set_learning_step_ticks(ax)
+    _set_nice_learning_y_ticks(ax, y_top=y_top)
 
 
 def _plot_final_rl_ablation_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> None:
@@ -1327,20 +1387,11 @@ def _plot_final_rl_ablation_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> N
             zorder=1,
         )
 
-    ax.set_title(_bold_label("RL Reward Design"), fontsize=fs + 1, color="#111111")
-    ax.set_xlabel(_bold_label("Environment Steps"))
-    ax.set_ylabel(_bold_label("Reward"))
-    ax.xaxis.label.set_color("#111111")
-    ax.yaxis.label.set_color("#111111")
-    _add_learning_line_axis_buffer(ax)
-    _set_learning_step_ticks(ax)
-    _set_five_y_ticks(ax)
+    _finalize_learning_panel(ax, title="End-to-End RL Reward Shaping", fs=fs, y_top=0.0)
 
 
 def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> None:
     metric_key = "eval/episode_terminal_reward"
-    at_style_key = "alphatransit_0.3" if alpha_key == "0_3" else "alphatransit_1.0"
-    rl_style_key = "ppo_0.3" if alpha_key == "0_3" else "ppo_1.0"
 
     at_steps, at_values = _load_mcts_metric(alpha_key, 500, metric_key)
     if len(at_steps):
@@ -1349,8 +1400,8 @@ def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: i
             ax,
             at_steps[mask],
             at_values[mask],
-            color=TRAINING_STYLES[at_style_key]["color"],
-            label="AlphaTransit",
+            color=WALL_CLOCK_COLORS["alphatransit"],
+            label="AlphaTransit (500)",
             linestyle="-",
             window=LEARNING_SMOOTHING_WINDOW,
         )
@@ -1361,20 +1412,29 @@ def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: i
             ax,
             rl_steps,
             rl_values,
-            color=TRAINING_STYLES[rl_style_key]["color"],
-            label="Reinforcement Learning",
+            color="#E84393",
+            label="End-to-End RL",
             linestyle="--",
             window=LEARNING_SMOOTHING_WINDOW,
         )
 
-    ax.set_title(_bold_label("Training Progress"), fontsize=fs + 1, color="#111111")
-    ax.set_xlabel(_bold_label("Environment Steps"))
-    ax.set_ylabel(_bold_label("Reward"))
-    ax.xaxis.label.set_color("#111111")
-    ax.yaxis.label.set_color("#111111")
-    _add_learning_line_axis_buffer(ax)
-    _set_learning_step_ticks(ax)
-    _set_five_y_ticks(ax)
+    _finalize_learning_panel(ax, title="AlphaTransit vs End-to-End RL", fs=fs, top_scale=1.025)
+    _set_fixed_learning_y_range(ax, -13.0, 3.0)
+
+
+def _compact_seconds_label(value: float, _: int) -> str:
+    if value >= 1000.0:
+        return f"{value / 1000.0:g}K"
+    return f"{value:g}"
+
+
+def _round_up_to_nice(value: float) -> float:
+    if value <= 0:
+        return 1.0
+    n = int(np.floor(np.log10(value)))
+    base = value / (10.0 ** n)
+    nice = 1.0 if base <= 1 else 2.0 if base <= 2 else 5.0 if base <= 5 else 10.0
+    return nice * (10.0 ** n)
 
 
 def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> None:
@@ -1452,8 +1512,9 @@ def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> No
         return
 
     ax.set_axis_off()
-    upper_ax = ax.inset_axes([0.0, 0.53, 1.0, 0.47])
-    lower_ax = ax.inset_axes([0.0, 0.00, 1.0, 0.42], sharex=upper_ax)
+    # Tight gap between bands so the broken-axis indicators read as a pair.
+    upper_ax = ax.inset_axes([0.0, 0.50, 1.0, 0.50])
+    lower_ax = ax.inset_axes([0.0, 0.00, 1.0, 0.48], sharex=upper_ax)
 
     for band_ax in (upper_ax, lower_ax):
         _style_learning_axis(band_ax)
@@ -1463,69 +1524,50 @@ def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> No
         band_ax.grid(True, which="major", axis="both", zorder=0)
         band_ax.grid(False, which="minor", axis="y")
         band_ax.tick_params(axis="y", which="major", length=7.0, width=0.85, color="#666666")
-        band_ax.tick_params(axis="y", which="minor", length=4.2, width=0.70, color="#888888")
+        # Drop minor tick marks: they're unlabeled stubs that crowd the major ticks.
+        band_ax.tick_params(axis="y", which="minor", left=False, right=False)
 
     plot_method(upper_ax, "Pure MCTS", time_colors["Pure MCTS"], 5)
     plot_method(lower_ax, "AlphaTransit", time_colors["AlphaTransit"], 5)
 
-    def set_method_ylim(target_ax: plt.Axes, method: str, lower_pad: float, upper_pad: float) -> None:
-        method_df = plot_df[plot_df["method"] == method]
-        if method_df.empty:
-            return
-        low = float((method_df["mean"] - method_df["std"]).clip(lower=1e-6).min()) * lower_pad
-        high = float((method_df["mean"] + method_df["std"]).max()) * upper_pad
-        if np.isfinite(low) and np.isfinite(high) and high > low:
-            target_ax.set_ylim(low, high)
+    # Upper band (log): per-alpha ticks so the data fits inside the band.
+    # α=0.3 Pure MCTS spans 700-5150 → [500, 2K, 8K]; α=1.0 spans 138-947 → [100, 500, 2K].
+    # Lower band (linear): hard-coded [0, 4, 8] starting at 0. Both get a small buffer
+    # on every edge so labels don't crowd the panel boundary or the broken-axis indicators.
+    upper_ticks = [100.0, 500.0, 2000.0] if alpha_key == "1_0" else [500.0, 2000.0, 8000.0]
+    upper_ax.set_yscale("log")
+    upper_ax.set_ylim(upper_ticks[0] / 1.85, upper_ticks[-1] * 1.15)
+    upper_ax.set_yticks(upper_ticks)
+    upper_ax.yaxis.set_minor_formatter(NullFormatter())
+    upper_ax.yaxis.set_major_formatter(FuncFormatter(_compact_seconds_label))
 
-    set_method_ylim(upper_ax, "Pure MCTS", 0.82, 1.18)
-    set_method_ylim(lower_ax, "AlphaTransit", 0.72, 1.32)
-
-    def apply_compact_time_ticks(target_ax: plt.Axes) -> None:
-        low, high = target_ax.get_ylim()
-        powers = np.arange(-1, 6)
-        candidates = np.asarray(
-            [base * (10.0 ** power) for power in powers for base in (1.0, 2.0, 5.0)],
-            dtype=float,
-        )
-        ticks = candidates[(candidates >= low) & (candidates <= high)]
-        if ticks.size > 4:
-            keep = np.linspace(0, ticks.size - 1, 4).round().astype(int)
-            ticks = ticks[keep]
-        target_ax.set_yticks(ticks)
-        target_ax.yaxis.set_minor_formatter(NullFormatter())
-
-        def compact_seconds(value: float, _: int) -> str:
-            if value >= 1000.0:
-                return f"{value / 1000.0:g}K"
-            if value >= 10.0:
-                return f"{value:g}"
-            return f"{value:g}"
-
-        target_ax.yaxis.set_major_formatter(FuncFormatter(compact_seconds))
-
-    apply_compact_time_ticks(upper_ax)
-    apply_compact_time_ticks(lower_ax)
+    lower_ticks = [0.0, 4.0, 8.0]
+    lower_ax.set_yscale("linear")
+    lower_ax.set_ylim(-lower_ticks[-1] * 0.10, lower_ticks[-1] * 1.20)
+    lower_ax.set_yticks(lower_ticks)
+    lower_ax.yaxis.set_minor_formatter(NullFormatter())
+    lower_ax.yaxis.set_major_formatter(FuncFormatter(_compact_seconds_label))
 
     upper_ax.spines["bottom"].set_visible(False)
     lower_ax.spines["top"].set_visible(False)
     upper_ax.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
 
     break_kwargs = dict(color="#666666", linewidth=0.9, clip_on=False)
-    for x_center in (-0.012, 1.012):
-        upper_ax.plot(
-            (x_center - 0.015, x_center + 0.015),
-            (-0.018, 0.018),
-            transform=upper_ax.transAxes,
-            **break_kwargs,
-        )
-        lower_ax.plot(
-            (x_center - 0.015, x_center + 0.015),
-            (0.982, 1.018),
-            transform=lower_ax.transAxes,
-            **break_kwargs,
-        )
+    x_center = 0.0  # so the y-axis spine bisects each diagonal break mark
+    upper_ax.plot(
+        (x_center - 0.015, x_center + 0.015),
+        (-0.018, 0.018),
+        transform=upper_ax.transAxes,
+        **break_kwargs,
+    )
+    lower_ax.plot(
+        (x_center - 0.015, x_center + 0.015),
+        (0.982, 1.018),
+        transform=lower_ax.transAxes,
+        **break_kwargs,
+    )
 
-    upper_ax.set_title(_bold_label("Search Time"), fontsize=fs + 1, color="#111111")
+    upper_ax.set_title(_bold_label("Search Time"), fontsize=fs + 1, color="#111111", pad=10)
     lower_ax.set_xlabel(_bold_label("MCTS Simulations"))
     lower_ax.xaxis.label.set_color("#111111")
     ax.text(
@@ -1581,22 +1623,20 @@ def plot_learning_overview(
     """
     Build the final RL/AlphaTransit training and search-time overview for one alpha.
 
-    Left panel: PPO/RL reward ablation curves grouped by reward mode; curves
-    average all available runs for each mode and use the PPO evaluation reward
-    histories loaded for the requested alpha.
+    Left panel ("End-to-End RL Reward Shaping"): PPO reward-ablation curves
+    grouped by reward mode. Curves average all available runs for each mode and
+    use the PPO evaluation reward histories loaded for the requested alpha.
 
-    Middle panel: per-decision wall-clock timing for Pure MCTS and
-    AlphaTransit over n_iter in {100, 200, 300, 400, 500}. Curves summarize a
-    CPU-only, one-worker Bloomington benchmark over five fixed-length routes
+    Middle panel ("AlphaTransit vs End-to-End RL"): AlphaTransit (500 MCTS
+    simulations per decision) versus the selected End-to-End RL curve. Both
+    curves are smoothed over training steps, clipped to 1,020,000 steps, and
+    plotted with a small right x-axis buffer.
+
+    Right panel ("Search Time"): per-decision wall-clock timing for Pure MCTS
+    and AlphaTransit over n_iter in {100, 200, 300, 400, 500}. Curves summarize
+    a CPU-only, one-worker Bloomington benchmark over five fixed-length routes
     (14 stops each); points show mean decision time and error bars show one
     standard deviation across route-construction decisions.
-
-    Right panel: AlphaTransit versus end-to-end RL training. AlphaTransit uses
-    the search-depth run with 500 MCTS simulations per decision via
-    _load_mcts_metric(alpha_key, 500, "eval/episode_terminal_reward"). The RL
-    curve comes from _extract_ppo_mode(alpha_key). Both curves are smoothed over
-    training steps, clipped to 1,020,000 steps, and plotted with a small right
-    x-axis buffer.
     """
     fs = LEARNING_OVERVIEW_FS
     apply_plot_style(fs, background=BACKGROUND)
@@ -1606,60 +1646,13 @@ def plot_learning_overview(
         _style_learning_axis(ax)
 
     _plot_final_rl_ablation_panel(axes[0], alpha_key, fs=fs)
-    _plot_final_wall_clock_panel(axes[1], alpha_key, fs=fs)
-    _plot_final_training_comparison_panel(axes[2], alpha_key, fs=fs)
+    _plot_final_training_comparison_panel(axes[1], alpha_key, fs=fs)
+    _plot_final_wall_clock_panel(axes[2], alpha_key, fs=fs)
 
-    legend_locs = ["lower right", "lower right", "lower right"]
-    legend_cols = [2, 1, 1]
-    for idx, (ax, legend_loc, legend_ncol) in enumerate(zip(axes, legend_locs, legend_cols)):
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            if idx == 1:
-                color_lookup = {
-                    "Pure MCTS": "#E84393",
-                    "AlphaTransit": WALL_CLOCK_COLORS["alphatransit"],
-                }
-                ordered = [
-                    (handle, label)
-                    for preferred in ("AlphaTransit", "Pure MCTS")
-                    for handle, label in zip(handles, labels)
-                    if label == preferred
-                ]
-                if ordered:
-                    handles, labels = zip(*ordered)
-                    handles = list(handles)
-                    labels = list(labels)
-                handles = [
-                    mlines.Line2D(
-                        [],
-                        [],
-                        color=color_lookup.get(label, "#333333"),
-                        marker="o",
-                        linestyle="-",
-                        linewidth=2.0,
-                        markersize=7.2,
-                        label=label,
-                    )
-                    for label in labels
-                ]
-            legend = ax.legend(
-                handles=handles,
-                labels=labels,
-                loc=legend_loc,
-                ncol=legend_ncol,
-                frameon=True,
-                fancybox=False,
-                edgecolor="#CCCCCC",
-                fontsize=fs - 2,
-                columnspacing=0.9,
-                handlelength=1.25,
-                handletextpad=0.4,
-                labelspacing=0.35,
-                borderpad=0.28,
-            )
-            legend.get_frame().set_facecolor("#FFFFFF")
-            for text in legend.get_texts():
-                text.set_color("#111111")
+    # Search Time attaches its own legend to lower_ax inside the panel function;
+    # the outer ax is set_axis_off'd, so only the two reward panels are handled here.
+    for ax, ncol in zip((axes[0], axes[1]), (2, 1)):
+        _learning_panel_legend(ax, fs=fs, ncol=ncol)
 
     fig.subplots_adjust(left=0.07, right=0.985, top=0.88, bottom=0.16, wspace=0.30)
     _save_figure_with_optional_png(fig, output_path, facecolor=BACKGROUND)
@@ -1841,12 +1834,37 @@ def _setup_map_axis(
     ax.set_xlim(cx - half, cx + half)
     ax.set_ylim(cy - half, cy + half)
     ax.set_facecolor("#FFFFFF")
-    ax.set_xticks([])
-    ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("#888888")
         spine.set_linewidth(0.6)
+
+
+def _set_km_ticks(ax: plt.Axes, source_crs: str | None, fs: int) -> None:
+    """Tick labels as ground km offset from panel center, integer step picked by panel size."""
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    cx, cy = (xlim[0] + xlim[1]) / 2.0, (ylim[0] + ylim[1]) / 2.0
+    half_units = (xlim[1] - xlim[0]) / 2.0
+
+    unit_to_m = 1.0
+    if source_crs == "EPSG:3857" and _HAS_PYPROJ:
+        to_lonlat = _Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+        _, lat_center = to_lonlat.transform(cx, cy)
+        unit_to_m = float(np.cos(np.radians(lat_center)))
+
+    half_km = half_units * unit_to_m / 1000.0
+    step_km = 5 if half_km > 8 else 2 if half_km > 4 else 1
+    n_steps = int(half_km // step_km)
+    km_ticks = list(range(-n_steps * step_km, (n_steps + 1) * step_km, step_km))
+    units_per_km = 1000.0 / unit_to_m
+
+    ax.set_xticks([cx + k * units_per_km for k in km_ticks])
+    ax.set_yticks([cy + k * units_per_km for k in km_ticks])
+    ax.set_xticklabels([f"{k}" for k in km_ticks])
+    ax.set_yticklabels([f"{k}" for k in km_ticks])
+    ax.tick_params(axis="both", which="major", labelsize=fs - 1, colors="#444444", length=3, width=0.5)
+    ax.set_xlabel("Easting (km)", fontsize=fs + 2, color="#444444", labelpad=4)
+    ax.set_ylabel("Northing (km)", fontsize=fs + 2, color="#444444", labelpad=4)
 
 
 def _boost_basemap_saturation(arr: np.ndarray, sat: float = 1.45, contrast: float = 1.08) -> np.ndarray:
@@ -1957,6 +1975,7 @@ def _plot_network_panel(
     """Draw a network panel with demand-colored nodes and transit-center pin. Returns the scatter handle (or None)."""
     _setup_map_axis(ax, data["bbox"], pad_frac=pad_frac)
     _add_osm_basemap(ax, crs=data["basemap_crs"], zoom=data["basemap_zoom"], rotate_deg=data.get("basemap_rot_deg", 0.0))
+    _set_km_ticks(ax, data["basemap_crs"], fs)
     ax.set_title(_bold_label(title), fontsize=fs + 2, color="#111111", pad=8)
     if not with_overlay:
         return None
@@ -1998,6 +2017,7 @@ def _plot_network_panel(
 def _plot_bloomington_demand(ax: plt.Axes, data: dict, fs: int, *, pad_frac: float = 0.07) -> None:
     _setup_map_axis(ax, data["bbox"], pad_frac=pad_frac)
     _add_osm_basemap(ax, crs=data["basemap_crs"], zoom=data["basemap_zoom"], rotate_deg=data.get("basemap_rot_deg", 0.0))
+    _set_km_ticks(ax, data["basemap_crs"], fs)
     draw_basemap(ax, data["links"], data["coords"], color="#AEB8C4", linewidth=0.46, alpha=0.35, zorder=2)
     _draw_demand_density(ax, data, data["origin_demand"], color=_DEMAND_COLOR_ORIGIN, zorder=3, **_DENSITY_ORIGIN)
     _draw_demand_density(ax, data, data["dest_demand"], color=_DEMAND_COLOR_DEST, zorder=7, **_DENSITY_DEST)
@@ -2031,7 +2051,7 @@ def plot_overview_maps(output_path: Path = NEURIPS_RESULTS_DIR / "final_overview
     _plot_network_panel(axes[0], bloomington, fs, title="Bloomington Network", vmin=0.0, vmax=1.0, legend_loc="upper right", pad_frac=0.07, solid_color=_BLOOMINGTON_NODE_COLOR)
     _plot_bloomington_demand(axes[1], bloomington, fs)
     _plot_network_panel(axes[2], laval, fs, title="Laval Network", vmin=0.0, vmax=1.0, solid_color=_LAVAL_NODE_COLOR)
-    fig.subplots_adjust(left=0.025, right=0.985, top=0.92, bottom=0.05, wspace=0.05)
+    fig.subplots_adjust(left=0.04, right=0.985, top=0.92, bottom=0.10, wspace=0.20)
 
     save_figure(fig, output_path, facecolor=OVERVIEW_MAP_BACKGROUND)
     plt.close(fig)

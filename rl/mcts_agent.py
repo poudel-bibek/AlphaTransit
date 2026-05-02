@@ -7,7 +7,7 @@ Tree Search (MCTS) with neural network guidance for transit route design.
 Key components:
 - MCTS with PUCT selection for action selection
 - Neural network (GATv2ActorCritic) for policy priors and value estimation
-- Dirichlet noise for exploration during self-play
+- Dirichlet noise for exploration during MCTS-guided data generation
 - Replay buffer with terminal-only rewards
 - Welford normalization for reward stability
 - Parallel episode collection via num_mcts_workers with configurable episodes_per_iter
@@ -665,7 +665,7 @@ class MCTSAgent:
         """
         Main training loop.
 
-        Alternates between self-play data generation and network optimization.
+        Alternates between MCTS-guided data generation and network optimization.
         Uses parallel workers to collect episodes concurrently.
         """
         if not self.collectors_enabled:
@@ -686,11 +686,11 @@ class MCTSAgent:
                 iter_start = time.time()
 
                 # Temperature is computed once per iteration from iteration-based progress,
-                # ensuring consistency between self-play action selection and logging.
+                # ensuring consistency between training episode action selection and logging.
                 progress = iteration / self.max_iterations
                 tau = get_temperature(progress, self.config['temp_schedule'])
 
-                # Parallel self-play phase
+                # Parallel MCTS-guided data generation phase
                 results = self._collect_episodes(tau, iteration)
 
                 # Aggregate results: first update Welford with all raw rewards

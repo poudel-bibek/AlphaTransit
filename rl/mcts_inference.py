@@ -1,5 +1,5 @@
 """
-Centralized GPU inference service for MCTS self-play.
+Centralized GPU inference service for MCTS-guided data generation.
 
 Workers keep tree search local on CPU and ship leaf-evaluation requests here.
 The service owns a single model instance, batches requests across workers, and

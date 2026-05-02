@@ -22,7 +22,7 @@ TRNDP involves designing a set of transit routes within a road network to optimi
 Our primary algorithm combines Monte Carlo Tree Search (MCTS) with neural network guidance, inspired by AlphaZero:
 - **PUCT selection** for balancing exploration and exploitation
 - **GATv2 policy network** providing action priors and value estimates
-- **Dirichlet noise** at root for exploration during self-play
+- **Dirichlet noise** at root for exploration during MCTS-guided data generation
 - **Terminal-only rewards** with Welford normalization for stability
 - **Parallel episode collection** with configurable workers (default: 8)
 

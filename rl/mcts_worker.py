@@ -459,7 +459,7 @@ def mcts_worker_loop(worker_id, config, cmd_queue, result_queue, inference_reque
     centralized inference service.
 
     Commands (via cmd_queue):
-        {"type": "collect", "tau": float, "seed": int}  - Run one self-play episode
+        {"type": "collect", "tau": float, "seed": int}  - Run one training episode
         {"type": "eval", "seed": int, "policy_version": int} - Run one eval episode
         {"type": "stop"}                                  - Terminate worker
     """
