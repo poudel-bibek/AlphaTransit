@@ -125,6 +125,9 @@ LEARNING_AXIS_STEP_LIMIT = 1_040_000
 ROUTE_DESIGN_ALPHA_KEYS = ("0_3", "1_0")
 BACKGROUND = "#FFFFFF"
 BLOOMINGTON_MAP_BACKGROUND = "#F7F8FA"
+TICK_TEXT_COLOR = "#333333"
+TICK_TEXT_WEIGHT = "medium"
+LEGEND_TEXT_COLOR = "#111111"
 ANNOTATION_OFFSETS = [
     (0, 10),
     (0, -12),
@@ -150,9 +153,9 @@ MANUAL_LABEL_OFFSETS = {
     ("0_3", "passenger", "Shortest Path"): (-12, 10),
     ("0_3", "passenger", "Demand Cover"): (-12, 10),
     ("0_3", "passenger", "Pure MCTS"): (-12, 10),
-    ("0_3", "passenger", "RL"): (12, 10),
+    ("0_3", "passenger", "RL"): (0, 12),
     ("0_3", "passenger", "AlphaTransit"): (-10, 0),
-    ("0_3", "passenger", "Genetic Alg."): (10, 0),
+    ("0_3", "passenger", "Genetic Alg."): (0, -12),
     ("0_3", "passenger", "Neural Evol."): (10, 0),
     ("0_3", "operator", "Demand Cover"): (12, 10),
     ("0_3", "operator", "Random Walk"): (-12, -10),
@@ -328,10 +331,7 @@ def _load_method_points(alpha_key: str) -> dict[str, dict[str, tuple[float, floa
         points[method] = {
             "service_rate": _metric_stats(results["service_rate"], scale=100.0),
             "fleet_size": _metric_stats(results["fleet_size"]),
-            "passenger_time": _combined_stats(
-                results["combined_avg_wait_minutes"],
-                results["combined_avg_travel_minutes"],
-            ),
+            "journey_time": _metric_stats(results["combined_avg_travel_minutes"]),
             "transfer_rate": _metric_stats(results["transfer_rate"]),
             "bus_utilization": _metric_stats(results["bus_utilization"]),
             "route_efficiency": _metric_stats(results["route_efficiency"]),
@@ -367,6 +367,24 @@ def _pad_axis_bounds(vmin: float, vmax: float, *, min_pad: float = 0.35, frac: f
 
 def _bold_label(text: str) -> str:
     return rf"\textbf{{{text}}}"
+
+
+def _style_tick_labels(ax: plt.Axes, *, axis: str = "both") -> None:
+    ax.tick_params(axis=axis, colors=TICK_TEXT_COLOR)
+    labels = []
+    if axis in {"x", "both"}:
+        labels.extend(ax.get_xticklabels())
+    if axis in {"y", "both"}:
+        labels.extend(ax.get_yticklabels())
+    for label in labels:
+        label.set_color(TICK_TEXT_COLOR)
+        label.set_fontweight(TICK_TEXT_WEIGHT)
+
+
+def _style_legend_text(legend) -> None:
+    for text in legend.get_texts():
+        text.set_color(LEGEND_TEXT_COLOR)
+        text.set_fontweight(TICK_TEXT_WEIGHT)
 
 
 def _scaling_history_dir(alpha_key: str, family_key: str) -> Path:
@@ -496,8 +514,7 @@ def _draw_search_depth_legend(
         labelspacing=0.35,
     )
     legend.get_frame().set_facecolor("#FFFFFF")
-    for text in legend.get_texts():
-        text.set_color("#111111")
+    _style_legend_text(legend)
 
 
 def _save_figure_with_optional_png(
@@ -536,7 +553,7 @@ def plot_method_comparison_triptych(
 
     The panels intentionally separate the story into:
     - Service Rate vs Fleet Size: headline coverage-vs-cost comparison
-    - Passenger Burden: Wait + Travel versus Transfer Rate
+    - Passenger Burden: Journey Time versus Transfer Rate
     - Operator Quality: Bus Utilization versus Route Efficiency
 
     Each point is a method-level mean over the local evaluation seeds for the
@@ -773,7 +790,7 @@ def plot_method_comparison_triptych(
         ax.set_ylabel(_bold_label(y_label))
         ax.xaxis.label.set_color("#111111")
         ax.yaxis.label.set_color("#111111")
-        ax.tick_params(axis="both", colors="#666666")
+        ax.tick_params(axis="both", colors=TICK_TEXT_COLOR)
         ax.grid(True, zorder=0)
 
         if xs and ys:
@@ -789,9 +806,10 @@ def plot_method_comparison_triptych(
                 x_ticks = np.array([45, 120, 195, 270, 345], dtype=float)
                 x_left = 42.75
                 x_right = 361.5
-            if alpha_key == "1_0" and panel_key == "passenger":
-                x_right = 72.0
             if alpha_key == "0_3" and panel_key == "passenger":
+                x_ticks = np.array([30, 36, 42, 48, 54], dtype=float)
+                x_left = 28.5
+                x_right = 54.5
                 y_top = 94.0
             if alpha_key == "0_3" and panel_key == "operator":
                 x_right = 27.5
@@ -813,6 +831,7 @@ def plot_method_comparison_triptych(
             ax.set_yticks(y_ticks)
             ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(round(value))}"))
             ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(round(value))}"))
+            _style_tick_labels(ax)
             add_best_region_overlay()
 
         return panel_points
@@ -831,10 +850,10 @@ def plot_method_comparison_triptych(
     panel_points.append(draw_panel(
         axes[1],
         panel_key="passenger",
-        x_key="passenger_time",
+        x_key="journey_time",
         y_key="transfer_rate",
         title=r"\textbf{Passenger Burden}" if show_titles else "",
-        x_label=r"Wait + Travel Time (min)",
+        x_label=r"Journey Time (min)",
         y_label=r"Transfer Rate (\%)",
     ))
     panel_points.append(draw_panel(
@@ -877,8 +896,7 @@ def plot_method_comparison_triptych(
         handleheight=0.9,
         borderpad=0.3,
     )
-    for text in legend.get_texts():
-        text.set_color("#111111")
+    _style_legend_text(legend)
     fig.subplots_adjust(wspace=0.28, bottom=0.27)
     for ax, points_for_axis, panel_key in zip(axes, panel_points, ["headline", "passenger", "operator"]):
         place_labels(ax, points_for_axis, panel_key)
@@ -964,6 +982,7 @@ def plot_scaling_behavior_overview(
             ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.1f}"))
         else:
             ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{int(round(value))}"))
+        _style_tick_labels(ax, axis="y")
 
     def apply_compute_axis(ax: plt.Axes, scaled_values: np.ndarray, tick_count: int = 4) -> None:
         values = np.asarray(scaled_values, dtype=float)
@@ -981,6 +1000,7 @@ def plot_scaling_behavior_overview(
         ax.set_xlim(left, right)
         ax.set_xticks(ticks)
         ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.1f}"))
+        _style_tick_labels(ax, axis="x")
 
     top_values: list[float] = []
     for runs in family_runs.values():
@@ -1022,7 +1042,7 @@ def plot_scaling_behavior_overview(
 
         for ax in (train_ax, tradeoff_ax):
             ax.set_facecolor(BACKGROUND)
-            ax.tick_params(axis="both", colors="#666666")
+            ax.tick_params(axis="both", colors=TICK_TEXT_COLOR)
             ax.grid(True, zorder=0)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
@@ -1068,6 +1088,7 @@ def plot_scaling_behavior_overview(
                 lambda value, _: f"{0 if abs(value) < 0.5 else value / SWEEP_STEP_SCALE:g}"
             )
         )
+        _style_tick_labels(train_ax, axis="x")
         train_ax.xaxis.get_offset_text().set_visible(False)
         train_ax.annotate(
             SWEEP_STEP_SCALE_LABEL,
@@ -1076,7 +1097,8 @@ def plot_scaling_behavior_overview(
             ha="left",
             va="bottom",
             fontsize=fs - 5,
-            color="#666666",
+            color=TICK_TEXT_COLOR,
+            fontweight=TICK_TEXT_WEIGHT,
             annotation_clip=False,
             zorder=0,
         )
@@ -1111,8 +1133,7 @@ def plot_scaling_behavior_overview(
                     borderpad=0.3,
                 )
                 legend.get_frame().set_facecolor("#FFFFFF")
-                for text in legend.get_texts():
-                    text.set_color("#111111")
+                _style_legend_text(legend)
 
         runtime_seconds = np.asarray([float(run["runtime_seconds"]) for run in runs], dtype=float)
         runtimes = runtime_seconds / SWEEP_RUNTIME_SCALE
@@ -1167,8 +1188,8 @@ def plot_scaling_behavior_overview(
                 ha="center",
                 va="bottom",
                 fontsize=fs - 1,
-                color="#666666",
-                fontweight="bold",
+                color=TICK_TEXT_COLOR,
+                fontweight=TICK_TEXT_WEIGHT,
             )
         bottom_ticks, bottom_bottom, bottom_top, bottom_fmt = reward_axis_config(
             qualities.tolist(),
@@ -1187,7 +1208,8 @@ def plot_scaling_behavior_overview(
             ha="left",
             va="bottom",
             fontsize=fs - 5,
-            color="#666666",
+            color=TICK_TEXT_COLOR,
+            fontweight=TICK_TEXT_WEIGHT,
             annotation_clip=False,
             zorder=0,
         )
@@ -1205,7 +1227,7 @@ def plot_scaling_behavior_overview(
 
 def _style_learning_axis(ax: plt.Axes) -> None:
     ax.set_facecolor(BACKGROUND)
-    ax.tick_params(axis="both", colors="#666666")
+    ax.tick_params(axis="both", colors=TICK_TEXT_COLOR)
     ax.grid(True, zorder=0)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -1216,6 +1238,7 @@ def _style_learning_axis(ax: plt.Axes) -> None:
 def _set_learning_step_ticks(ax: plt.Axes) -> None:
     ax.set_xticks(np.linspace(0.0, 1_000_000.0, 5))
     format_steps_axis(ax)
+    _style_tick_labels(ax, axis="x")
 
 
 def _add_learning_line_axis_buffer(ax: plt.Axes, *, top_scale: float = 1.08) -> None:
@@ -1245,18 +1268,34 @@ def _set_nice_learning_y_ticks(ax: plt.Axes, *, y_top: float | None = None) -> N
     ax.yaxis.set_major_formatter(
         FuncFormatter(lambda value, _: f"{int(round(value))}" if float(value).is_integer() else f"{value:g}")
     )
+    _style_tick_labels(ax, axis="y")
 
 
 def _set_fixed_learning_y_range(ax: plt.Axes, bottom: float, top: float, tick_count: int = 5) -> None:
     ticks = np.linspace(bottom, top, tick_count)
+    _set_learning_y_ticks_with_padding(ax, ticks)
+
+
+def _set_learning_y_ticks_with_padding(
+    ax: plt.Axes,
+    ticks: Sequence[float],
+    *,
+    top_pad_frac: float = 0.03,
+) -> None:
+    ticks = np.asarray(ticks, dtype=float)
+    if ticks.size == 0:
+        return
+    bottom = float(ticks[0])
+    top = float(ticks[-1])
     span = max(top - bottom, 1.0)
     bottom_pad = max(0.04 * span, 0.5)
-    top_pad = max(0.03 * span, 0.35)
+    top_pad = max(top_pad_frac * span, 0.35)
     ax.set_ylim(bottom - bottom_pad, top + top_pad)
     ax.set_yticks(ticks)
     ax.yaxis.set_major_formatter(
         FuncFormatter(lambda value, _: f"{int(round(value))}" if float(value).is_integer() else f"{value:g}")
     )
+    _style_tick_labels(ax, axis="y")
 
 
 def _plot_smoothed_line(
@@ -1314,8 +1353,7 @@ def _learning_panel_legend(ax: plt.Axes, *, fs: int, ncol: int = 1, loc: str = "
         return
     legend = ax.legend(handles=handles, labels=labels, loc=loc, ncol=ncol, fontsize=fs - 2, **_LEARNING_LEGEND_KW)
     legend.get_frame().set_facecolor("#FFFFFF")
-    for text in legend.get_texts():
-        text.set_color("#111111")
+    _style_legend_text(legend)
 
 
 def _finalize_learning_panel(
@@ -1387,7 +1425,11 @@ def _plot_final_rl_ablation_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> N
             zorder=1,
         )
 
-    _finalize_learning_panel(ax, title="End-to-End RL Reward Shaping", fs=fs, y_top=0.0)
+    if alpha_key == "1_0":
+        _finalize_learning_panel(ax, title="End-to-End RL Reward Shaping", fs=fs, top_scale=1.025)
+        _set_learning_y_ticks_with_padding(ax, [-10.0, 0.0, 10.0, 20.0, 30.0], top_pad_frac=0.05)
+    else:
+        _finalize_learning_panel(ax, title="End-to-End RL Reward Shaping", fs=fs, y_top=0.0)
 
 
 def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> None:
@@ -1401,7 +1443,7 @@ def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: i
             at_steps[mask],
             at_values[mask],
             color=WALL_CLOCK_COLORS["alphatransit"],
-            label="AlphaTransit (500)",
+            label="AlphaTransit",
             linestyle="-",
             window=LEARNING_SMOOTHING_WINDOW,
         )
@@ -1419,7 +1461,10 @@ def _plot_final_training_comparison_panel(ax: plt.Axes, alpha_key: str, *, fs: i
         )
 
     _finalize_learning_panel(ax, title="AlphaTransit vs End-to-End RL", fs=fs, top_scale=1.025)
-    _set_fixed_learning_y_range(ax, -13.0, 3.0)
+    if alpha_key == "1_0":
+        _set_learning_y_ticks_with_padding(ax, [-10.0, 0.0, 10.0, 20.0, 30.0, 40.0], top_pad_frac=0.05)
+    else:
+        _set_fixed_learning_y_range(ax, -13.0, 3.0)
 
 
 def _compact_seconds_label(value: float, _: int) -> str:
@@ -1523,7 +1568,7 @@ def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> No
         band_ax.set_xlim(70, 530)
         band_ax.grid(True, which="major", axis="both", zorder=0)
         band_ax.grid(False, which="minor", axis="y")
-        band_ax.tick_params(axis="y", which="major", length=7.0, width=0.85, color="#666666")
+        band_ax.tick_params(axis="y", which="major", length=7.0, width=0.85, color=TICK_TEXT_COLOR)
         # Drop minor tick marks: they're unlabeled stubs that crowd the major ticks.
         band_ax.tick_params(axis="y", which="minor", left=False, right=False)
 
@@ -1540,6 +1585,7 @@ def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> No
     upper_ax.set_yticks(upper_ticks)
     upper_ax.yaxis.set_minor_formatter(NullFormatter())
     upper_ax.yaxis.set_major_formatter(FuncFormatter(_compact_seconds_label))
+    _style_tick_labels(upper_ax, axis="y")
 
     lower_ticks = [0.0, 4.0, 8.0]
     lower_ax.set_yscale("linear")
@@ -1547,6 +1593,7 @@ def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> No
     lower_ax.set_yticks(lower_ticks)
     lower_ax.yaxis.set_minor_formatter(NullFormatter())
     lower_ax.yaxis.set_major_formatter(FuncFormatter(_compact_seconds_label))
+    _style_tick_labels(lower_ax, axis="both")
 
     upper_ax.spines["bottom"].set_visible(False)
     lower_ax.spines["top"].set_visible(False)
@@ -1611,8 +1658,7 @@ def _plot_final_wall_clock_panel(ax: plt.Axes, alpha_key: str, *, fs: int) -> No
         borderpad=0.28,
     )
     legend.get_frame().set_facecolor("#FFFFFF")
-    for text in legend.get_texts():
-        text.set_color("#111111")
+    _style_legend_text(legend)
 
 
 def plot_learning_overview(
@@ -1862,9 +1908,10 @@ def _set_km_ticks(ax: plt.Axes, source_crs: str | None, fs: int) -> None:
     ax.set_yticks([cy + k * units_per_km for k in km_ticks])
     ax.set_xticklabels([f"{k}" for k in km_ticks])
     ax.set_yticklabels([f"{k}" for k in km_ticks])
-    ax.tick_params(axis="both", which="major", labelsize=fs - 1, colors="#444444", length=3, width=0.5)
-    ax.set_xlabel("Easting (km)", fontsize=fs + 2, color="#444444", labelpad=4)
-    ax.set_ylabel("Northing (km)", fontsize=fs + 2, color="#444444", labelpad=4)
+    ax.tick_params(axis="both", which="major", labelsize=fs - 1, colors=TICK_TEXT_COLOR, length=3, width=0.5)
+    _style_tick_labels(ax)
+    ax.set_xlabel(_bold_label("Easting (km)"), fontsize=fs + 2, color="#111111", labelpad=4)
+    ax.set_ylabel(_bold_label("Northing (km)"), fontsize=fs + 2, color="#111111", labelpad=4)
 
 
 def _boost_basemap_saturation(arr: np.ndarray, sat: float = 1.45, contrast: float = 1.08) -> np.ndarray:
@@ -1956,6 +2003,7 @@ def _draw_demand_density(
 def _panel_legend(ax: plt.Axes, handles, labels, fs: int, *, loc: str = "upper right", handler_map: dict | None = None) -> None:
     leg = ax.legend(handles=handles, labels=labels, fontsize=fs - 1, loc=loc, handler_map=handler_map, **_PANEL_LEGEND_KW)
     leg.get_frame().set_facecolor("#FFFFFF")
+    _style_legend_text(leg)
 
 
 def _plot_network_panel(
@@ -1976,7 +2024,7 @@ def _plot_network_panel(
     _setup_map_axis(ax, data["bbox"], pad_frac=pad_frac)
     _add_osm_basemap(ax, crs=data["basemap_crs"], zoom=data["basemap_zoom"], rotate_deg=data.get("basemap_rot_deg", 0.0))
     _set_km_ticks(ax, data["basemap_crs"], fs)
-    ax.set_title(_bold_label(title), fontsize=fs + 2, color="#111111", pad=8)
+    ax.set_title(_bold_label(title), fontsize=fs + 1, color="#111111", pad=10)
     if not with_overlay:
         return None
 
@@ -2028,7 +2076,7 @@ def _plot_bloomington_demand(ax: plt.Axes, data: dict, fs: int, *, pad_frac: flo
         if node_id in data["coords"]:
             x, y = data["coords"][node_id]
             ax.scatter([x], [y], s=size, marker=marker, color=color, edgecolors="#FFFFFF", linewidths=1.2, zorder=25)
-    ax.set_title(_bold_label("Bloomington Demand"), fontsize=fs + 2, color="#111111", pad=8)
+    ax.set_title(_bold_label("Bloomington Demand"), fontsize=fs + 1, color="#111111", pad=10)
     _panel_legend(
         ax,
         handles=[
@@ -2042,7 +2090,7 @@ def _plot_bloomington_demand(ax: plt.Axes, data: dict, fs: int, *, pad_frac: flo
 
 def plot_overview_maps(output_path: Path = NEURIPS_RESULTS_DIR / "final_overview_maps.pdf") -> Path:
     """Three-panel benchmark overview: Bloomington network, Bloomington demand, Laval basemap."""
-    fs = 17
+    fs = LEARNING_OVERVIEW_FS
     apply_plot_style(fs, background=OVERVIEW_MAP_BACKGROUND)
     bloomington = _bloomington_data()
     laval = _laval_data()

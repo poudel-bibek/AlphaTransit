@@ -32,6 +32,7 @@ BASE_EDGE_COLOR = "#d1d5db"
 BASE_EDGE_ALPHA = 0.45
 BASE_EDGE_WIDTH = 0.9
 MARGIN_RATIO = 0.03
+ROUTE_LABEL_COLOR = "#111111"
 
 EXISTING_ROUTES = NETWORKS_DIR / "bloomington" / "bloomington_existing_routes.json"
 CoordMap = Dict[str, tuple[float, float]]
@@ -342,7 +343,7 @@ def build_route_figure(alpha_key: str, output_path: Path, max_cols: int = 5, fs:
             ha="center",
             va="top",
             fontsize=fs,
-            color="#111827",
+            color=ROUTE_LABEL_COLOR,
             weight="semibold",
             clip_on=False,
         )
