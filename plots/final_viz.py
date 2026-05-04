@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import re
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -48,6 +49,18 @@ ROUTE_BACKGROUND = "#FFFFFF"
 BASE_EDGE = "#D4D8DD"
 BASE_EDGE_DARK = "#A8B0BA"
 ROUTE_LABEL_COLOR = "#111111"
+NEURIPS_RESULTS_DIR = ASSETS_DIR.parent.parent / "training_data" / "NeurIPS_results"
+METRIC_METHOD_PREFIXES = {
+    "Real-World": ("real_world_", ()),
+    "Random Walk": ("random_walk_", ()),
+    "Demand Cover": ("demand_cover_", ()),
+    "Shortest Path": ("shortest_path_", ()),
+    "Genetic Algorithm": ("genetic_", ("current_best",)),
+    "Bee Colony": ("bee_colony_", ()),
+    "Neural Evolutionary": ("neural_evolutionary_", ()),
+    "Pure MCTS": ("mcts_pure_", ()),
+    "End-to-End RL": ("end_to_end_rl_", ("train_seed_42",)),
+}
 CoordMap = dict[str, tuple[float, float]]
 
 
@@ -165,6 +178,54 @@ def _route_design_label(label: str) -> str:
     return "Reinforcement Learning" if label == "End-to-End RL" else label
 
 
+def _latest_matching_dir(parent: Path, prefix: str) -> Path:
+    matches = sorted(
+        (path for path in parent.glob(f"{prefix}*") if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not matches:
+        raise FileNotFoundError(f"No directory matching {prefix}* under {parent}")
+    return matches[-1]
+
+
+def _resolve_metric_summary_path(method_name: str, alpha_key: str, route_path: Path) -> Path:
+    for parent in route_path.parents:
+        direct = parent / "eval_results_summary.json"
+        if direct.is_file():
+            return direct
+
+    if method_name == "AlphaTransit":
+        niter_dir = "nips_7_n_iter" if alpha_key == "0_3" else "nips_8_n_iter"
+        base = NEURIPS_RESULTS_DIR / alpha_key / "alphatransit" / niter_dir / "n_iter_500"
+        matches = sorted(base.glob("*/eval_results_summary.json"), key=lambda path: path.stat().st_mtime)
+        if matches:
+            return matches[-1]
+
+    if method_name in METRIC_METHOD_PREFIXES:
+        prefix, extra = METRIC_METHOD_PREFIXES[method_name]
+        base = _latest_matching_dir(NEURIPS_RESULTS_DIR / alpha_key, prefix).joinpath(*extra)
+        direct = base / "eval_results_summary.json"
+        if direct.is_file():
+            return direct
+
+    raise FileNotFoundError(f"No eval summary found for {method_name} ({alpha_key})")
+
+
+def _load_design_metrics(method_name: str, alpha_key: str, route_path: Path) -> tuple[float, float] | None:
+    try:
+        summary_path = _resolve_metric_summary_path(method_name, alpha_key, route_path)
+    except FileNotFoundError:
+        return None
+
+    with summary_path.open("r", encoding="utf-8") as fp:
+        payload = json.load(fp)
+    results = payload.get("results", payload)
+    return (
+        float(results["service_rate"]["avg"] * 100.0),
+        float(results["fleet_size"]["avg"]),
+    )
+
+
 def _add_suptitle(ax: plt.Axes, text: str) -> None:
     ax.text(
         0.5,
@@ -174,6 +235,7 @@ def _add_suptitle(ax: plt.Axes, text: str) -> None:
         ha="center",
         va="bottom",
         fontsize=22,
+        family="DejaVu Serif",
         color=ROUTE_LABEL_COLOR,
         weight="semibold",
         clip_on=False,
@@ -187,6 +249,7 @@ def _render_route_frame(
     label: str,
     color: str,
     routes: Sequence[Sequence[str]] | None,
+    metrics: tuple[float, float] | None,
     width_px: int,
     height_px: int,
 ) -> Image.Image:
@@ -194,7 +257,8 @@ def _render_route_frame(
     fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.14)
     _setup_axis(ax, bounds, background=ROUTE_BACKGROUND)
     draw_basemap(ax, load_links(), coords)
-    _add_suptitle(ax, "Design")
+    _add_suptitle(ax, "Transit Design")
+    _draw_metric_panel(ax, metrics)
 
     if routes is None:
         display_label = "Bloomington Network"
@@ -216,10 +280,58 @@ def _render_route_frame(
         va="top",
         fontsize=20,
         color=ROUTE_LABEL_COLOR,
-        weight="semibold",
+        weight="normal",
         clip_on=False,
     )
     return _figure_to_image(fig, background=ROUTE_BACKGROUND)
+
+
+def _draw_metric_panel(ax: plt.Axes, metrics: tuple[float, float] | None) -> None:
+    from matplotlib.patches import Rectangle
+
+    x0, y0, width, height = 0.585, 0.775, 0.385, 0.165
+    panel = Rectangle(
+        (x0, y0),
+        width,
+        height,
+        transform=ax.transAxes,
+        facecolor="#FFFFFF",
+        edgecolor="#D1D5DB",
+        linewidth=0.75,
+        alpha=0.94,
+        zorder=50,
+    )
+    ax.add_patch(panel)
+    service_text = "--" if metrics is None else f"{metrics[0]:5.1f}%"
+    fleet_text = "--" if metrics is None else f"{metrics[1]:5.0f}"
+    rows = (
+        ("Service rate", service_text, y0 + height * 0.64),
+        ("Fleet size", fleet_text, y0 + height * 0.31),
+    )
+    for label, value, y in rows:
+        ax.text(
+            x0 + 0.028,
+            y,
+            label,
+            transform=ax.transAxes,
+            ha="left",
+            va="center",
+            fontsize=9.8,
+            color="#4B5563",
+            zorder=51,
+        )
+        ax.text(
+            x0 + width - 0.028,
+            y,
+            value,
+            transform=ax.transAxes,
+            ha="right",
+            va="center",
+            fontsize=9.8,
+            family="DejaVu Sans Mono",
+            color="#111827",
+            zorder=51,
+        )
 
 
 
@@ -484,10 +596,15 @@ def build_route_designs_gif(
     selected = list(method_names) if method_names is not None else [str(m["name"]) for m in get_methods()]
     method_lookup = {str(m["name"]): m for m in get_methods()}
     method_data = [
-        (name, str(method_lookup[name]["color"]), get_method_routes(name, alpha_key))
+        (
+            name,
+            str(method_lookup[name]["color"]),
+            get_method_routes(name, alpha_key),
+            _load_design_metrics(name, alpha_key, Path(method_lookup[name][f"path_{alpha_key}"])),
+        )
         for name in selected
     ]
-    bounds = _route_design_bounds(coords, [routes for _, _, routes in method_data])
+    bounds = _route_design_bounds(coords, [routes for _, _, routes, _ in method_data])
 
     frames: list[Image.Image] = []
     durations: list[int] = []
@@ -499,13 +616,14 @@ def build_route_designs_gif(
                 label="Bloomington Network",
                 color="#4A90D9",
                 routes=None,
+                metrics=None,
                 width_px=width_px,
                 height_px=height_px,
             )
         )
         durations.append(950)
 
-    for name, color, routes in method_data:
+    for name, color, routes, metrics in method_data:
         frames.append(
             _render_route_frame(
                 coords,
@@ -513,6 +631,7 @@ def build_route_designs_gif(
                 label=name,
                 color=color,
                 routes=routes,
+                metrics=metrics,
                 width_px=width_px,
                 height_px=height_px,
             )
@@ -527,11 +646,12 @@ def build_vehicle_platoon_gif(
     *,
     alpha_key: str = "0_3",
     method_name: str = "Real-World",
-    simulation_horizon: int = 1800,
+    simulation_horizon: int = 4200,
     seed: int = 42,
     max_vehicles: int = 110,
-    trail_seconds: float = 60.0,
-    frame_count: int = 28,
+    trail_seconds: float = 110.0,
+    frame_count: int = 96,
+    frame_duration_ms: int = 115,
     frame_size: tuple[int, int] = FRAME_SIZE,
     max_bytes: int = MAX_README_GIF_BYTES,
 ) -> Path:
@@ -570,7 +690,7 @@ def build_vehicle_platoon_gif(
         )
         for frame_time in times
     ]
-    return _save_gif_under_limit(frames, output_path, durations=90, max_bytes=max_bytes, colors=112)
+    return _save_gif_under_limit(frames, output_path, durations=frame_duration_ms, max_bytes=max_bytes, colors=112)
 
 
 def _main(argv: Sequence[str] | None = None) -> None:
@@ -578,7 +698,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--target", choices=["all", "routes", "platoons"], default="all")
     parser.add_argument("--alpha", choices=["0_3", "1_0"], default="0_3")
     parser.add_argument("--max-mb", type=float, default=MAX_README_GIF_BYTES / (1024 * 1024))
-    parser.add_argument("--simulation-horizon", type=int, default=1800)
+    parser.add_argument("--simulation-horizon", type=int, default=4200)
     args = parser.parse_args(argv)
 
     max_bytes = int(args.max_mb * 1024 * 1024)
