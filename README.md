@@ -27,7 +27,7 @@ AlphaTransit couples Monte Carlo Tree Search (MCTS) with a neural policy-value n
 - **Terminal simulator rewards** with online value-target normalization for stability
 - **Parallel episode workers** with configurable worker count; paper experiments use 8 or 16 workers
 
-### PPO (End-to-End Reinforcement Learning)
+### End-to-End Reinforcement Learning (PPO with GAE)
 
 Graph-attention actor-critic trained with Proximal Policy Optimization:
 - **Parallel environment workers** for efficient sample collection
@@ -82,10 +82,10 @@ source .venv/bin/activate
 Pass `--apply_best_params` to use the sweep settings in `config.py`. Explicit CLI args still override; add `--n_iter=500` to match the paper's final AlphaTransit and Pure MCTS search budget.
 
 ```bash
-# PPO with best params (alpha=0.3, roughly 3-5 hours depending on alpha)
+# End-to-End Reinforcement Learning (PPO with GAE), alpha=0.3
 python main.py --algorithm ppo --gpu --alpha=0.3 --apply_best_params --gamma=0.999 --wandb_off
 
-# PPO with best params (alpha=1.0, roughly 3-5 hours depending on alpha)
+# End-to-End Reinforcement Learning (PPO with GAE), alpha=1.0
 python main.py --algorithm ppo --gpu --alpha=1.0 --apply_best_params --gamma=0.999 --wandb_off
 
 # AlphaTransit with best params (alpha=0.3, roughly 24-27 hours at n_iter=500)
@@ -135,7 +135,7 @@ a separate release artifact.
 # AlphaTransit evaluation
 python main.py --algorithm alphatransit --mode=eval --saved_policy_path=training_data/<timestamp>/mcts_policies/policy_final.pth
 
-# PPO evaluation; checkpoints are written when training with --save_policy_ppo
+# End-to-End Reinforcement Learning evaluation; checkpoints are written when training with --save_policy_ppo
 python main.py --algorithm ppo --mode=eval --saved_policy_path=training_data/<timestamp>/ppo_policies/policy_up_<update>_step_<steps>.pth
 ```
 
@@ -164,7 +164,7 @@ Paper hyperparameters are summarized in Table 2; repo sweep defaults live in
 | Simulation | `T=10000`, `dt=1s`, platoon size `dn=5`, bus capacity 40, 60s dwell time |
 | Design task | Bloomington, `K=16` routes, `Lmax=14`, transit-center starts, `alpha in {0.3, 1.0}` |
 | AlphaTransit | GATv2 policy-value network, PUCT MCTS, `n_iter=500` for final comparisons |
-| PPO baseline | 1M environment steps, GAE, delta-coverage shaping without early-stop penalty |
+| End-to-End Reinforcement Learning (PPO with GAE) | 1M environment steps, delta-coverage shaping without early-stop penalty |
 | Genetic Algorithm | Population 50, 100 generations, route-exchange crossover, path-regeneration mutation |
 
 ## Project Structure
@@ -204,36 +204,14 @@ AlphaTransit/
 │   ├── laval/              # Laval, QC transfer network from Holliday et al.
 │   └── sioux_falls/        # Sioux Falls network (for testing)
 │
-├── uxsim/                  # UXsim mesoscopic traffic simulator with custom bus-transit extensions
+├── uxsim/                  # UXsim v1.8.2 with custom bus-transit extensions
 ├── plots/                  # Visualization and analysis scripts
 └── training_data/          # Training outputs, checkpoints, sweep data
 ```
 
-## Network Architecture
-
-**GATv2ActorCritic** (shared between AlphaTransit and PPO):
-
-- **Input projection**: Node features (16-dim) → hidden dimension
-- **4 GATv2 blocks**: Channels [128, 128, 64, 64], heads [8, 8, 4, 4], with residual connections and LayerNorm
-- **Actor head**: MLP producing per-node logits (permutation equivariant)
-- **Critic head**: Global pooling → MLP producing scalar value (permutation invariant)
-
-For fixed hidden widths, attention heads, and block count, the parameter count is independent of the number of nodes; forward-pass cost is linear in sparse road graphs.
-
-## State Representation
-
-Each node has 16 features:
-- **Static (0-4)**: Normalized coordinates, degree, total outgoing/incoming demand
-- **Dynamic (5-12)**: Route-aware demand features (local and global, for current and completed routes)
-- **Flags (13-15)**: In current route, in completed routes (fraction), valid next action
-
-## Reward Function
-
-Terminal reward combines coverage potential, a fixed-denominator boarded-passenger term, capped waiting-time and in-vehicle-time penalties, route-overlap penalty, fleet-size penalty, and bus utilization.
-
 ## Simulation
 
-- **Engine**: Built on [UXsim](https://github.com/toruseo/UXsim), a mesoscopic traffic simulator using Newell's car-following model. We add custom extensions for bus transit simulation (bus dispatching, passenger boarding/alighting, transfers) and standardized evaluation tooling. The modified source is included in the `uxsim/` directory.
+- **Engine**: Built on [UXsim](https://github.com/toruseo/UXsim) v1.8.2 (released June 17, 2024), a mesoscopic traffic simulator using Newell's car-following model. We add custom extensions for bus transit simulation (bus dispatching, passenger boarding/alighting, transfers) and standardized evaluation tooling. The modified source is included in the `uxsim/` directory.
 - **Time step**: dt = 1 second, platoon size dn = 5
 - **Horizon**: 10,000 steps (~2.7 hours)
 - **Bus parameters**: 40 passenger capacity, 60s dwell time per stop
@@ -258,22 +236,3 @@ python main.py --algorithm alphatransit --wandb --wandb_project=transit --wandb_
 # Without WandB
 python main.py --algorithm alphatransit --wandb_off
 ```
-
-## Release Artifacts
-
-Training outputs, W&B runs, and NeurIPS plotting inputs are not included in a
-source release. If trained policies or figure data are published, provide them
-as separate artifacts with filenames, checksums, training commands, and
-compatible commit information.
-
-For anonymous review, cite the work as: "Anonymous Authors. AlphaTransit:
-Learning to Design City-scale Transit Routes. Submitted to NeurIPS 2026."
-
-## Licensing
-
-Project code is MIT unless a file or subtree says otherwise. UXsim, U.S. Census
-TIGER/LODES data, Bloomington Transit GTFS data, and Holliday baseline assets
-are credited in the paper and retained with their local notices where included.
-The vendored Holliday neural/evolutionary baseline under
-`baselines/neural_evolutionary/` contains GPL notices and includes its own
-`COPYING` file.
