@@ -289,17 +289,19 @@ def _render_route_frame(
 def _draw_metric_panel(ax: plt.Axes, metrics: tuple[float, float] | None) -> None:
     from matplotlib.patches import Rectangle
 
-    x0, y0, width, height = 0.605, 0.81, 0.385, 0.165
+    x0, y0, width, height = 0.695, 0.77, 0.275, 0.125
+    panel_transform = ax.figure.transFigure
     panel = Rectangle(
         (x0, y0),
         width,
         height,
-        transform=ax.transAxes,
+        transform=panel_transform,
         facecolor="#FFFFFF",
         edgecolor="#D1D5DB",
         linewidth=0.75,
         alpha=0.94,
         zorder=50,
+        clip_on=False,
     )
     ax.add_patch(panel)
     service_text = "--" if metrics is None else f"{metrics[0]:5.1f}%"
@@ -313,24 +315,26 @@ def _draw_metric_panel(ax: plt.Axes, metrics: tuple[float, float] | None) -> Non
             x0 + 0.028,
             y,
             label,
-            transform=ax.transAxes,
+            transform=panel_transform,
             ha="left",
             va="center",
             fontsize=9.8,
             color="#4B5563",
             zorder=51,
+            clip_on=False,
         )
         ax.text(
             x0 + width - 0.028,
             y,
             value,
-            transform=ax.transAxes,
+            transform=panel_transform,
             ha="right",
             va="center",
             fontsize=9.8,
             family="DejaVu Sans Mono",
             color="#111827",
             zorder=51,
+            clip_on=False,
         )
 
 
