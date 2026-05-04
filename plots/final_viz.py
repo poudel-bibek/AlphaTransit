@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -11,7 +12,6 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.transforms import Bbox
 from PIL import Image
 
@@ -48,10 +48,6 @@ ROUTE_BACKGROUND = "#FFFFFF"
 BASE_EDGE = "#D4D8DD"
 BASE_EDGE_DARK = "#A8B0BA"
 ROUTE_LABEL_COLOR = "#111111"
-SPEED_CMAP = LinearSegmentedColormap.from_list(
-    "alphatransit_speed",
-    ["#E8F4FD", "#4A90D9", "#7B68EE", "#DA70D6", "#FF00FF"],
-)
 CoordMap = dict[str, tuple[float, float]]
 
 
@@ -126,8 +122,8 @@ def _draw_base(ax: plt.Axes, coords: CoordMap, *, darker: bool = False) -> None:
         links,
         coords,
         color=BASE_EDGE_DARK if darker else BASE_EDGE,
-        alpha=0.58 if darker else 0.48,
-        linewidth=0.72 if darker else 0.64,
+        alpha=0.72 if darker else 0.48,
+        linewidth=0.95 if darker else 0.64,
         zorder=1,
     )
     xy = np.asarray(list(coords.values()), dtype=float)
@@ -136,9 +132,9 @@ def _draw_base(ax: plt.Axes, coords: CoordMap, *, darker: bool = False) -> None:
         xy[:, 1],
         s=3.2 if darker else 2.0,
         color="#FFFFFF",
-        edgecolors="#B8BEC6",
-        linewidths=0.16,
-        alpha=0.55,
+        edgecolors="#AEB6C2" if darker else "#B8BEC6",
+        linewidths=0.22 if darker else 0.16,
+        alpha=0.72 if darker else 0.55,
         zorder=2,
     )
 
@@ -169,6 +165,21 @@ def _route_design_label(label: str) -> str:
     return "Reinforcement Learning" if label == "End-to-End RL" else label
 
 
+def _add_suptitle(ax: plt.Axes, text: str) -> None:
+    ax.text(
+        0.5,
+        1.035,
+        text,
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=22,
+        color=ROUTE_LABEL_COLOR,
+        weight="semibold",
+        clip_on=False,
+    )
+
+
 def _render_route_frame(
     coords: CoordMap,
     bounds: tuple[float, float, float, float],
@@ -180,9 +191,10 @@ def _render_route_frame(
     height_px: int,
 ) -> Image.Image:
     fig, ax = _new_figure(width_px, height_px, background=ROUTE_BACKGROUND)
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.14)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.14)
     _setup_axis(ax, bounds, background=ROUTE_BACKGROUND)
     draw_basemap(ax, load_links(), coords)
+    _add_suptitle(ax, "Design")
 
     if routes is None:
         display_label = "Bloomington Network"
@@ -327,7 +339,25 @@ def _simulate_vehicle_logs(
     logs = env.world.analyzer.gps_like_log_to_pandas()
     if logs.empty:
         raise RuntimeError("Simulation produced no vehicle GPS logs")
+    bus_name_to_route = {
+        str(veh.name): _route_index_from_bus_name(str(veh.name))
+        for veh in env.world.VEHICLES.values()
+        if getattr(veh, "mode", None) == "bus"
+    }
+    bus_name_to_route = {
+        name: route_idx
+        for name, route_idx in bus_name_to_route.items()
+        if route_idx is not None
+    }
+    if not bus_name_to_route:
+        raise RuntimeError("Simulation produced no bus vehicles")
+
     logs = logs.copy()
+    logs["name"] = logs["name"].astype(str)
+    logs = logs[logs["name"].isin(bus_name_to_route)].copy()
+    if logs.empty:
+        raise RuntimeError("Simulation produced no drawable bus GPS logs")
+    logs["route_idx"] = logs["name"].map(bus_name_to_route).astype(int)
     for col in ("t", "x", "y", "v"):
         logs[col] = logs[col].astype(float)
     logs = logs.replace([np.inf, -np.inf], np.nan).dropna(subset=["t", "x", "y", "v"])
@@ -335,6 +365,15 @@ def _simulate_vehicle_logs(
     if logs.empty:
         raise RuntimeError("Simulation produced no drawable moving vehicle logs")
     return logs
+
+
+def _route_index_from_bus_name(name: str) -> int | None:
+    match = re.match(r"bus_route_(\d+)(?:_freq_\d+)?$", name)
+    return int(match.group(1)) if match else None
+
+
+def _route_color(route_idx: int) -> str:
+    return ROUTE_COLORS[route_idx % len(ROUTE_COLORS)]
 
 
 def _select_vehicle_names(logs, max_vehicles: int) -> set[str]:
@@ -358,16 +397,28 @@ def _render_simulation_frame(
     coords: CoordMap,
     bounds: tuple[float, float, float, float],
     *,
+    routes: Sequence[Sequence[str]],
     logs,
     frame_time: float,
     trail_seconds: float,
-    speed_norm: Normalize,
     width_px: int,
     height_px: int,
 ) -> Image.Image:
     fig, ax = _new_figure(width_px, height_px)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.88, bottom=0.02)
     _setup_axis(ax, bounds)
-    _draw_base(ax, coords)
+    _draw_base(ax, coords, darker=True)
+    _add_suptitle(ax, "Simulation")
+
+    for route_idx, route in enumerate(routes):
+        draw_routes(
+            ax,
+            [route],
+            coords,
+            _route_color(route_idx),
+            line_width=1.25,
+            alpha=0.30,
+        )
 
     window = logs[(logs["t"] >= frame_time - trail_seconds) & (logs["t"] <= frame_time)]
     if window.empty:
@@ -375,37 +426,36 @@ def _render_simulation_frame(
 
     current_rows = []
     for _, vehicle_log in window.sort_values("t").groupby("name", sort=False):
-        vehicle_log = vehicle_log.tail(10)
+        vehicle_log = vehicle_log.tail(36)
         current = vehicle_log.iloc[-1]
         current_rows.append(current)
         if len(vehicle_log) < 2:
             continue
-        color = SPEED_CMAP(speed_norm(float(current["v"])))
+        color = _route_color(int(current["route_idx"]))
         ax.plot(
             vehicle_log["x"].to_numpy(),
             vehicle_log["y"].to_numpy(),
             color=color,
-            linewidth=1.25,
-            alpha=0.28,
+            linewidth=1.55,
+            alpha=0.42,
             solid_capstyle="round",
-            zorder=8,
+            zorder=12,
         )
 
     if current_rows:
         xs = np.asarray([float(row["x"]) for row in current_rows])
         ys = np.asarray([float(row["y"]) for row in current_rows])
-        speeds = np.asarray([float(row["v"]) for row in current_rows])
-        colors = SPEED_CMAP(speed_norm(speeds))
-        ax.scatter(xs, ys, s=92, color=colors, alpha=0.12, linewidths=0, zorder=9)
+        colors = [_route_color(int(row["route_idx"])) for row in current_rows]
+        ax.scatter(xs, ys, s=112, color=colors, alpha=0.13, linewidths=0, zorder=13)
         ax.scatter(
             xs,
             ys,
-            s=18,
+            s=24,
             color=colors,
             edgecolors="#FFFFFF",
-            linewidths=0.35,
-            alpha=0.92,
-            zorder=10,
+            linewidths=0.45,
+            alpha=0.96,
+            zorder=14,
         )
 
     return _figure_to_image(fig)
@@ -496,6 +546,7 @@ def build_vehicle_platoon_gif(
     coords = _coords_dict()
     bounds = _bounds(coords)
     width_px, height_px = frame_size
+    routes = get_method_routes(method_name, alpha_key)
     logs = _simulate_vehicle_logs(
         alpha_key=alpha_key,
         method_name=method_name,
@@ -505,18 +556,15 @@ def build_vehicle_platoon_gif(
     selected_names = _select_vehicle_names(logs, max_vehicles)
     logs = logs[logs["name"].astype(str).isin(selected_names)].copy()
     times = _frame_times(logs, frame_count)
-    moving = logs[logs["v"] > 0.05]
-    vmax = float((moving if not moving.empty else logs)["v"].quantile(0.98))
-    speed_norm = Normalize(vmin=0.0, vmax=max(vmax, 1.0), clip=True)
 
     frames = [
         _render_simulation_frame(
             coords,
             bounds,
+            routes=routes,
             logs=logs,
             frame_time=float(frame_time),
             trail_seconds=trail_seconds,
-            speed_norm=speed_norm,
             width_px=width_px,
             height_px=height_px,
         )
