@@ -289,7 +289,7 @@ def _render_route_frame(
 def _draw_metric_panel(ax: plt.Axes, metrics: tuple[float, float] | None) -> None:
     from matplotlib.patches import Rectangle
 
-    x0, y0, width, height = 0.585, 0.775, 0.385, 0.165
+    x0, y0, width, height = 0.605, 0.81, 0.385, 0.165
     panel = Rectangle(
         (x0, y0),
         width,
@@ -646,12 +646,12 @@ def build_vehicle_platoon_gif(
     *,
     alpha_key: str = "0_3",
     method_name: str = "Real-World",
-    simulation_horizon: int = 4200,
+    simulation_horizon: int = 5400,
     seed: int = 42,
     max_vehicles: int = 110,
-    trail_seconds: float = 110.0,
-    frame_count: int = 96,
-    frame_duration_ms: int = 115,
+    trail_seconds: float = 135.0,
+    frame_count: int = 144,
+    frame_duration_ms: int = 120,
     frame_size: tuple[int, int] = FRAME_SIZE,
     max_bytes: int = MAX_README_GIF_BYTES,
 ) -> Path:
@@ -698,7 +698,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--target", choices=["all", "routes", "platoons"], default="all")
     parser.add_argument("--alpha", choices=["0_3", "1_0"], default="0_3")
     parser.add_argument("--max-mb", type=float, default=MAX_README_GIF_BYTES / (1024 * 1024))
-    parser.add_argument("--simulation-horizon", type=int, default=4200)
+    parser.add_argument("--simulation-horizon", type=int, default=5400)
     args = parser.parse_args(argv)
 
     max_bytes = int(args.max_mb * 1024 * 1024)
