@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "Learning to Design City-scale Transit Routes using Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "baselines/neural_evolutionary/COPYING"]
+authors = [
+    { name = "AlphaTransit contributors" },
+]
+keywords = ["reinforcement-learning", "transit", "transportation", "route-network-design"]
 requires-python = ">=3.14"
 classifiers = [
     "Intended Audience :: Science/Research",
@@ -14,7 +19,7 @@ classifiers = [
 ]
 dependencies = [
     # Core simulation dependencies
-    "numpy>=2.0",
+    "numpy>=2.0,<2.4",
     "matplotlib>=3.9",
     "seaborn>=0.13.0",
     "pillow>=10.0",
@@ -32,12 +37,32 @@ dependencies = [
     "imageio>=2.37.2",
 ]
 
+[project.scripts]
+alphatransit = "main:main"
+transit-design = "main:main"
+
 [project.optional-dependencies]
 advanced = [
+    "contextily>=1.6.2",
     "neatnet>=0.1.1",
     "osmnx>=2.0.0",
     "geopandas>=1.0.0",
     "shapely>=2.1.0"
+]
+gui = [
+    "PyQt5>=5.15",
+]
+baseline-repro = [
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+    "optuna>=3.0",
+    "pyyaml>=6.0",
+    "tensorboard>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
 ]
 
 [build-system]
@@ -46,6 +71,24 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["uxsim", "rl", "baselines"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"main.py" = "main.py"
+"config.py" = "config.py"
+"alpha.py" = "alpha.py"
+"ppo.py" = "ppo.py"
+"sweep.py" = "sweep.py"
+"networks/bloomington/bloomington_nodes_standard.csv" = "networks/bloomington/bloomington_nodes_standard.csv"
+"networks/bloomington/bloomington_links_standard.csv" = "networks/bloomington/bloomington_links_standard.csv"
+"networks/bloomington/bloomington_demand_standard.csv" = "networks/bloomington/bloomington_demand_standard.csv"
+"networks/bloomington/bloomington_existing_routes.json" = "networks/bloomington/bloomington_existing_routes.json"
+"networks/sioux_falls/sioux_falls_nodes_standard.csv" = "networks/sioux_falls/sioux_falls_nodes_standard.csv"
+"networks/sioux_falls/sioux_falls_links_standard.csv" = "networks/sioux_falls/sioux_falls_links_standard.csv"
+"networks/sioux_falls/sioux_falls_demand_standard.csv" = "networks/sioux_falls/sioux_falls_demand_standard.csv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
 [tool.uv]
 # For free-threading experiments, add: python-preference = "cpython-freethreaded"

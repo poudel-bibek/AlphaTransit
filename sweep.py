@@ -512,8 +512,8 @@ def create_agent_train(algorithm: str):
 def main() -> None:
     """
     Usage:
-        python sweep.py --algorithm ppo
-        python sweep.py --algorithm alphatransit
+        python sweep.py --algorithm ppo --alpha 0.3
+        python sweep.py --algorithm alphatransit --alpha 1.0
     """
     parser = argparse.ArgumentParser(description="Hyperparameter sweep for transit design RL")
     parser.add_argument("--algorithm", choices=["ppo", "alphatransit"], required=True,
@@ -524,6 +524,8 @@ def main() -> None:
                         help="If set, join existing sweep instead of creating a new one. "
                              "Pass either bare ID (e.g. 'oq81en7b') or fully-qualified "
                              "'entity/project/sweep_id'. Useful for multi-PC continuation.")
+    parser.add_argument("--count", type=int, default=1,
+                        help="Number of sweep runs for this agent. Use 0 to run indefinitely.")
     args, remaining = parser.parse_known_args()
     # get_config() uses argparse.parse_args() on sys.argv — strip our flags so it doesn't choke
     import sys
@@ -535,6 +537,8 @@ def main() -> None:
         if "/" in args.resume_sweep_id:
             sweep_id = args.resume_sweep_id
         else:
+            if not base_config.get("wandb_entity"):
+                raise ValueError("Bare --resume_sweep_id requires --wandb_entity or WANDB_ENTITY")
             sweep_id = f"{base_config['wandb_entity']}/{base_config['wandb_project']}/{args.resume_sweep_id}"
         print(f"Joining existing sweep {sweep_id} as agent for {args.algorithm.upper()} alpha={args.alpha}...")
     else:
@@ -547,7 +551,8 @@ def main() -> None:
         )
 
     agent_train_fn = create_agent_train(args.algorithm)
-    wandb.agent(sweep_id, function=agent_train_fn)  # No count = runs indefinitely
+    agent_count = None if args.count == 0 else args.count
+    wandb.agent(sweep_id, function=agent_train_fn, count=agent_count)
 
 
 if __name__ == "__main__":

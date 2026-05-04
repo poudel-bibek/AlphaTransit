@@ -10,6 +10,24 @@ import torch
 from typing import Any, Dict
 
 
+BASELINE_TYPES = [
+    "random_walk",
+    "reward_max",
+    "demand_cover",
+    "shortest_path",
+    "real_world",
+    "genetic",
+    "evolutionary",
+    "neural_evolutionary",
+    "mcts",
+]
+
+ROUTE_INIT_STRATEGIES = ["random", "highest_demand", "transit_center"]
+DEFAULT_TRANSIT_CENTER_NODES = {
+    "bloomington": "96",
+}
+
+
 # Best hyperparameters found from sweep experiments.
 # PPO: from term_ep_1 (alpha=0.3, 18 runs) and term_ep_2 (alpha=1.0, 32 runs)
 # AlphaTransit: from 3_faster_general (alpha=0.3, 21 runs) and 4_faster_general (alpha=1.0, 24 runs)
@@ -94,6 +112,28 @@ def apply_best_params(config: Dict[str, Any], explicitly_set: set = None) -> Dic
     return config
 
 
+def normalize_config(config: Dict[str, Any], explicitly_set: set = None) -> Dict[str, Any]:
+    """
+    Fill network-specific defaults that cannot be represented safely in argparse.
+    """
+    explicit = explicitly_set or set()
+    network = config.get("network")
+
+    if not config.get("transit_center_node"):
+        default_center = DEFAULT_TRANSIT_CENTER_NODES.get(network)
+        if default_center:
+            config["transit_center_node"] = default_center
+
+    if config.get("route_init") == "transit_center" and not config.get("transit_center_node"):
+        if "route_init" in explicit:
+            raise ValueError(
+                f"route_init='transit_center' requires --transit_center_node for network '{network}'"
+            )
+        config["route_init"] = "highest_demand"
+
+    return config
+
+
 def set_global_seeds(seed: int) -> None:
     """
     Set seeds for Python, NumPy, and PyTorch.
@@ -123,6 +163,7 @@ def get_config() -> Dict[str, Any]:
     config = vars(args)
     if config.get("apply_best_params"):
         config = apply_best_params(config, explicitly_set)
+    config = normalize_config(config, explicitly_set)
     return config
 
 
@@ -145,7 +186,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delta_n", type=int, default=5, help="Simulation platoon size")
     parser.add_argument("--bus_capacity", type=int, default=40, help="Bus capacity")
     parser.add_argument("--stop_duration", type=int, default=60, help="Stop duration")
-    parser.add_argument("--baseline_type", type=str, default="demand_cover", help="Can be random_walk, reward_max, demand_cover, shortest_path, real_world, genetic, evolutionary, neural_evolutionary, mcts")
+    parser.add_argument("--baseline_type", choices=BASELINE_TYPES, default="demand_cover", help="Baseline to run when --mode=baseline")
     parser.add_argument("--num_eval_runs", type=int, default=5, help="Number of evaluation runs")
     parser.add_argument("--eval_seed_offset", type=int, default=2, help="Add offset to starting seed for evaluation outputs")
     parser.add_argument("--save_animations", action="store_true", help="Save animations for evaluation")
@@ -167,8 +208,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--comfort_threshold", type=float, default=1.0, help="Max load factor for service frequency")
     parser.add_argument("--radius", type=float, default=0.5, help="Radius for demand allocation")
     parser.add_argument("--demand_warmup", type=float, default=0.15, help="Fraction of horizon reserved at both start and end")
-    parser.add_argument("--route_init", type=str, default="transit_center", help="Route initialization scheme")
-    parser.add_argument("--transit_center_node", type=str, default="96", help="Transit center node identifier")
+    parser.add_argument("--route_init", choices=ROUTE_INIT_STRATEGIES, default="transit_center", help="Route initialization scheme")
+    parser.add_argument("--transit_center_node", type=str, default=None, help="Transit center node identifier; defaults to 96 for Bloomington")
     parser.add_argument("--ppo_reward_mode", type=str, default="terminal_intermediate_delta_no_early_stop",
         choices=["terminal_only", "terminal_intermediate_raw_early_stop", "terminal_intermediate_delta_early_stop", "terminal_intermediate_delta_no_early_stop"],
         help="Reward shaping mode (PPO only; AlphaTransit uses terminal reward targets)")
@@ -227,14 +268,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Model:
     parser.add_argument("--concat_heads", action="store_true", help="Concatenate attention heads")
+    parser.add_argument("--torch_compile", action="store_true", help="Enable torch.compile for AlphaTransit model training")
 
     # WandB:
-    parser.add_argument("--wandb_project", type=str, default="transit_design", help="WandB project name")
-    parser.add_argument("--wandb_entity", type=str, default="bibek-poudel", help="WandB entity/team name")
-    parser.add_argument("--wandb_off", action="store_true", help="Disable WandB logging")
+    parser.add_argument("--wandb_project", type=str, default=os.getenv("WANDB_PROJECT", "transit_design"), help="WandB project name")
+    parser.add_argument("--wandb_entity", type=str, default=os.getenv("WANDB_ENTITY"), help="WandB entity/team name")
+    wandb_group = parser.add_mutually_exclusive_group()
+    wandb_group.add_argument("--wandb", dest="wandb_off", action="store_false", help="Enable WandB logging")
+    wandb_group.add_argument("--wandb_off", dest="wandb_off", action="store_true", help="Disable WandB logging")
+    parser.set_defaults(wandb_off=True)
 
     # Paths:
     parser.add_argument("--save_dir", type=str, default="./training_data", help="Directory to save training data")
-    parser.add_argument("--saved_policy_path", type=str, default="./training_data/policies/policy_final.pth", help="Path to saved policy for evaluation")
+    parser.add_argument("--saved_policy_path", type=str, default=None, help="Path to saved policy for evaluation")
 
     return parser

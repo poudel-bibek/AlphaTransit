@@ -1,4 +1,5 @@
 import torch
+from pathlib import Path
 from rl.env import TransitEnv
 from baselines import RandomWalk, DemandCoverage, ShortestPath, RewardMaximization, RealWorld, GeneticAlgorithm, NeuralEvolutionary, EvolutionaryAlgorithm, PureMCTS
 from rl.parallel_env import _cap_worker_threads
@@ -18,6 +19,8 @@ def main():
     # Baselines can be executed regardless of algorithm selection.
     if mode == "baseline":
         config["wandb_off"] = True
+        if config["baseline_type"] == "real_world" and config.get("network") != "bloomington":
+            raise ValueError("baseline_type='real_world' is only available for --network=bloomington")
         # means mode is baseline
         env = TransitEnv(config)
         
@@ -41,6 +44,12 @@ def main():
     if mode in {"train", "eval"}:
         if algorithm is None:
             raise ValueError("--algorithm is required for train/eval modes. Use --algorithm ppo or --algorithm alphatransit")
+        if mode == "eval":
+            policy_path = config.get("saved_policy_path")
+            if not policy_path:
+                raise ValueError("--saved_policy_path is required for eval mode")
+            if not Path(policy_path).is_file():
+                raise FileNotFoundError(f"Saved policy not found: {policy_path}")
         set_global_seeds(config["seed"])
 
     device = torch.device("cuda" if (config["gpu"] and torch.cuda.is_available()) else "cpu")

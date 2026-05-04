@@ -67,6 +67,8 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
         choice_nodes = [node for node in all_nodes if node not in completed_nodes]
     else:
         choice_nodes = all_nodes
+    if not choice_nodes:
+        raise ValueError("No candidate nodes available for route initialization")
 
     strategy = env.route_init 
     if strategy not in {"random", "highest_demand", "transit_center"}:
@@ -88,7 +90,13 @@ def initialize_route(env: Any, avoid_completed_routes: bool = False) -> List[str
                 return [candidate_node]
 
     elif strategy == "transit_center":
-        center_node = env.transit_center_node
+        center_node = str(env.transit_center_node) if env.transit_center_node is not None else ""
+        if not center_node or center_node not in env.node_to_idx:
+            network = env.config.get("network", "<unknown>")
+            raise ValueError(
+                f"Transit center node '{center_node or None}' is not valid for network '{network}'. "
+                "Pass --transit_center_node or use --route_init=highest_demand."
+            )
         # print(f"Initializing route at transit center node: {center_node}")
         return [center_node]
 

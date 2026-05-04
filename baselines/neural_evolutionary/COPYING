@@ -1,0 +1,9 @@
+The source files in this directory are adapted from Andrew Holliday et al.'s
+transit_learning project and include notices indicating GNU General Public
+License terms, version 3 or later.
+
+Treat this subtree as GPL-3.0-or-later unless a more specific notice appears in
+an individual file. The canonical GPL-3.0 text is available from the Free
+Software Foundation:
+
+https://www.gnu.org/licenses/gpl-3.0.txt

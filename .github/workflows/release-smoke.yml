@@ -1,0 +1,28 @@
+name: release-smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Compile core modules
+        run: uv run python -m py_compile main.py config.py alpha.py ppo.py rl/env.py rl/models.py rl/mcts_agent.py rl/parallel_env.py baselines/heuristics.py baselines/genetic.py baselines/mcts.py
+
+      - name: CLI help
+        run: uv run python main.py --help
+
+      - name: Tests
+        run: uv run pytest

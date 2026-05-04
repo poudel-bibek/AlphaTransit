@@ -96,7 +96,10 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
     """
     # Initialize wandb for standalone runs (sweep handles its own init)
     if not is_sweep and not config.get("wandb_off"):
-        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
+        wandb_kwargs = {"project": config["wandb_project"], "config": config}
+        if config.get("wandb_entity"):
+            wandb_kwargs["entity"] = config["wandb_entity"]
+        wandb.init(**wandb_kwargs)
 
     num_workers = config.get("num_ppo_workers")
     episodes_per_update = config.get("ppo_episodes_per_update", num_workers)
@@ -460,6 +463,8 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     os.makedirs(eval_save_dir, exist_ok=True)
     config["wandb_off"] = True
     policy_path = config["saved_policy_path"]
+    if not policy_path or not os.path.isfile(policy_path):
+        raise FileNotFoundError(f"Saved policy not found: {policy_path}")
     
     # Create env_manager for parallel evaluation
     env = TransitEnv(config)
@@ -471,7 +476,7 @@ def ppo_eval(config: Dict[str, Any]) -> None:
     # Load model to get architecture for workers
     device = torch.device(config["device"])
     model = GATV2ActorCritic(**policy_kwargs).to(device)
-    state_dict = torch.load(policy_path, map_location=device)
+    state_dict = torch.load(policy_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     # Create and start env_manager
     num_workers = config.get("num_ppo_workers")

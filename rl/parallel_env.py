@@ -519,7 +519,7 @@ class ParallelEnvManager:
 
         # Load weights from path or use provided state_dict
         if policy_path is not None:
-            state_dict = torch.load(policy_path, map_location="cpu")
+            state_dict = torch.load(policy_path, map_location="cpu", weights_only=True)
         for name, param in state_dict.items():
             self.shared_model_state[name].copy_(param)
         

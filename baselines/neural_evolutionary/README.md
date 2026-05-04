@@ -2,6 +2,10 @@
 
 This code is adapted from the [transit_learning](https://github.com/AHolliday/transit_learning) repository by Andrew Holliday et al. It is used to produce baseline results for comparison with AlphaTransit.
 
+Licensing note: source files in this subtree carry GNU General Public License
+notices. See `COPYING` in this directory before redistributing this baseline
+code.
+
 The code corresponds to the following papers:
 
 1. A. Holliday, A. El-Geneidy, and G. Dudek, "Learning Heuristics for Transit Network Design and Improvement with Deep Reinforcement Learning," *Transportmetrica B: Transport Dynamics*, 13(1), 2025. [arXiv:2404.05894](https://arxiv.org/abs/2404.05894)

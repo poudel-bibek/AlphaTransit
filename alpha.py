@@ -65,7 +65,10 @@ def train(config: Dict[str, Any], is_sweep: bool = False) -> None:
 
     # Initialize wandb for standalone runs (sweep handles its own init)
     if not is_sweep and not config.get("wandb_off"):
-        wandb.init(project=config["wandb_project"], entity=config["wandb_entity"], config=config)
+        wandb_kwargs = {"project": config["wandb_project"], "config": config}
+        if config.get("wandb_entity"):
+            wandb_kwargs["entity"] = config["wandb_entity"]
+        wandb.init(**wandb_kwargs)
 
     env = TransitEnv(config)
     policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
@@ -94,6 +97,9 @@ def alpha_eval(config: Dict[str, Any]) -> None:
         )
 
     config["wandb_off"] = True
+    policy_path = config.get("saved_policy_path")
+    if not policy_path:
+        raise ValueError("--saved_policy_path is required for eval mode")
 
     env = TransitEnv(config)
     policy_kwargs = get_policy_kwargs_alpha(config, env.N_NODE_FEATURES, env.N_EDGE_FEATURES)
@@ -101,4 +107,4 @@ def alpha_eval(config: Dict[str, Any]) -> None:
     from datetime import datetime
     ts = datetime.now().strftime('%b_%d_%H_%M_%S')
     eval_save_dir = f"{config['save_dir']}_{ts}"
-    mcts_agent.evaluate(policy_path=config.get("saved_policy_path", ""), save_dir=eval_save_dir)
+    mcts_agent.evaluate(policy_path=policy_path, save_dir=eval_save_dir)

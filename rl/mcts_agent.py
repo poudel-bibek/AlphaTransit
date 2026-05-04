@@ -93,7 +93,8 @@ class MCTSAgent:
         # Initialize model
         self.model = GATV2ActorCritic(**policy_kwargs).to(self.device)
         self.model.apply_orthogonal_init()
-        self.model = torch.compile(self.model)
+        if config.get("torch_compile"):
+            self.model = torch.compile(self.model)
 
         # Optimizer
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
@@ -797,7 +798,7 @@ class MCTSAgent:
 
     def _load_policy(self, path: str) -> None:
         """Load model weights from policy file (handles torch.compile prefix)."""
-        state_dict = torch.load(path, map_location=self.device)
+        state_dict = torch.load(path, map_location=self.device, weights_only=True)
         if hasattr(self.model, '_orig_mod'):
             self.model._orig_mod.load_state_dict(state_dict)
         else:
@@ -908,9 +909,10 @@ class MCTSAgent:
             )
 
         # Load policy into learner model, then publish to inference server
-        if policy_path and os.path.exists(policy_path):
-            self._load_policy(policy_path)
-            print(f"Loaded policy from {policy_path}")
+        if not policy_path or not os.path.isfile(policy_path):
+            raise FileNotFoundError(f"Saved policy not found: {policy_path}")
+        self._load_policy(policy_path)
+        print(f"Loaded policy from {policy_path}")
         self._publish_policy_snapshot()
 
         episode_dir = save_dir
