@@ -181,6 +181,7 @@ def _resample_and_smooth(steps: np.ndarray, values: np.ndarray, *, window: int =
     return grid, mean, std
 
 
+@functools.cache
 def _load_ppo_runs(alpha_key: str) -> list[dict]:
     return load_json(PPO_ABLATION_RUNS[alpha_key])
 
