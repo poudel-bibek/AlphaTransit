@@ -78,6 +78,9 @@ STANDARDIZED FORMAT:
    - volume: float (vehicles/hour)
 """
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -90,7 +93,17 @@ from matplotlib.ticker import FuncFormatter
 from scipy.spatial import ConvexHull
 
 # Import plotting functions
-from plot_data import plot_demand_viz, plot_unified, plot_unified_2, plot_bloomington_base, plot_validation_mapping
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+   sys.path.insert(0, str(ROOT))
+
+from plots.network_diagnostics import (
+   plot_demand_viz,
+   plot_unified,
+   plot_unified_2,
+   plot_bloomington_base,
+   plot_validation_mapping,
+)
 
 class Helpers: 
    def __init__(self):

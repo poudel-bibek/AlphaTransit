@@ -5,10 +5,9 @@ from pathlib import Path
 
 if __package__:
     from .common import FIGURES_DIR, NEURIPS_RESULTS_DIR
-    from . import analyze_routes, final_plots, networks, routes, training
+    from . import final_plots, networks, routes, training
 else:
     from common import FIGURES_DIR, NEURIPS_RESULTS_DIR
-    import analyze_routes
     import final_plots
     import networks
     import routes
@@ -49,7 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
     deceptive.add_argument("--no-tiles", action="store_true")
     deceptive.add_argument("--output", type=Path)
 
-    analyze = subparsers.add_parser("analyze-routes", help="Run structural route analysis.")
+    analyze = subparsers.add_parser(
+        "analyze-routes",
+        help="Run structural route analysis.",
+        epilog=routes.ROUTE_ANALYSIS_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     analyze.add_argument("--alpha", choices=["0_3", "1_0"], default="0_3")
     analyze.add_argument("--csv", type=Path)
 
@@ -98,18 +102,19 @@ def build_parser() -> argparse.ArgumentParser:
     method_comparison.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
     method_comparison.add_argument("--output", type=Path)
 
-    combined_scaling = subparsers.add_parser(
-        "combined-scaling",
-        help="Build the three-panel final scaling summary figure.",
+    overview_maps = subparsers.add_parser(
+        "overview-maps",
+        help="Build the final benchmark overview map figure.",
     )
-    combined_scaling.add_argument("--output", type=Path)
+    overview_maps.add_argument("--output", type=Path)
 
-    sweep_behavior = subparsers.add_parser(
-        "sweep-behavior",
-        help="Build the 2x3 sweep behavior and quality-vs-compute dashboard.",
+    route_designs = subparsers.add_parser(
+        "route-designs",
+        help="Build the final designed-route comparison grids.",
     )
-    sweep_behavior.add_argument("--alpha", choices=["0_3", "1_0"], default="1_0")
-    sweep_behavior.add_argument("--output", type=Path)
+    route_designs.add_argument("--alphas", choices=["0_3", "1_0"], nargs="+", default=["0_3", "1_0"])
+    route_designs.add_argument("--max-cols", type=int, default=5)
+    route_designs.add_argument("--output-dir", type=Path, default=NEURIPS_RESULTS_DIR)
 
     scaling_overview = subparsers.add_parser(
         "scaling-overview",
@@ -179,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
         forwarded = ["--alpha", args.alpha]
         if args.csv:
             forwarded.extend(["--csv", str(args.csv)])
-        analyze_routes.main(forwarded)
+        routes.analyze_routes_main(forwarded)
         return
 
     if args.command == "network-panel":
@@ -244,14 +249,17 @@ def main(argv: list[str] | None = None) -> None:
         final_plots.plot_method_comparison_triptych(output, alpha_key=args.alpha)
         return
 
-    if args.command == "combined-scaling":
-        output = args.output or (NEURIPS_RESULTS_DIR / "final_scaling_summary.pdf")
-        final_plots.plot_combined_scaling_summary(output)
+    if args.command == "overview-maps":
+        output = args.output or (NEURIPS_RESULTS_DIR / "final_overview_maps.pdf")
+        final_plots.plot_overview_maps(output)
         return
 
-    if args.command == "sweep-behavior":
-        output = args.output or (NEURIPS_RESULTS_DIR / f"final_sweep_behavior_alpha_{args.alpha}.pdf")
-        final_plots.plot_sweep_behavior_dashboard(output, alpha_key=args.alpha)
+    if args.command == "route-designs":
+        final_plots.plot_route_designs(
+            args.output_dir,
+            alpha_keys=tuple(args.alphas),
+            max_cols=args.max_cols,
+        )
         return
 
     if args.command == "scaling-overview":
