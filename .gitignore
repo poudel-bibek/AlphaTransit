@@ -141,8 +141,6 @@ plots/routes_*.png
 # Local-only dummy plot scripts/data
 plots/dummy_plot/
 ./plots/dummy_plot/
-# Keep plots/plots.md (style guide) tracked
-
 CLAUDE.md
 
 # Holliday baseline generated artifacts
@@ -159,3 +157,10 @@ uxsim.egg-info/
 
 # Local-only files
 plots/plots.md
+
+# Local release asset generator
+/release_asset_generator.py
+# Local Hugging Face upload staging
+huggingface/
+
+assets/release_asset_generator.py
