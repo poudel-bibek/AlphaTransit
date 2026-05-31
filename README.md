@@ -187,27 +187,7 @@ Network standardization diagnostic plots live in `plots/network_diagnostics.py` 
 ---
 ### 🔧 Configuration Values
 
-| Key | Default | Notes |
-| --- | ---: | --- |
-| `algorithm` | `None` | Required for training/evaluation; choices are `ppo` and `alphatransit`. |
-| `mode` | `train` | Choices are `train`, `eval`, and `baseline`. |
-| `network` | `bloomington` | Runtime network; choices are `bloomington` and `sioux_falls`. |
-| `alpha` | `0.3` | Modal split parameter; `1.0` is the high transit demand setting. |
-| `horizon` | `10000` | Simulation horizon in seconds. |
-| `delta_t` / `delta_n` | `1` / `5` | UXsim time step and platoon size. |
-| `bus_capacity` | `40` | Passenger capacity per bus. |
-| `stop_duration` | `60` | Dwell time in seconds. |
-| `num_routes` | `16` | Number of routes in the Bloomington design task. |
-| `max_route_length` | `14` | Maximum nodes per route. |
-| `min_route_length` | `2` | Minimum nodes per route. |
-| `route_init` | `transit_center` | Route initialization scheme. |
-| `max_steps` | `1,000,000` | PPO training environment step budget. |
-| `num_ppo_workers` | `8` | Parallel PPO environment workers. |
-| `n_iter` | `100` | AlphaTransit MCTS simulations per move; final paper comparisons use `500`. |
-| `num_mcts_workers` | `16` | Parallel AlphaTransit episode workers. |
-| `episodes_per_iter` | `16` | AlphaTransit episodes collected per training iteration. |
-| `max_iterations` | `308` | Default AlphaTransit training iterations. |
-| `wandb_off` | `True` | WandB is disabled by default; pass `--wandb` to enable logging. |
+Default CLI and runtime values are defined in `config.py`. Scenario-specific hyperparameters selected from sweep experiments are stored in the `BEST_PARAMS` dictionary in the same file and are applied with `--apply_best_params` for the selected algorithm and `alpha`. Explicit CLI arguments still take precedence over those sweep settings.
 
 ---
 ### Reproduction Notes
