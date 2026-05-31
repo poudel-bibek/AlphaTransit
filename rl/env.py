@@ -9,6 +9,7 @@ from pathlib import Path
 from collections import defaultdict, Counter
 from uxsim.BusHandler import BusHandler
 from rl.env_utils import plot_network_demand_and_path, initialize_route
+from rl.rewards import compute_transit_reward, validate_reward_mode
 from typing import Any, Dict, Optional, Tuple, List 
 
 class TransitEnv(gym.Env):
@@ -1051,8 +1052,19 @@ class TransitEnv(gym.Env):
         - A smooth increase as c_s grows from 1 to R_eff
         """
         
-        # Collect all routes to consider: completed plus the current route in progress
-        total_routes = self.all_routes + [self.current_route]
+        # Collect all routes to consider: completed plus the current route in progress.
+        # During route completion, current_route can already be stored in all_routes
+        # at current_route_index. Do not count that lifecycle duplicate as a
+        # second route; distinct identical routes at different route indices still count.
+        total_routes = list(self.all_routes)
+        current_route_index = getattr(self, "current_route_index", None)
+        current_route_already_completed = (
+            current_route_index is not None
+            and 0 <= current_route_index < len(self.all_routes)
+            and [str(node) for node in self.all_routes[current_route_index]] == [str(node) for node in self.current_route]
+        )
+        if self.current_route and not current_route_already_completed:
+            total_routes.append(self.current_route)
 
         # Build a set of undirected segments for each route, skipping empty routes
         # An undirected segment is represented by a sorted tuple (min(u, v), max(u, v))
@@ -1310,142 +1322,38 @@ class TransitEnv(gym.Env):
         """
         Reward function with mode-controlled shaping.
 
+        Adapter over rl.rewards.compute_transit_reward. Supplies ppo_reward_mode,
+        route index/count, and route length context from this environment.
+
         Supported reward modes:
         - terminal_only
         - terminal_intermediate_raw_early_stop
         - terminal_intermediate_delta_early_stop
         - terminal_intermediate_delta_no_early_stop
         """
-        valid_modes = {
-            "terminal_only",
-            "terminal_intermediate_raw_early_stop",
-            "terminal_intermediate_delta_early_stop",
-            "terminal_intermediate_delta_no_early_stop",
-        }
-        if self.ppo_reward_mode not in valid_modes:
-            raise ValueError(f"Unknown ppo_reward_mode: {self.ppo_reward_mode}")
-
-        # ---------------------------------------------------------------------
-        # Reward intent
-        # ---------------------------------------------------------------------
-        # Encourage:
-        # - broader reachable demand coverage
-        # - higher passenger service rate
-        # - higher bus utilization
-        #
-        # Discourage:
-        # - long passenger wait/movement times
-        # - redundant route overlap
-        # - excessive fleet size
-        # - premature forced route endings
-        #
-        # Final reward (b0..b6) captures passenger/operator outcomes after simulation.
-        # Partial reward (b7..b9) shapes route construction before terminal simulation.
-        # ---------------------------------------------------------------------
-
-        # ---------------------------------------------------------------------
-        # Coefficients
-        # ---------------------------------------------------------------------
-        BETA_0 = 60.0   # Final: demand coverage potential (Psi)
-        BETA_1 = 45.0   # Final: service rate (sigma)
-        BETA_2 = 20.0   # Final: average wait time penalty
-        BETA_3 = 10.0   # Final: average movement time penalty
-        BETA_4 = 10.0   # Final: route overlap penalty (omega)
-        BETA_5 = 2.0    # Final: fleet size penalty (F/K)
-        BETA_6 = 12.0   # Final: bus utilization bonus (u)
-
-        BETA_7 = 20.0   # Partial: coverage term (raw or delta)
-        BETA_8 = 8.0    # Partial: overlap term (omega) magnitude
-        BETA_9 = 15.0   # Partial: forced-end penalty term magnitude
-
-        WAIT_TIME_CAP = 1800.0
-        MOVEMENT_TIME_CAP = 2400.0
-
-        # Episode terminal condition: last route is ending right now.
-        # Used only for terminal_only mode.
-        is_episode_terminal = is_route_end and (self.current_route_index == self.NUM_ROUTES - 1)
-
-        # ---------------------------------------------------------------------
-        # Intermediate reward branch (during route construction)
-        # ---------------------------------------------------------------------
-        if not is_route_end:
-            # terminal_only: no shaping signal during construction.
-            if self.ppo_reward_mode == "terminal_only":
-                return 0.0
-
-            # Intermediate PPO modes only use partial metrics available from
-            # _get_partial_route_metrics(), so non-terminal steps can be scored
-            # without running a full UXsim simulation.
-            current_coverage = sim_result['demand_coverage_potential']
-            overlap_ratio = sim_result['route_overlap_ratio']
-
-            if self.ppo_reward_mode == "terminal_intermediate_raw_early_stop":
-                # Raw shaping: reward absolute coverage at this step.
-                coverage_term = current_coverage
-                use_early_stop_penalty = True
-
-            elif self.ppo_reward_mode == "terminal_intermediate_delta_early_stop":
-                # Delta shaping: reward only incremental coverage gain.
-                coverage_term = max(0.0, current_coverage - prev_coverage)
-                use_early_stop_penalty = True
-                
-            else:
-                # terminal_intermediate_delta_no_early_stop:
-                # same delta shaping, but remove forced-end penalty.
-                coverage_term = max(0.0, current_coverage - prev_coverage)
-                use_early_stop_penalty = False
-
-            # Shared shaping terms for non-terminal route-building steps.
-            # Encourages coverage growth and discourages redundant overlap.
-            reward = (BETA_7 * coverage_term) - (BETA_8 * overlap_ratio)
-
-            # Apply early-stop penalty only in modes that enable it.
-            # Discourages getting stuck before reaching max route length.
-            if is_forced_end and use_early_stop_penalty:
-                completion_ratio = len(self.current_route) / self.MAX_ROUTE_LENGTH
-                forced_penalty = 1.0 - completion_ratio
-                reward -= BETA_9 * forced_penalty
-
-            return reward
-
-        # ---------------------------------------------------------------------
-        # Final reward branch (route-end simulation metrics)
-        # ---------------------------------------------------------------------
-        # terminal_only pays out only once at episode terminal.
-        if self.ppo_reward_mode == "terminal_only" and not is_episode_terminal:
-            return 0.0
-
-        # All other modes use the same final simulation-based reward.
-        # This is the primary objective that balances rider outcomes and operator costs.
-        coverage = sim_result['demand_coverage_potential']
-        # Reward hack fix: service_rate has variable denominator (wanting_to_onboard),
-        # agent exploits by building short routes. Use fixed denominator (total_demand).
-        # service_rate = sim_result['service_rate']
-        service_rate = sim_result['demand_coverage_actual']
-
-        total_wait = sim_result['total_wait_completed'] + sim_result['total_wait_ongoing']
-        total_movement = sim_result['total_movement_completed'] + sim_result['total_movement_ongoing']
-        served = sim_result['completed_passengers'] + sim_result['ongoing_passengers']
-
-        avg_wait = total_wait / served if served > 0 else 0.0
-        avg_movement = total_movement / served if served > 0 else 0.0
-        avg_wait_norm = min(avg_wait / WAIT_TIME_CAP, 1.0)
-        avg_movement_norm = min(avg_movement / MOVEMENT_TIME_CAP, 1.0)
-
-        overlap_ratio = sim_result['route_overlap_ratio']
-        fleet_per_route = sim_result['fleet_size'] / self.NUM_ROUTES
-        utilization_norm = sim_result['bus_utilization'] / 100.0
-
-        final_reward = (
-            BETA_0 * coverage +
-            BETA_1 * service_rate -
-            BETA_2 * avg_wait_norm -
-            BETA_3 * avg_movement_norm -
-            BETA_4 * overlap_ratio -
-            BETA_5 * fleet_per_route +
-            BETA_6 * utilization_norm
+        # Reward intent, coefficients, mode branches, and formula comments live
+        # with the pure implementation in rl.rewards.compute_transit_reward.
+        validate_reward_mode(self.ppo_reward_mode)
+        needs_route_end_context = is_route_end
+        needs_forced_penalty_context = (
+            not is_route_end
+            and is_forced_end
+            and self.ppo_reward_mode in {
+                "terminal_intermediate_raw_early_stop",
+                "terminal_intermediate_delta_early_stop",
+            }
         )
-        return final_reward
+        return compute_transit_reward(
+            sim_result,
+            ppo_reward_mode=self.ppo_reward_mode,
+            is_route_end=is_route_end,
+            is_forced_end=is_forced_end,
+            prev_coverage=prev_coverage,
+            current_route_index=(self.current_route_index if needs_route_end_context else 0),
+            num_routes=(self.NUM_ROUTES if needs_route_end_context else 1),
+            current_route_length=(len(self.current_route) if needs_forced_penalty_context else 0),
+            max_route_length=(self.MAX_ROUTE_LENGTH if needs_forced_penalty_context else 1),
+        )
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         """

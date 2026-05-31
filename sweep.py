@@ -4,6 +4,7 @@ import wandb
 import argparse
 from typing import Any, Dict
 from config import get_config, set_global_seeds, apply_best_params, BEST_PARAMS
+from rl.rewards import REWARD_MODES
 from ppo import train as ppo_train
 from alpha import train as alpha_train
 
@@ -62,12 +63,7 @@ def build_sweep_config_ppo_0_3() -> Dict[str, Any]:
         },
         "parameters": {
             "seed": {"values": [42, 123]},
-            "ppo_reward_mode": {"values": [
-                "terminal_only",
-                "terminal_intermediate_raw_early_stop",
-                "terminal_intermediate_delta_early_stop",
-                "terminal_intermediate_delta_no_early_stop",
-            ]},
+            "ppo_reward_mode": {"values": list(REWARD_MODES)},
             "lr": {"value": 5e-5},
             "anneal_lr": {"value": False},
             "K_epochs": {"value": 8},
@@ -143,12 +139,7 @@ def build_sweep_config_ppo_1_0() -> Dict[str, Any]:
         },
         "parameters": {
             "seed": {"values": [42, 123]},
-            "ppo_reward_mode": {"values": [
-                "terminal_only",
-                "terminal_intermediate_raw_early_stop",
-                "terminal_intermediate_delta_early_stop",
-                "terminal_intermediate_delta_no_early_stop",
-            ]},
+            "ppo_reward_mode": {"values": list(REWARD_MODES)},
             "lr": {"value": 1e-5},
             "anneal_lr": {"value": True},
             "K_epochs": {"value": 4},

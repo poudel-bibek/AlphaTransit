@@ -8,6 +8,7 @@ import argparse
 import numpy as np
 import torch
 from typing import Any, Dict
+from rl.rewards import REWARD_MODES
 
 
 BASELINE_TYPES = [
@@ -211,7 +212,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--route_init", choices=ROUTE_INIT_STRATEGIES, default="transit_center", help="Route initialization scheme")
     parser.add_argument("--transit_center_node", type=str, default=None, help="Transit center node identifier; defaults to 96 for Bloomington")
     parser.add_argument("--ppo_reward_mode", type=str, default="terminal_intermediate_delta_no_early_stop",
-        choices=["terminal_only", "terminal_intermediate_raw_early_stop", "terminal_intermediate_delta_early_stop", "terminal_intermediate_delta_no_early_stop"],
+        choices=REWARD_MODES,
         help="Reward shaping mode (PPO only; AlphaTransit uses terminal reward targets)")
 
     # Constraints:
