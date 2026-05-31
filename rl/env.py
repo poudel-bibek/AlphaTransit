@@ -20,6 +20,14 @@ class TransitEnv(gym.Env):
 
         We treat two way streets as two separate directed edges.
         """
+        self._init_config_fields(config)
+        self._init_route_state()
+        df_nodes, df_links, df_demand = self._load_standard_network_data()
+        self._init_network_lookup_demand_and_ranges(df_nodes, df_links, df_demand)
+        self._init_edge_arrays(df_links)
+        self._init_static_node_features(df_nodes)
+
+    def _init_config_fields(self, config: Optional[Dict[str, Any]]) -> None:
         self.config = dict(config)
         self.horizon = self.config.get("horizon")
         self.delta_t = self.config.get("delta_t") # deltat = deltan * reaction_time
@@ -46,7 +54,8 @@ class TransitEnv(gym.Env):
         self.MAX_ROUTE_LENGTH = self.config.get("max_route_length")
         self.MIN_ROUTE_LENGTH = self.config.get("min_route_length")
         self.world = None
-    
+
+    def _init_route_state(self) -> None:
         # Multi-route management:
         self.all_routes = []           # List of completed routes [[route1], [route2], ...]
         self.current_route = []        # Currently active route being built
@@ -55,6 +64,7 @@ class TransitEnv(gym.Env):
         self.N_NODE_FEATURES = 16
         self.N_EDGE_FEATURES = 2
 
+    def _load_standard_network_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         # Lookup dicts for efficient queries:
         # Only work on standardized data.
         nodes_csv = self.network_dir / f"{self.config.get('network')}_nodes_standard.csv"
@@ -64,7 +74,14 @@ class TransitEnv(gym.Env):
         df_nodes = pd.read_csv(nodes_csv, dtype={"name": str})
         df_links = pd.read_csv(links_csv, dtype={"name": str, "start": str, "end": str})
         df_demand = pd.read_csv(demand_csv, dtype={"orig": str, "dest": str}) # Read as strings so node names remain consistent with the World (nodes are named as strings)
+        return df_nodes, df_links, df_demand
 
+    def _init_network_lookup_demand_and_ranges(
+        self,
+        df_nodes: pd.DataFrame,
+        df_links: pd.DataFrame,
+        df_demand: pd.DataFrame,
+    ) -> None:
         # Sort node names numerically, even though they are strings
         self.node_list = sorted(list(df_nodes["name"].unique()), key=lambda x: int(x))
         self.n_nodes = len(self.node_list)
@@ -115,7 +132,8 @@ class TransitEnv(gym.Env):
         self.max_length = df_links["length"].max()
         self.min_free_flow_speed = df_links["free_flow_speed"].min() # u = free_flow_speed
         self.max_free_flow_speed = df_links["free_flow_speed"].max()
-        
+
+    def _init_edge_arrays(self, df_links: pd.DataFrame) -> None:
         # Edge index and features:
         edge_index_list = []
         edge_attr_list = []
@@ -150,6 +168,7 @@ class TransitEnv(gym.Env):
         self.edge_index = np.array(edge_index_list).T.astype(np.int64) # Transpose, shape (2, E)
         self.edge_features = np.array(edge_attr_list, dtype=np.float32) # Shape (E, 2)
 
+    def _init_static_node_features(self, df_nodes: pd.DataFrame) -> None:
         # For efficiency, pre-compute a number of things required in state during init (once):
         self.node_coordinates_norm = np.zeros((self.n_nodes, 2), dtype=np.float32)
         self.node_degrees_norm = np.zeros(self.n_nodes, dtype=np.float32)
