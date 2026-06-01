@@ -4,7 +4,7 @@
   <a href="https://alphatransit.app/"><img src="https://img.shields.io/badge/Research%20Preview-blue" alt="Research Preview"></a>
   <a href="https://arxiv.org/pdf/2605.28730"><img src="https://img.shields.io/badge/arXiv-green" alt="arXiv"></a>
   <a href="https://huggingface.co/papers/2605.28730"><img src="https://img.shields.io/badge/Hugging%20Face-yellow" alt="Hugging Face"></a>
-  <a href="https://github.com/poudel-bibek/AlphaTransit/releases/tag/0.1.0"><img src="https://img.shields.io/badge/Release-gray" alt="Release"></a>
+  <a href="https://github.com/poudel-bibek/AlphaTransit/releases/tag/0.1.0"><img src="https://img.shields.io/badge/Release-0.1.0-red" alt="Release"></a>
 </p>
 
 <p align="center">
