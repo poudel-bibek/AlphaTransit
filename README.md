@@ -189,7 +189,7 @@ Default CLI and runtime values are defined in `config.py`. Scenario-specific hyp
 ### Debugging
 
 - Use `uv run python main.py --help` and `uv run python -m plots.main --help` to check the current training, evaluation, baseline, and plotting options.
-- If diagnostic plotting fails because geospatial packages are missing, install the optional dependencies with `uv sync --extra advanced`; comparison plots also need evaluation summaries from completed runs.
+- If diagnostic plotting fails because geospatial packages are missing, install the optional dependencies with `uv sync --extra advanced`.
 
 ---
 ### 📖 Citation
