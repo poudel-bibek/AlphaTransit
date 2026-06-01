@@ -165,4 +165,5 @@ huggingface/
 
 assets/release_asset_generator.py
 assets/alphatransit_release_video.mp4
+assets/alphatransit_release_video_dark.mp4
 assets/release_video_generator.py
