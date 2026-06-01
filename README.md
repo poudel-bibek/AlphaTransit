@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/topo/alphatransit_header_topo.gif" alt="AlphaTransit route design animation" style="width:800px"/>
+  <img src="assets/streets/alphatransit_header_streets.gif" alt="AlphaTransit route design animation" style="width:800px"/>
 </p>
 
 ---
@@ -30,7 +30,7 @@ AlphaTransit is a reinforcement learning framework for the **Transit Route Netwo
 Runtime inputs are standardized CSV/JSON files under `networks/`. Bloomington, Indiana is the primary city-scale case study.
 
 <p align="center">
-  <img src="assets/topo/alphatransit_transportation_topo.gif" alt="AlphaTransit transportation network visualization" style="width:800px"/>
+  <img src="assets/streets/alphatransit_transportation_streets.gif" alt="AlphaTransit transportation network visualization" style="width:800px"/>
 </p>
 
 | Input | Location | Description |
