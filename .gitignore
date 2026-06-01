@@ -158,12 +158,25 @@ uxsim.egg-info/
 # Local-only files
 plots/plots.md
 
-# Local release asset generator
-/release_asset_generator.py
 # Local Hugging Face upload staging
 huggingface/
 
+# Local release asset generators
 assets/release_asset_generator.py
-assets/alphatransit_release_video.mp4
-assets/alphatransit_release_video_dark.mp4
 assets/release_video_generator.py
+
+# Local generated release videos
+assets/*/alphatransit_release_video_*.mp4
+
+# Local generated style GIF variants; README topo GIFs remain trackable.
+assets/dark/alphatransit_header_dark.gif
+assets/dark/alphatransit_transportation_dark.gif
+assets/light/alphatransit_header_light.gif
+assets/light/alphatransit_transportation_light.gif
+assets/standard/alphatransit_header_standard.gif
+assets/standard/alphatransit_transportation_standard.gif
+assets/streets/alphatransit_header_streets.gif
+assets/streets/alphatransit_transportation_streets.gif
+assets/satellite_streets/alphatransit_header_satellite_streets.gif
+assets/satellite_streets/alphatransit_transportation_satellite_streets.gif
+assets/style_contact_sheet.jpg

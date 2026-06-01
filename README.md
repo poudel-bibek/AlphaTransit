@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/alphatransit_header.gif" alt="AlphaTransit route design animation" style="width:800px"/>
+  <img src="assets/topo/alphatransit_header_topo.gif" alt="AlphaTransit route design animation" style="width:800px"/>
 </p>
 
 ---
@@ -30,7 +30,7 @@ AlphaTransit is a reinforcement learning framework for the **Transit Route Netwo
 Runtime inputs are standardized CSV/JSON files under `networks/`. Bloomington, Indiana is the primary city-scale case study.
 
 <p align="center">
-  <img src="assets/alphatransit_transportation.gif" alt="AlphaTransit transportation network visualization" style="width:800px"/>
+  <img src="assets/topo/alphatransit_transportation_topo.gif" alt="AlphaTransit transportation network visualization" style="width:800px"/>
 </p>
 
 | Input | Location | Description |
@@ -52,8 +52,8 @@ Saved policies can be evaluated with `main.py`, and saved result summaries can b
 | Artifact | Link | Contents |
 | --- | --- | --- |
 | Paper page | [HF Papers](https://huggingface.co/papers/2605.28730) | Paper metadata and project links on Hugging Face Papers. |
-| Model checkpoints | [AlphaTransit checkpoints](https://huggingface.co/Bibek-Poudel/alphatransit-checkpoints) | AlphaTransit policy checkpoints for Bloomington at `alpha=0.3` and `alpha=1.0`, plus model configuration and a checkpoint manifest. |
-| Bloomington dataset | [Bloomington TRNDP](https://huggingface.co/datasets/Bibek-Poudel/bloomington-trndp) | Standardized Bloomington nodes, links, OD demand, and existing routes. |
+| Model checkpoints | [AlphaTransit checkpoints](https://huggingface.co/matrix-multiply/alphatransit-checkpoints) | AlphaTransit policy checkpoints for Bloomington at `alpha=0.3` and `alpha=1.0`, plus model configuration and a checkpoint manifest. |
+| Bloomington dataset | [Bloomington TRNDP](https://huggingface.co/datasets/matrix-multiply/bloomington-tndp) | Standardized Bloomington nodes, links, OD demand, and existing routes. |
 
 ---
 ### ⚙️ Setup
@@ -91,7 +91,7 @@ The main entry point is `main.py`. Pass `--apply_best_params` to use the sweep s
 uv run python main.py --algorithm alphatransit --gpu --alpha=0.3 --apply_best_params --n_iter=500
 ```
 
-Use `--alpha=1.0` for the high transit demand setting. Weights & Biases logging is disabled by default; pass `--wandb` to enable it. Main training runs and released-checkpoint logs are summarized in the [WandB report](https://wandb.ai/bibek-poudel/transit_design/reports/ALPHATRANSIT_REPORT_PLACEHOLDER).
+Use `--alpha=1.0` for the high transit demand setting. Weights & Biases logging is disabled by default; pass `--wandb` to enable it. Main training runs and released-checkpoint logs are summarized in the [WandB report](https://api.wandb.ai/links/bibek-poudel/wa4zd1il).
 
 ---
 ### 🧪 Baselines
